@@ -7,16 +7,20 @@
  * knows the goal and the next step without being told. With no active task it
  * lists open tasks to pick from. Either way it adds one `Tools:` line from the
  * machine's tool registry (`pnpm tools`), so the session knows which other
- * agents and CLIs it can call.
+ * agents and CLIs it can call. When kyoten started the session from inside
+ * another git repository (`KYOTEN_CALLER_DIR`), one more line says how to
+ * work on it from this workspace.
  *
  * Fails open: any error means no output and exit 0.
  */
+import path from 'path';
 import {
   agyInjectOutput,
   normalizeHookInput,
   parseHarness,
 } from '#utils/harness/input.js';
 import { handleHook as handleMemoryHook } from '#utils/memory/hook.js';
+import { findGitDirs } from '#utils/memory/repo.js';
 import { runIfMain } from '#utils/module-runner.js';
 import { sessionBrief } from '#utils/task/cli.js';
 import { defaultDeps } from '#utils/task/deps.js';
@@ -40,7 +44,7 @@ import { ROOT_DIR } from '#utils/workspace-config.js';
 /**
  * @template {import('#utils/harness/input.js').Harness} [H='claude']
  * @param {HookInput | undefined} input
- * @param {{ rootDir?: string, harness?: H, brief?: typeof sessionBrief, tools?: (rootDir: string) => string | null }} [options]
+ * @param {{ rootDir?: string, harness?: H, brief?: typeof sessionBrief, tools?: (rootDir: string) => string | null, caller?: (rootDir: string) => string | null }} [options]
  *   brief gets the deps and the session id
  * @returns {(H extends 'agy' ? import('#utils/harness/input.js').AgyInjectOutput : StandardHookOutput) | null}
  */
@@ -51,6 +55,7 @@ export function processHookInput(
     harness = /** @type {H} */ ('claude'),
     brief = sessionBrief,
     tools = registryLine,
+    caller = callerLine,
   } = {}
 ) {
   const normalized = normalizeHookInput(input, harness);
@@ -63,6 +68,7 @@ export function processHookInput(
     text = `[Task] Could not read the active task — ${error}`;
   }
   const toolText = tools(rootDir);
+  const callerText = caller(rootDir);
 
   const source = normalized.source ?? 'startup';
   const parts = [];
@@ -75,6 +81,7 @@ export function processHookInput(
     );
   }
   if (toolText) parts.push(toolText);
+  if (callerText) parts.push(callerText);
   if (harness === 'agy') {
     /** @type {import('#utils/harness/input.js').AgyInjectOutput['injectSteps']} */
     const injectSteps = parts.length
@@ -132,6 +139,28 @@ export function bindNewSession(rootDir, session) {
 export function registryLine(rootDir) {
   try {
     return toolsLine(readRegistry(rootDir));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The kyoten hint: kyoten starts every agent in the workspace and passes the
+ * directory it was started from as KYOTEN_CALLER_DIR. When that directory is
+ * in another git repository, the session should know how to work on it.
+ * Null otherwise, or on any error (fail open). Only reads the filesystem.
+ *
+ * @param {string} rootDir
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {string | null}
+ */
+export function callerLine(rootDir, env = process.env) {
+  const dir = env.KYOTEN_CALLER_DIR;
+  if (!dir) return null;
+  try {
+    const repo = findGitDirs(dir)?.top;
+    if (!repo || path.resolve(repo) === path.resolve(rootDir)) return null;
+    return `[kyoten] Started from ${repo}, a git repository outside this workspace. If the user's request is about it, work on it through a task: pnpm task new <name> --goal "…" --repo "${repo}" (or pnpm task set --repo for the current task).`;
   } catch {
     return null;
   }
