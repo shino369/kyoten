@@ -4,8 +4,8 @@ Instructions for every coding agent in this workspace (Claude Code, Codex, DeepS
 Antigravity CLI `agy`, and others). Read this whole file before acting. Claude-Code-only extras
 live in `CLAUDE.md`; full architecture and examples: `docs/harness.md`.
 
-This is a personal workspace for programming, documentation, research, translation, and
-generative-AI work. There is no app to build: deliverables are scripts, skills, docs, and task
+This is kyoten, a workspace for programming, documentation, research, translation, and
+generative-AI work. It has no app to build: the deliverables are scripts, skills, docs, and task
 outputs.
 
 ## 1. Never

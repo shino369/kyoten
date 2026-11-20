@@ -1,6 +1,6 @@
 # Kyoten
 
-[![Test CI](https://github.com/shino369/claude-code-personal-workspace/actions/workflows/test.yml/badge.svg)](https://github.com/shino369/claude-code-personal-workspace/actions/workflows/test.yml)
+[![Test CI](https://github.com/shino369/kyoten/actions/workflows/test.yml/badge.svg)](https://github.com/shino369/kyoten/actions/workflows/test.yml)
 [![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](./LICENSE)
 
 Kyoten (拠点) is a supercharged personal workspace for programming, documentation, research, translation, and
@@ -446,7 +446,7 @@ adjust the paths for your machine.
 
 ## Contributing
 
-This is a personal workspace, but forks and suggestions are welcome. Before opening a PR, run
+Forks and suggestions are welcome. Before opening a PR, run
 `pnpm check`.
 
 Third-party skills are managed with skills.sh; project-owned skills live in `.agents/skills/`.
