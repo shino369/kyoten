@@ -478,11 +478,7 @@ describe('the Antigravity wiring', () => {
 
   test('should wire task-brief, memory, guard, loop, reset, context-monitor, audit, and format', () => {
     expect(events('task-brief')).toEqual(['SessionStart']);
-    expect(events('memory')).toEqual([
-      'SessionStart',
-      'PreInvocation',
-      'PostInvocation',
-    ]);
+    expect(events('memory')).toEqual(['PreInvocation', 'PostInvocation']);
     expect(events('task-loop')).toEqual(['Stop']);
     expect(events('task-loop-reset')).toEqual(['PreInvocation']);
     expect(events('context-monitor')).toEqual(['PreInvocation']);
@@ -490,6 +486,18 @@ describe('the Antigravity wiring', () => {
     expect(events('guard')).toHaveLength(1);
     expect(events('format')).toHaveLength(1);
     expect(events('compact-note')).toEqual([]);
+  });
+
+  test('should budget time for Git queries and memory in the combined Antigravity SessionStart', () => {
+    const startup = readAgyHookEntries(renderAgyHooksConfig()).filter(
+      ({ event }) => event === 'SessionStart'
+    );
+    expect(startup).toMatchObject([
+      {
+        command: 'node ../.claude/hooks/session_start.js --harness agy',
+        timeout: 20,
+      },
+    ]);
   });
 });
 

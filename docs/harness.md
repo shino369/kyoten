@@ -102,9 +102,14 @@ Notes:
   `{}` causes Antigravity to deny it). Like Claude's rules, this is a guardrail, not a sandbox.
 - **Antigravity hook timing & payloads.** Antigravity sends camelCase fields (`conversationId`,
   `transcriptPath`, `hookEventName`, `lastUserInput`, `toolCall: { name, args }`) and runs hooks
-  with cwd `.agents/`, so generated commands use `node ../<script> --harness agy`. `PreInvocation`
-  resets `invocationNum` to `0` at the start of every user turn, so prompt-scoped hooks
-  (`context_monitor`, `task_loop --reset`, memory prompt recall) act only on `invocationNum === 0`.
+  with cwd `.agents/`, so generated commands use `node ../<script> --harness agy`.
+  The configured `SessionStart` handler uses its registered event name and returns the task brief
+  and memory context in a single `injectSteps` response (without `systemMessage.metadata`, because
+  `agy` 1.5.14 panics when a `systemMessage` carries a non-empty `metadata` map). `Stop` accepts
+  the CLI's `NO_TOOL_CALL` and the public documentation's `model_stop` as normal completion. The
+  task loop limits retries across continuations.
+  `PreInvocation` resets `invocationNum` to `0` at the start of every user turn, so prompt-scoped
+  hooks (`context_monitor`, `task_loop --reset`, memory prompt recall) act only on `invocationNum === 0`.
   Antigravity does not pass a subagent's role name in hook payloads, so clean-context enforcement
   for `reviewer`/`verifier` subagents relies on the role prompts (headless `pnpm loop --review`
   runs them in isolated read-only mode).
@@ -325,12 +330,18 @@ against `tools/catalog.json`. `pnpm agent ask --agent codex "…"` runs one read
 agent and saves the exchange in the task's `tmp/`. `pnpm loop`, `pnpm swarm`, and the review loop
 use the same adapters (`utils/loop/adapters.js`): fixed argument arrays, prompt on stdin, no shell.
 
-| Agent  | Write mode (fixers)                                                    | Read mode (reviewers, `agent ask`)                                  |
-| ------ | ---------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| claude | `-p --permission-mode acceptEdits`                                     | `-p --permission-mode plan`                                         |
-| codex  | `exec --sandbox workspace-write`                                       | `exec --sandbox read-only`                                          |
-| dsh    | `--permission-mode workspace-write`                                    | `--permission-mode read-only`                                       |
-| agy    | `stream-json --mode accept-edits --settings …` (edits + safe commands) | `stream-json --settings …` (denies `write_file(*)`, safe read cmds) |
+| Agent  | Write mode (fixers)                                                      | Read mode (reviewers, `agent ask`)                                        |
+| ------ | ------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| claude | `-p --permission-mode acceptEdits`                                       | `-p --permission-mode plan`                                               |
+| codex  | `exec --sandbox workspace-write`                                         | `exec --sandbox read-only`                                                |
+| dsh    | `--permission-mode workspace-write`                                      | `--permission-mode read-only`                                             |
+| agy    | `stream-json --mode accept-edits --settings …` (worktree command grants) | `stream-json --settings …` (inspection grants, `write_file(*)` deny rule) |
+
+The Antigravity read-mode settings omit automatic grants for checkout scripts, including `pnpm`
+commands. Write mode grants workspace verification commands. Its deny rules cover workspace setup
+and memory through `pnpm`, `pnpm run`, and their direct Node.js entry points.
+Effective permissions depend on the installed version and worktree trust. The workspace guard hook
+requires a trusted worktree.
 
 ### 7. Memory
 

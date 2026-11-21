@@ -339,13 +339,13 @@ describe('context_monitor', () => {
           {
             systemMessage: {
               systemMessage: expect.stringContaining('demo-261122'),
-              metadata: {
-                user_markdown: expect.stringContaining('[WARNING]'),
-              },
             },
           },
         ],
       });
+      expect(warnOut?.injectSteps[0].systemMessage.systemMessage).toContain(
+        '[WARNING]'
+      );
     });
 
     test('stays silent in DSH, which gives hooks no transcript', () => {

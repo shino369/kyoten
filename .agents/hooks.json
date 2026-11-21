@@ -4,18 +4,11 @@
       {
         "type": "command",
         "command": "node ../.claude/hooks/session_start.js --harness agy",
-        "timeout": 10
+        "timeout": 20
       }
     ]
   },
   "memory": {
-    "SessionStart": [
-      {
-        "type": "command",
-        "command": "node ../utils/memory/hook.js --harness agy",
-        "timeout": 5
-      }
-    ],
     "PreInvocation": [
       {
         "type": "command",

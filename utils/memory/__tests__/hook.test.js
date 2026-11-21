@@ -931,7 +931,7 @@ describe('extraction hooks', () => {
 });
 
 describe('Antigravity hooks', () => {
-  test('should inject core block, announcements with user_markdown, and register open session at SessionStart', () => {
+  test('should inject core block, plain-text announcements without metadata, and register open session at SessionStart', () => {
     const transcript = path.join(root, 'transcript_full.jsonl');
     fs.writeFileSync(transcript, '');
     appendJournal(dir, {
@@ -960,12 +960,15 @@ describe('Antigravity hooks', () => {
         { harness: 'agy', rootDir: root, now: NOW, env: {}, kick }
       )
     );
+    expect(output.injectSteps[0].systemMessage).toEqual({
+      systemMessage: expect.stringContaining('## Memory'),
+    });
     expect(output.injectSteps[0].systemMessage.systemMessage).toContain(
-      '## Memory'
+      'Saved earlier.'
     );
-    expect(
-      output.injectSteps[0].systemMessage.metadata.user_markdown
-    ).toContain('Saved earlier.');
+    expect(output.injectSteps[0].systemMessage.systemMessage).toContain(
+      'Mention these saves to the user in one line.'
+    );
     expect(readOpen(dir).map((e) => e.session)).toEqual(['agy-1']);
   });
 

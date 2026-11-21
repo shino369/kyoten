@@ -137,19 +137,9 @@ describe('normalizeHookInput', () => {
 });
 
 describe('agyInjectOutput', () => {
-  test('should wrap text as an Antigravity injectSteps systemMessage with optional user_markdown', () => {
+  test('should wrap text as an Antigravity injectSteps systemMessage without metadata', () => {
     expect(agyInjectOutput('hello')).toEqual({
       injectSteps: [{ systemMessage: { systemMessage: 'hello' } }],
-    });
-    expect(agyInjectOutput('hello', '**warn**')).toEqual({
-      injectSteps: [
-        {
-          systemMessage: {
-            systemMessage: 'hello',
-            metadata: { user_markdown: '**warn**' },
-          },
-        },
-      ],
     });
   });
 });

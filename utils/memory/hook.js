@@ -167,12 +167,11 @@ function pruneSessions(dir, now) {
  * @param {string} event
  * @param {string | null} text
  * @param {Harness} harness
- * @param {string} [userMarkdown]
  * @returns {HookOutput | null}
  */
-function contextOutput(event, text, harness, userMarkdown) {
+function contextOutput(event, text, harness) {
   if (!text) return null;
-  if (harness === 'agy') return agyInjectOutput(text, userMarkdown);
+  if (harness === 'agy') return agyInjectOutput(text);
   return {
     hookSpecificOutput: { hookEventName: event, additionalContext: text },
   };
@@ -381,21 +380,17 @@ export function handleHook(
             `[Memory] Saving to memory is off ${off === 'global' ? 'everywhere' : 'for this session'}: do not save notes (pnpm memory add) unless the user asks; recall still works.`,
           ]
         : []),
-      // Claude Code and Antigravity show the user a UI message; Codex relies on the agent.
+      // Claude Code shows the user a UI message; Codex and Antigravity rely on
+      // the agent (agy 1.5.14 panics when systemMessage.metadata is non-empty).
       ...(news
         ? [
-            harness === 'claude' || harness === 'agy'
+            harness === 'claude'
               ? news
               : `${news}\nMention these saves to the user in one line.`,
           ]
         : []),
     ].filter(Boolean);
-    const output = contextOutput(
-      event,
-      parts.join('\n\n'),
-      harness,
-      news ?? undefined
-    );
+    const output = contextOutput(event, parts.join('\n\n'), harness);
     return /** @type {any} */ (
       output && news && harness === 'claude'
         ? { ...output, systemMessage: news }
