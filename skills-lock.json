@@ -31,18 +31,6 @@
       "skillPath": "skills/engineering/diagnosing-bugs/SKILL.md",
       "computedHash": "87c78ae966e591f9ceb177789cc5cc9de69277cd26679ffd36ca5300f430d513"
     },
-    "document-writing": {
-      "source": "shino369/kyoten-skills",
-      "sourceType": "github",
-      "skillPath": "skills/document-writing/SKILL.md",
-      "computedHash": "9b1ccd5415d79c28c7f928f763142d983ab8f98971ba1ce4c4c13401bdc31deb"
-    },
-    "engineering-terminology": {
-      "source": "shino369/kyoten-skills",
-      "sourceType": "github",
-      "skillPath": "skills/engineering-terminology/SKILL.md",
-      "computedHash": "148c575a80d44a15519f31a884b8f50e556c7f177dee81e98a4b58c2330ca32d"
-    },
     "playwright-cli": {
       "source": "microsoft/playwright-cli",
       "sourceType": "github",
@@ -71,7 +59,7 @@
       "source": "shino369/kyoten-skills",
       "sourceType": "github",
       "skillPath": "skills/translation-expertise/SKILL.md",
-      "computedHash": "1482ca0ae77bad175d50ed9ddf81a4f1016a7b4ddcae43a834d9c08fa911797b"
+      "computedHash": "4173f27ffe966310c63dc829f12b610cb9f96461c7260286dbe79101666041c2"
     },
     "transparent-background": {
       "source": "shino369/kyoten-skills",

@@ -182,14 +182,12 @@ installed locally into the git-ignored `.agents/skills/`. Sources and hashes are
 
 #### Kyoten Skills ([shino369/kyoten-skills](https://github.com/shino369/kyoten-skills), MIT)
 
-| Skill                     | What it does                                                                     |
-| ------------------------- | -------------------------------------------------------------------------------- |
-| `dependency-update`       | Dependabot-style pnpm updates with `analyze_deps.mjs`.                           |
-| `security-update`         | CVE and audit patching with release-age checks.                                  |
-| `transparent-background`  | Flat-background image → transparent PNG with clean edges; specks and recolour.   |
-| `translation-expertise`   | English ↔ Japanese ↔ Traditional Chinese translation methodology and references. |
-| `engineering-terminology` | Trilingual technical glossaries across six engineering domains.                  |
-| `document-writing`        | Document conventions and rhetorical patterns for English, Japanese, and Chinese. |
+| Skill                    | What it does                                                                                |
+| ------------------------ | ------------------------------------------------------------------------------------------- |
+| `dependency-update`      | Dependabot-style pnpm updates with `analyze_deps.mjs`.                                      |
+| `security-update`        | CVE and audit patching with release-age checks.                                             |
+| `transparent-background` | Flat-background image → transparent PNG with clean edges; specks and recolour.              |
+| `translation-expertise`  | EN ↔ JA ↔ zh-TW house styles, 1:1 structural parity, and Taiwan/JA terminology trap guards. |
 
 #### Browser & Web
 
@@ -360,14 +358,12 @@ The context monitor defaults to a 1M window; set `CLAUDE_CONTEXT_WINDOW` to over
 ## Translation
 
 Ask Claude to translate, or invoke the `trilingual-translator` agent. `translation-expertise`
-supplies the methodology; `engineering-terminology` and `document-writing` add domain and style
-guidance.
+supplies house styles, 1:1 structural parity rules, and JA/zh-TW terminology trap guards.
 
-- English ↔ Japanese ↔ Traditional Chinese
+- English ↔ Japanese ↔ Traditional Chinese (Taiwan defaults)
 - Optional initial → proofread → refine workflow
 - File and URL sources: `WebFetch` for simple pages; `agent-browser` / `browser-use` for JS-heavy
   pages
-- 1,075+ technical terms across six engineering domains
 
 Do not use Playwright for text extraction; it is reserved for e2e tests.
 
