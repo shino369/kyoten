@@ -24,12 +24,6 @@
     ".claude/hooks/**/*",
     ".claude/workflows/__tests__/**/*",
     ".agents/skills/context-manager/**/*",
-    ".agents/skills/dependency-update/**/*",
-    ".agents/skills/document-writing/**/*",
-    ".agents/skills/engineering-terminology/**/*",
-    ".agents/skills/security-update/**/*",
-    ".agents/skills/translation-expertise/**/*",
-    ".agents/skills/transparent-background/**/*",
     ".agents/skills/web-browsing/**/*",
     ".agents/skills/workspace-setup/**/*"
   ],

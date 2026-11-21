@@ -28,12 +28,6 @@ export const DEFAULT_LINK_TARGETS = [path.join('.claude', 'skills')];
  */
 export const OWNED_SKILLS = [
   'context-manager',
-  'dependency-update',
-  'document-writing',
-  'engineering-terminology',
-  'security-update',
-  'translation-expertise',
-  'transparent-background',
   'web-browsing',
   'workspace-setup',
 ];
