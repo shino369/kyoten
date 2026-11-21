@@ -18,7 +18,7 @@ gate. Mainly designed for Claude Code, and also works for Codex, DSH, and Antigr
   - [Memory](#memory)
 - [Skills](#skills)
   - [Project-owned skills](#project-owned-skills)
-  - [Third-party skills](#third-party-skills)
+  - [External skills (`skills-lock.json`)](#external-skills-skills-lockjson)
   - [Managing skills](#managing-skills)
   - [Skill runtime prerequisites](#skill-runtime-prerequisites)
 - [Agents](#agents)
