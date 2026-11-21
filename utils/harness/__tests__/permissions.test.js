@@ -404,6 +404,8 @@ describe('guardDecision', () => {
   test.each([
     ['C:\\proj', '//?/c:/proj/.env.test'],
     ['\\\\?\\C:\\proj', 'C:\\proj\\.env.test'],
+    ['C:\\proj', '\\\\.\\C:\\proj\\.env.test'],
+    ['\\\\.\\C:\\proj', 'C:\\proj\\.env.test'],
   ])(
     'should match protected drive reads with root %s and path %s',
     (projectDir, file) => {

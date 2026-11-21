@@ -273,6 +273,8 @@ describe('AGY permission settings', () => {
     'pnpm run workspace:setup',
     'pnpm memory export',
     'pnpm run memory export',
+    'pnpm run-script memory export',
+    'pnpm run-script --silent workspace:setup',
     'pnpm  run  memory export',
     'pnpm --silent workspace:setup',
     'pnpm --silent run memory status',

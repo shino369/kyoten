@@ -78,7 +78,7 @@ export const AGY_WRITE_SETTINGS = JSON.stringify({
     deny: [
       ...AGY_SECRET_DENY,
       'write_file(.git/)',
-      `command(regex:^pnpm\\s+${AGY_PNPM_OPTIONS}(run\\s+${AGY_PNPM_OPTIONS})?["']?(workspace:setup|memory)["']?(\\s+.*)?$)`,
+      `command(regex:^pnpm\\s+${AGY_PNPM_OPTIONS}(run(?:-script)?\\s+${AGY_PNPM_OPTIONS})?["']?(workspace:setup|memory)["']?(\\s+.*)?$)`,
       'command(regex:^node utils/(?i:workspace-setup|memory/cli)\\.js( |$))',
       'command(regex:^pnpm\\b.*(\\s-[a-zA-Z]*[gC]|--global\\b|--dir\\b|--workspace-root\\b).*)',
       'command(regex:^git branch\\b.*(\\s-[a-zA-Z]*[dD]|--delete).*)',
