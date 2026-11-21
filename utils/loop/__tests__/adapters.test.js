@@ -1,9 +1,12 @@
 import { vi } from 'vitest';
 import {
   AGENTS,
+  AGY_READ_SETTINGS,
+  AGY_WRITE_SETTINGS,
   buildCommand,
   dshDirProblem,
   installHint,
+  parseAgyStreamJson,
   runAgent,
 } from '../adapters.js';
 
@@ -43,6 +46,24 @@ describe('buildCommand', () => {
       '.dsh/workspace.patch.yml',
       '-',
     ]);
+  });
+
+  test('should build the agy headless command with stream-json and write settings', () => {
+    expect(buildCommand({ agent: 'agy' })).toEqual({
+      agent: 'agy',
+      bin: 'agy',
+      args: [
+        '--input-format',
+        'stream-json',
+        '--output-format',
+        'stream-json',
+        '--disable-slash-commands',
+        '--mode',
+        'accept-edits',
+        '--settings',
+        AGY_WRITE_SETTINGS,
+      ],
+    });
   });
 
   test('should split --bin on whitespace and keep the adapter args', () => {
@@ -90,6 +111,15 @@ describe('buildCommand', () => {
       '.dsh/workspace.patch.yml',
       '-',
     ]);
+    expect(buildCommand({ agent: 'agy', mode: 'read' }).args).toEqual([
+      '--input-format',
+      'stream-json',
+      '--output-format',
+      'stream-json',
+      '--disable-slash-commands',
+      '--settings',
+      AGY_READ_SETTINGS,
+    ]);
   });
 
   test('should reject an unknown mode with a Fix line', () => {
@@ -129,8 +159,289 @@ describe('buildCommand', () => {
 
   test('should reject an unknown agent with a Fix line', () => {
     expect(() => buildCommand({ agent: 'opencode' })).toThrow(
-      /Fix: use --agent claude\|codex\|dsh/
+      /Fix: use --agent claude\|codex\|dsh\|agy/
     );
+  });
+});
+
+describe('AGY permission settings', () => {
+  /** @param {string[]} rules @param {string} cmd */
+  function matchesCommand(rules, cmd) {
+    return rules.some((rule) => {
+      if (rule === `command(${cmd})`) return true;
+      const m = /^command\(regex:(.*)\)$/.exec(rule);
+      return m ? new RegExp(m[1]).test(cmd) : false;
+    });
+  }
+
+  /** @param {string} raw @param {string} cmd */
+  function allowedCommand(raw, cmd) {
+    const { permissions } = JSON.parse(raw);
+    return (
+      matchesCommand(permissions.allow, cmd) &&
+      !matchesCommand(permissions.deny, cmd)
+    );
+  }
+
+  test('should grant workspace commands and include protected-path denies in write settings', () => {
+    const { permissions } = JSON.parse(AGY_WRITE_SETTINGS);
+    expect(permissions.allow).not.toContain('write_file(*)');
+    expect(permissions.allow).not.toContain('read_file(*)');
+    expect(permissions.deny).toEqual(
+      expect.arrayContaining([
+        'read_file(.env)',
+        'read_file(.env.local)',
+        'read_file(secrets/)',
+        'read_file(credentials.json)',
+        'read_file(~/.ssh)',
+        'read_file(~/.aws)',
+        'write_file(.git/)',
+      ])
+    );
+    for (const cmd of [
+      'pnpm check',
+      'pnpm test',
+      'pnpm test:coverage',
+      'pnpm test utils/task/__tests__/store.test.js',
+      'pnpm add -D foo --save-catalog-name=dev',
+      'pnpm task step s1 done -m "fix(agy): verified"',
+      'pnpm task verify',
+      'pnpm harness check',
+      'pnpm docs:cli --check',
+      'pnpm workspace:check',
+      'git status --short',
+      'git branch --show-current',
+      'git commit -m "feat(agy): add support"',
+      'node utils/task/cli.js status',
+      'mkdir -p src/new-dir',
+      'pwd',
+    ]) {
+      expect(allowedCommand(AGY_WRITE_SETTINGS, cmd)).toBe(true);
+    }
+    for (const cmd of [
+      'pnpm publish',
+      'pnpm -s publish',
+      'pnpm add -g foo',
+      'pnpm add --global foo',
+      'pnpm -g add foo',
+      'pnpm install -g pkg',
+      'pnpm exec rm -rf .',
+      'pnpm -r exec rm -rf ../main',
+      'pnpm -C . exec cat .env',
+      'pnpm dlx evil',
+      'pnpm --dir ../main check',
+      'pnpm --dir /abs/main format',
+      'pnpm format --dir /abs/main',
+      'pnpm check -C /abs/main',
+      'git branch -D main',
+      'git branch --delete main',
+      'git commit --no-verify -m x',
+      'git commit -nm x',
+      'git commit (Remove-Item README.md)',
+      'git commit -m "a\\" (Remove-Item x)"',
+      'git add -f .env',
+      'git diff --output=../main/AGENTS.md',
+      'git diff --no-index .env /dev/null',
+      'git push origin main',
+      'git status (Remove-Item README.md)',
+      'rm README.md',
+      'type .env',
+      'node utils/../../outside.js',
+      'git status && rm -rf .',
+      'echo bad > ../main/AGENTS.md',
+      'echo (Get-Content .env)',
+      'echo (Remove-Item -Force ../main/AGENTS.md)',
+      'mkdir ../outside',
+      'mkdir /abs/outside',
+      'mkdir C:\\outside',
+      'mkdir ~/outside',
+    ]) {
+      expect(allowedCommand(AGY_WRITE_SETTINGS, cmd)).toBe(false);
+    }
+  });
+
+  test.each(['pnpm workspace:setup', 'pnpm memory', 'pnpm memory export'])(
+    'should omit shared setup and memory grants in write settings (%s)',
+    (cmd) => {
+      const { permissions } = JSON.parse(AGY_WRITE_SETTINGS);
+      expect(matchesCommand(permissions.allow, cmd)).toBe(false);
+    }
+  );
+
+  test.each([
+    'pnpm workspace:setup',
+    'pnpm run workspace:setup',
+    'pnpm memory export',
+    'pnpm run memory export',
+    'pnpm run-script memory export',
+    'pnpm run-script --silent workspace:setup',
+    'pnpm  run  memory export',
+    'pnpm --silent workspace:setup',
+    'pnpm --silent run memory status',
+    'pnpm run --silent memory status',
+    'pnpm run --reporter silent memory status',
+    'pnpm --filter "workspace package" run --if-present workspace:setup',
+    'pnpm run "memory" status',
+    "pnpm run 'workspace:setup'",
+    'pnpm run --test-pattern "C:\\Program Files\\pnpm-store" memory status',
+    'pnpm run --test-pattern="C:\\Program Files\\pnpm-store" memory status',
+  ])(
+    'should explicitly deny shared pnpm commands in write settings (%s)',
+    (cmd) => {
+      const { permissions } = JSON.parse(AGY_WRITE_SETTINGS);
+      const regexDenies = permissions.deny.filter(
+        (/** @type {string} */ rule) => rule.startsWith('command(regex:')
+      );
+      expect(matchesCommand(regexDenies, cmd)).toBe(true);
+    }
+  );
+
+  test.each([
+    'pnpm run --silent workspace:check memory',
+    'pnpm run --test-pattern memory workspace:check',
+  ])(
+    'should leave other pnpm scripts outside the shared-script deny (%s)',
+    (cmd) => {
+      const { permissions } = JSON.parse(AGY_WRITE_SETTINGS);
+      expect(matchesCommand(permissions.deny, cmd)).toBe(false);
+    }
+  );
+
+  test.each([
+    'node utils/workspace-setup.js',
+    'node utils/memory/cli.js export',
+    'node utils/WORKSPACE-SETUP.js',
+    'node utils/MEMORY/CLI.js export',
+  ])(
+    'should deny the direct Node entries for shared setup and memory (%s)',
+    (cmd) => {
+      const { permissions } = JSON.parse(AGY_WRITE_SETTINGS);
+      expect(matchesCommand(permissions.deny, cmd)).toBe(true);
+    }
+  );
+
+  test('should include inspection grants and file write and protected-path denies in read settings', () => {
+    const { permissions } = JSON.parse(AGY_READ_SETTINGS);
+    expect(permissions.allow).not.toContain('write_file(*)');
+    expect(permissions.allow).not.toContain('read_file(*)');
+    expect(permissions.deny).toEqual(
+      expect.arrayContaining([
+        'write_file(*)',
+        'read_file(.env)',
+        'read_file(secrets/)',
+        'read_file(credentials.json)',
+        'read_file(~/.ssh)',
+        'read_file(~/.aws)',
+      ])
+    );
+    for (const cmd of [
+      'git status --short',
+      'git diff main...HEAD',
+      'git log -n 5 --oneline',
+      'git show HEAD:package.json',
+      'git branch --show-current',
+      'ls utils',
+      'pwd',
+      'node -v',
+    ]) {
+      expect(allowedCommand(AGY_READ_SETTINGS, cmd)).toBe(true);
+    }
+    for (const cmd of [
+      'git diff --output=AGENTS.md',
+      'git diff --no-index .env /dev/null',
+      'git diff -O .env',
+      'git branch -D main',
+      'pnpm lint -- --fix',
+      'pnpm test -- --outputFile=AGENTS.md',
+      'pnpm test -u',
+      'pnpm test --coverage',
+      'pnpm check',
+      'pnpm format',
+      'ls > AGENTS.md',
+      "git status && node -e \"require('fs').writeFileSync('x','1')\"",
+      'git status $(whoami)',
+      'git status (rm x)',
+    ]) {
+      expect(allowedCommand(AGY_READ_SETTINGS, cmd)).toBe(false);
+    }
+  });
+
+  test.each([
+    'pnpm test',
+    'pnpm test utils/loop/__tests__/adapters.test.js',
+    'pnpm lint',
+    'pnpm typecheck',
+    'pnpm format:check',
+    'pnpm workspace:check',
+    'pnpm harness check',
+    'pnpm docs:cli --check',
+    'pnpm skills:check',
+    'pnpm task status --json',
+    'pnpm tools show agy',
+  ])('should omit checkout script grants in read settings (%s)', (cmd) => {
+    const { permissions } = JSON.parse(AGY_READ_SETTINGS);
+    expect(matchesCommand(permissions.allow, cmd)).toBe(false);
+  });
+});
+
+describe('parseAgyStreamJson', () => {
+  test('should extract the last result response on success', () => {
+    const raw = [
+      'not json',
+      JSON.stringify({ event: 'init' }),
+      JSON.stringify({
+        event: 'result',
+        result: { status: 'SUCCESS', response: 'final answer' },
+      }),
+      '',
+    ].join('\n');
+    expect(parseAgyStreamJson(raw)).toEqual({
+      stdout: 'final answer',
+      failed: false,
+    });
+  });
+
+  test('should flag non-SUCCESS results and empty responses with denied_actions', () => {
+    expect(
+      parseAgyStreamJson(
+        JSON.stringify({
+          event: 'result',
+          result: { status: 'ERROR', response: 'boom' },
+        })
+      )
+    ).toEqual({ stdout: 'boom', failed: true });
+    expect(
+      parseAgyStreamJson(
+        JSON.stringify({
+          event: 'result',
+          result: {
+            status: 'SUCCESS',
+            response: '',
+            denied_actions: [{ action: 'command' }],
+          },
+        })
+      )
+    ).toEqual({ stdout: '', failed: true });
+    expect(
+      parseAgyStreamJson(
+        JSON.stringify({
+          event: 'result',
+          result: { status: 'SUCCESS' },
+        })
+      )
+    ).toEqual({ stdout: '', failed: false });
+  });
+
+  test('should fall back to raw output when there is no result event', () => {
+    expect(parseAgyStreamJson('plain error text')).toEqual({
+      stdout: 'plain error text',
+      failed: false,
+    });
+    const nullResult = JSON.stringify({ event: 'result', result: null });
+    expect(parseAgyStreamJson(nullResult)).toEqual({
+      stdout: nullResult,
+      failed: false,
+    });
   });
 });
 
@@ -210,6 +521,7 @@ describe('runAgent', () => {
       CODEX_THREAD_ID: 'cx-1',
       CODEX_SESSION_ID: 'cx-1',
       DSH_SESSION_ID: 'dsh-1',
+      ANTIGRAVITY_CONVERSATION_ID: 'agy-1',
     };
     runAgent({
       command,
@@ -299,6 +611,53 @@ describe('runAgent', () => {
     expect(result.output).toContain('ETIMEDOUT');
     expect(result.stdout).toBe('');
     expect(result.output).toContain('(stopped by SIGTERM; timeout 60s)');
+  });
+
+  test('should encode prompts and decode stream-json responses for agy', () => {
+    const agyCmd = buildCommand({ agent: 'agy', mode: 'read' });
+    const ndjson = `${JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: 'ok answer' } })}\n`;
+    const spawn = vi.fn(() => ({ status: 0, stdout: ndjson, stderr: '' }));
+    const ok = runAgent({
+      command: agyCmd,
+      cwd: '/wt',
+      prompt: 'review this',
+      timeoutMs: 5000,
+      env: {},
+      spawn,
+      now,
+    });
+    expect(spawn).toHaveBeenCalledWith(
+      'agy',
+      agyCmd.args,
+      expect.objectContaining({
+        input: `${JSON.stringify({ event: 'user', message: { content: 'review this' } })}\n`,
+      })
+    );
+    expect(ok).toMatchObject({ code: 0, stdout: 'ok answer' });
+
+    const denied = runAgent({
+      command: agyCmd,
+      cwd: '/wt',
+      prompt: 'run cmd',
+      timeoutMs: 5000,
+      env: {},
+      spawn: () => ({
+        status: 0,
+        stdout: JSON.stringify({
+          event: 'result',
+          result: {
+            status: 'SUCCESS',
+            response: '',
+            denied_actions: [{ action: 'command' }],
+          },
+        }),
+        stderr: 'auto-denied',
+      }),
+      now,
+    });
+    expect(denied.code).toBe(1);
+    expect(denied.stdout).toBe('');
+    expect(denied.output).toContain('auto-denied');
   });
 
   test('should throw a Fix line when the executable is missing', () => {

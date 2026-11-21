@@ -5,6 +5,9 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { vi } from 'vitest';
+import { sessionFile as memorySessionFile } from '#utils/memory/hook.js';
+import { readOpen } from '#utils/memory/queue.js';
+import { memoryDir } from '#utils/memory/store.js';
 import { readSession, writeSession } from '#utils/task/store.js';
 import { processHookInput, registryLine } from '../session_start.js';
 
@@ -205,6 +208,104 @@ describe('session_start processHookInput', () => {
     expect(context).toContain('[Task] No active task');
     expect(context).toContain('older-261116');
     expect(context).toContain('Injected on session startup');
+  });
+
+  test('should inject Antigravity injectSteps output and bind conversationId', () => {
+    makeTask('demo-261117');
+    fs.writeFileSync(path.join(root, 'tasks', '.active'), 'demo-261117\n');
+
+    const output = processHookInput(
+      { conversationId: 'agy-1' },
+      { rootDir: root, harness: 'agy', tools: () => null }
+    );
+
+    expect(output).toEqual({
+      injectSteps: [
+        {
+          systemMessage: {
+            systemMessage: expect.stringContaining('[Task] demo-261117'),
+          },
+        },
+      ],
+    });
+    expect(readSession(root, 'agy-1')).toMatchObject({
+      task: 'demo-261117',
+      engaged: false,
+    });
+  });
+
+  test.each([{}, { hookEventName: 'SessionStart' }])(
+    'should return both Antigravity startup contexts for %j',
+    (event) => {
+      const conversationId = 'ec33ebf9-0cba-4100-8142-c61503f6c587';
+      const dir = memoryDir(root);
+      const transcriptPath = path.join(root, 'transcript.jsonl');
+      fs.mkdirSync(dir);
+      fs.writeFileSync(transcriptPath, '');
+      makeTask('demo-261117');
+      fs.writeFileSync(path.join(root, 'tasks', '.active'), 'demo-261117\n');
+
+      const output = processHookInput(
+        { ...event, conversationId, transcriptPath, cwd: root },
+        { rootDir: root, harness: 'agy', tools: () => null }
+      );
+
+      expect(
+        output?.injectSteps.map((step) => step.systemMessage.systemMessage)
+      ).toEqual([
+        expect.stringContaining('[Task] demo-261117'),
+        expect.stringContaining('## Memory'),
+      ]);
+      expect(readOpen(dir)).toEqual([
+        expect.objectContaining({
+          session: conversationId,
+          transcript: transcriptPath,
+        }),
+      ]);
+    }
+  );
+
+  test('should return Antigravity startup memory when the task brief is empty', () => {
+    fs.mkdirSync(memoryDir(root));
+    const output = processHookInput(
+      { conversationId: 'agy-1' },
+      { rootDir: root, harness: 'agy', tools: () => null }
+    );
+    expect(output?.injectSteps).toEqual([
+      {
+        systemMessage: { systemMessage: expect.stringContaining('## Memory') },
+      },
+    ]);
+  });
+
+  test('should keep the Antigravity task brief if memory startup throws', () => {
+    const dir = path.dirname(memorySessionFile(memoryDir(root), 'agy-1'));
+    fs.mkdirSync(path.dirname(dir), { recursive: true });
+    fs.writeFileSync(dir, 'sessions path is a file');
+    makeTask('demo-261117');
+    fs.writeFileSync(path.join(root, 'tasks', '.active'), 'demo-261117\n');
+
+    const output = processHookInput(
+      { conversationId: 'agy-1' },
+      { rootDir: root, harness: 'agy', tools: () => null }
+    );
+    expect(output?.injectSteps).toEqual([
+      {
+        systemMessage: {
+          systemMessage: expect.stringContaining('[Task] demo-261117'),
+        },
+      },
+    ]);
+  });
+
+  test('should stay silent when neither Antigravity startup context is available', () => {
+    expect(
+      processHookInput(undefined, {
+        rootDir: root,
+        harness: 'agy',
+        tools: () => null,
+      })
+    ).toBeNull();
   });
 
   test('should report an unreadable task instead of failing', () => {

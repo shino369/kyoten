@@ -156,6 +156,103 @@ describe('task_loop processHookInput', () => {
     ).toBeNull();
   });
 
+  test('should adapt Stop inputs and outputs for Antigravity', () => {
+    const blockRun = vi.fn(() => ({
+      action: /** @type {const} */ ('block'),
+      reason: 'tests failed',
+    }));
+    expect(
+      processHookInput(
+        {
+          conversationId: 'agy-1',
+          terminationReason: 'NO_TOOL_CALL',
+          fullyIdle: true,
+        },
+        { rootDir: root, harness: 'agy', run: blockRun, deps: { env: {} } }
+      )
+    ).toEqual({ decision: 'continue', reason: 'tests failed' });
+    expect(blockRun).toHaveBeenCalledWith(
+      expect.objectContaining({ session: 'agy-1', pendingAgents: [] })
+    );
+
+    const idleRun = vi.fn(() => ({ action: /** @type {const} */ ('skip') }));
+    expect(
+      processHookInput(
+        { conversationId: 'agy-1', fullyIdle: false },
+        { rootDir: root, harness: 'agy', run: idleRun, deps: { env: {} } }
+      )
+    ).toEqual({ decision: 'allow' });
+    expect(idleRun).toHaveBeenCalledWith(
+      expect.objectContaining({ pendingAgents: ['background'] })
+    );
+
+    // Non-normal termination skips the loop and allows stopping.
+    const neverRun = vi.fn();
+    expect(
+      processHookInput(
+        { conversationId: 'agy-1', terminationReason: 'USER_CANCELED' },
+        { rootDir: root, harness: 'agy', run: neverRun }
+      )
+    ).toEqual({ decision: 'allow' });
+    expect(neverRun).not.toHaveBeenCalled();
+
+    // Errors fail open with an explicit allow.
+    expect(
+      processHookInput(
+        { conversationId: 'agy-1' },
+        {
+          rootDir: root,
+          harness: 'agy',
+          run: () => {
+            throw new Error('boom');
+          },
+        }
+      )
+    ).toEqual({ decision: 'allow' });
+  });
+
+  test('should run the bounded Antigravity Stop loop for model_stop', () => {
+    const session = 'agy-1';
+    const deps = {
+      rootDir: root,
+      env: { TASK_AGENT: 'tester', TASK_SESSION: session },
+      log: () => {},
+      git: () => ({ branch: 'feat/x', changed: 0, diffStat: null }),
+    };
+    taskCli({
+      argv: [
+        'new',
+        'demo',
+        '--goal',
+        'G',
+        '--verify',
+        'node -e "process.exit(3)"',
+      ],
+      deps,
+    });
+    taskCli({ argv: ['set', '--loop-max', '1'], deps });
+
+    const results = [false, true].map((continuationActive) =>
+      processHookInput(
+        {
+          conversationId: session,
+          terminationReason: 'model_stop',
+          fullyIdle: true,
+          continuationActive,
+        },
+        { rootDir: root, harness: 'agy', deps: { env: {}, git: deps.git } }
+      )
+    );
+
+    expect(results).toEqual([
+      {
+        decision: 'continue',
+        reason: expect.stringContaining('task loop iteration 1/1'),
+      },
+      { decision: 'allow' },
+    ]);
+  });
+
   test('should fail open when the loop throws', () => {
     const run = () => {
       throw new Error('broken state.json');
@@ -279,6 +376,60 @@ describe('task_loop processResetInput', () => {
     );
 
     expect(Date.now() - fs.statSync(file).mtimeMs).toBeLessThan(60_000);
+  });
+
+  test('should reset Antigravity loops only on invocationNum === 0', () => {
+    const reset = vi.fn(() => true);
+    expect(
+      processResetInput(
+        {
+          conversationId: 'agy-1',
+          lastUserInput: 'try again',
+          invocationNum: 1,
+        },
+        { rootDir: root, harness: 'agy', reset }
+      )
+    ).toBe(false);
+    expect(reset).not.toHaveBeenCalled();
+
+    expect(
+      processResetInput(
+        {
+          conversationId: 'agy-1',
+          lastUserInput: 'try again',
+          invocationNum: 0,
+        },
+        { rootDir: root, harness: 'agy', reset, deps: { env: {} } }
+      )
+    ).toBe(true);
+    expect(reset).toHaveBeenCalledWith({
+      deps: expect.objectContaining({
+        rootDir: root,
+        env: expect.objectContaining({ TASK_AGENT: 'agy' }),
+      }),
+      prompt: 'try again',
+      session: 'agy-1',
+    });
+    processResetInput(
+      {
+        conversationId: 'agy-1',
+        lastUserInput: 'try again',
+        invocationNum: 0,
+      },
+      {
+        rootDir: root,
+        harness: 'agy',
+        reset,
+        deps: { env: { TASK_AGENT: 'me' } },
+      }
+    );
+    expect(reset).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        deps: expect.objectContaining({
+          env: expect.objectContaining({ TASK_AGENT: 'me' }),
+        }),
+      })
+    );
   });
 
   test('should reset a real halted loop on a typed prompt', () => {

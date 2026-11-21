@@ -360,9 +360,23 @@ export function commandMatch(command, prefixes) {
 }
 
 const CASE_INSENSITIVE = new Set(['darwin', 'win32']);
+const DRIVE_ROOT = /^[A-Za-z]:(?=\/)/;
+const WINDOWS_ROOT = /^(?:[A-Za-z]:(?=\/)|\/\/[^/]+\/+[^/]+)/;
 
-/** @param {string} value */
-const toSlash = (value) => value.replace(/\\/g, '/');
+/**
+ * Use forward slashes and compare ordinary, extended-length (`\\?\`), and
+ * device (`\\.\`) Windows paths by their drive or UNC share path.
+ * @param {string} value
+ * @param {string} platform
+ */
+function toSlash(value, platform) {
+  const slashed = value.replace(/\\/g, '/');
+  return platform === 'win32'
+    ? slashed
+        .replace(/^\/\/[?.]\/UNC\//i, '//')
+        .replace(/^\/\/[?.]\/([A-Za-z]:\/)/, '$1')
+    : slashed;
+}
 
 /**
  * Whether an absolute path matches a Claude permission path pattern:
@@ -380,10 +394,14 @@ export function pathMatches(
   pattern,
   { projectDir, home, platform = process.platform }
 ) {
-  const anchored = pattern.startsWith('./')
-    ? `${toSlash(projectDir)}/${pattern.slice(2)}`
+  const anchor = pattern.startsWith('./')
+    ? projectDir
     : pattern.startsWith('~/')
-      ? `${toSlash(home)}/${pattern.slice(2)}`
+      ? home
+      : null;
+  const anchored =
+    anchor !== null
+      ? `${toSlash(anchor, platform).replace(/\/+$/, '')}/${pattern.slice(2)}`
       : pattern.startsWith('//')
         ? pattern.slice(2)
         : pattern;
@@ -400,37 +418,51 @@ export function pathMatches(
     )
     .join('');
   const flags = CASE_INSENSITIVE.has(platform) ? 'i' : '';
-  return new RegExp(`^${source}$`, flags).test(toSlash(file));
+  return new RegExp(`^${source}$`, flags).test(toSlash(file, platform));
 }
 
 /**
- * A path as an absolute, forward-slash path: absolute ones (`/x`, `C:/x`) as
- * they are, relative ones against `cwd`. Pure string work, so a POSIX path
- * stays POSIX on Windows and the reverse.
+ * Resolve relative, absolute, and home-relative paths with forward slashes.
+ * Collapse dot segments and repeated separators below the root, preserving a
+ * POSIX root, drive, or Windows UNC server and share.
  *
  * @param {string} cwd
  * @param {string} file
  * @param {string} home a leading `~/` means this
+ * @param {string} platform
  */
-function absolute(cwd, file, home) {
-  const f = file.startsWith('~/')
-    ? `${toSlash(home)}/${toSlash(file).slice(2)}`
-    : toSlash(file);
-  if (f.startsWith('/') || /^[A-Za-z]:\//.test(f)) return f;
-  const parts = `${toSlash(cwd)}/${f}`.split('/');
+function absolute(cwd, file, home, platform) {
+  const f = toSlash(file, platform);
+  const expanded = f.startsWith('~/')
+    ? `${toSlash(home, platform)}/${f.slice(2)}`
+    : f;
+  const cwdSlash = toSlash(cwd, platform);
+  const rootPattern = platform === 'win32' ? WINDOWS_ROOT : DRIVE_ROOT;
+  const fileRoot = rootPattern.exec(expanded)?.[0];
+  const root = fileRoot ?? rootPattern.exec(cwdSlash)?.[0] ?? '';
+  const full = fileRoot
+    ? expanded
+    : expanded.startsWith('/')
+      ? `${root}${expanded}`
+      : `${cwdSlash}/${expanded}`;
+  const body = full.slice(root.length);
   /** @type {string[]} */
   const out = [];
-  for (const part of parts) {
-    if (part === '..') out.pop();
-    else if (part !== '.' && (part !== '' || out.length === 0)) out.push(part);
+  for (const part of body.split('/')) {
+    if (part === '..') {
+      if (out.at(-1) !== '') out.pop();
+    } else if (part !== '.' && (part !== '' || out.length === 0)) {
+      out.push(part);
+    }
   }
-  return out.join('/');
+  const normalized = out.join('/') || '/';
+  return `${root.replace(/^(\/\/[^/]+)\/+/, '$1/')}${normalized}`;
 }
 
 /**
  * What the guard hook says about a tool call: deny an edit or a read of a
- * protected path; in DSH also deny or ask for a shell command (Codex has its
- * own command rules). Null to let it through.
+ * protected path; in DSH and Antigravity also deny or ask for a shell command
+ * (Codex has its own command rules). Null to let it through.
  *
  * @param {Record<string, any>} input PreToolUse payload
  * @param {Permissions} permissions
@@ -456,11 +488,11 @@ export function guardDecision(
     { projectDir: realpath(projectDir), home: realpath(home), platform },
   ];
   const base = typeof input.cwd === 'string' ? input.cwd : projectDir;
-  const cwd = event.dir ? absolute(base, event.dir, home) : base;
+  const cwd = event.dir ? absolute(base, event.dir, home, platform) : base;
   /** @param {string[]} patterns @param {string} tool */
   const protectedFile = (patterns, tool) => {
     for (const file of event.files) {
-      const full = absolute(cwd, file, home);
+      const full = absolute(cwd, file, home, platform);
       const targets = [full, realpath(full)];
       const pattern = patterns.find((p) =>
         wheres.some((where) =>
@@ -480,7 +512,8 @@ export function guardDecision(
     return protectedFile(permissions.deny.edit, 'Edit');
   if (event.kind === 'read')
     return protectedFile(permissions.deny.read, 'Read');
-  if (event.kind !== 'shell' || harness !== 'dsh') return null;
+  if (event.kind !== 'shell' || (harness !== 'dsh' && harness !== 'agy'))
+    return null;
   const denied = commandMatch(event.command, permissions.deny.commands);
   if (denied) return { decision: 'deny', reason: justification(denied) };
   return commandMatch(event.command, permissions.ask.commands)
