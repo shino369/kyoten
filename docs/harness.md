@@ -104,9 +104,10 @@ Notes:
   `transcriptPath`, `hookEventName`, `lastUserInput`, `toolCall: { name, args }`) and runs hooks
   with cwd `.agents/`, so generated commands use `node ../<script> --harness agy`.
   The configured `SessionStart` handler uses its registered event name and returns the task brief
-  and memory context in a single `injectSteps` response. `Stop` accepts the CLI's `NO_TOOL_CALL`
-  and the public documentation's `model_stop` as normal completion. The task loop limits retries
-  across continuations.
+  and memory context in a single `injectSteps` response (without `systemMessage.metadata`, because
+  `agy` 1.5.14 panics when a `systemMessage` carries a non-empty `metadata` map). `Stop` accepts
+  the CLI's `NO_TOOL_CALL` and the public documentation's `model_stop` as normal completion. The
+  task loop limits retries across continuations.
   `PreInvocation` resets `invocationNum` to `0` at the start of every user turn, so prompt-scoped
   hooks (`context_monitor`, `task_loop --reset`, memory prompt recall) act only on `invocationNum === 0`.
   Antigravity does not pass a subagent's role name in hook payloads, so clean-context enforcement

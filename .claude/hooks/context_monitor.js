@@ -186,12 +186,7 @@ export function processHookInput(
   if (!message) return null;
 
   if (harness === 'agy') {
-    return /** @type {any} */ (
-      agyInjectOutput(
-        message,
-        usagePct >= THRESHOLDS.warn ? message : undefined
-      )
-    );
+    return /** @type {any} */ (agyInjectOutput(message));
   }
 
   /** @type {StandardHookOutput} */

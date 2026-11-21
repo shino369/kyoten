@@ -37,7 +37,7 @@ export const TAIL_CHUNK_BYTES = 256 * 1024;
 /**
  * @typedef {typeof HARNESSES[number]} Harness
  * @typedef {{ kind: 'shell' | 'edit' | 'read' | 'other', name: string, command: string, files: string[], dir?: string }} ToolEvent
- * @typedef {{ injectSteps: { systemMessage: { systemMessage: string, metadata?: { user_markdown: string } } }[] }} AgyInjectOutput
+ * @typedef {{ injectSteps: { systemMessage: { systemMessage: string } }[] }} AgyInjectOutput
  */
 
 const SHELL_TOOLS = new Set(['Bash', 'bash', 'pwsh', 'run_command']);
@@ -195,25 +195,17 @@ export function normalizeHookInput(input, harness = 'claude') {
 
 /**
  * Build an Antigravity `SessionStart` / `PreInvocation` / `PostInvocation`
- * step-injection payload. When `userMarkdown` is given, the UI renders it
- * inline alongside the system message.
+ * step-injection payload. Omits `systemMessage.metadata` (`user_markdown`):
+ * agy 1.5.14 panics in `ScrubInternalFields` (`type mismatch: cannot convert
+ * string to message`) when `metadata` is non-empty, dropping the entire hook
+ * output.
  *
  * @param {string} text
- * @param {string} [userMarkdown]
  * @returns {AgyInjectOutput}
  */
-export function agyInjectOutput(text, userMarkdown) {
+export function agyInjectOutput(text) {
   return {
-    injectSteps: [
-      {
-        systemMessage: {
-          systemMessage: text,
-          ...(userMarkdown
-            ? { metadata: { user_markdown: userMarkdown } }
-            : {}),
-        },
-      },
-    ],
+    injectSteps: [{ systemMessage: { systemMessage: text } }],
   };
 }
 
