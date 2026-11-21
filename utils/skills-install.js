@@ -37,17 +37,18 @@ export const ROOT_DIR = path.resolve(
 
 /**
  * @param {{ source?: string }} entry
- * @param {string} name
+ * @param {string | string[]} names
  * @returns {string[]}
  */
-export function buildInstallArgs(entry, name) {
+export function buildInstallArgs(entry, names) {
+  const skillNames = Array.isArray(names) ? names : [names];
   return [
     'dlx',
     'skills',
     'add',
     entry.source ?? '',
     '--skill',
-    name,
+    ...skillNames,
     '--agent',
     ...INSTALL_AGENTS,
     '-y',
@@ -106,6 +107,8 @@ export async function installSkills({
   }
 
   let failures = 0;
+  /** @type {Map<string, string[]>} */
+  const bySource = new Map();
 
   for (const name of names) {
     const entry = lock.skills[name];
@@ -121,20 +124,30 @@ export async function installSkills({
       continue;
     }
 
-    log(`Installing ${name}...`);
+    const group = bySource.get(entry.source) ?? [];
+    group.push(name);
+    bySource.set(entry.source, group);
+  }
+
+  for (const [source, group] of bySource) {
+    log(`Installing ${group.join(', ')} (${source})...`);
     // pnpm is a .cmd shim on Windows, which Node only runs through a shell;
     // the values above are validated, so no shell is used elsewhere.
-    const result = spawn('pnpm', buildInstallArgs(entry, name), {
+    const result = spawn('pnpm', buildInstallArgs({ source }, group), {
       cwd: rootDir,
       stdio: 'inherit',
       shell: platform === 'win32',
     });
 
     if (result.status !== 0) {
-      log(`✗ ${name} failed (exit ${result.status ?? 'unknown'})`);
-      failures++;
+      for (const name of group) {
+        log(`✗ ${name} failed (exit ${result.status ?? 'unknown'})`);
+        failures++;
+      }
     } else {
-      log(`✓ ${name}`);
+      for (const name of group) {
+        log(`✓ ${name}`);
+      }
     }
   }
 

@@ -69,6 +69,24 @@ describe('buildInstallArgs', () => {
     ]);
   });
 
+  test('builds the skills add command for multiple skills from one source', () => {
+    expect(
+      buildInstallArgs({ source: 'owner/repo' }, ['alpha', 'beta'])
+    ).toEqual([
+      'dlx',
+      'skills',
+      'add',
+      'owner/repo',
+      '--skill',
+      'alpha',
+      'beta',
+      '--agent',
+      'claude-code',
+      'codex',
+      '-y',
+    ]);
+  });
+
   test('falls back to an empty source', () => {
     expect(buildInstallArgs({}, 'alpha')[3]).toBe('');
   });
@@ -116,6 +134,81 @@ describe('installSkills', () => {
     expect(calls[0].args).toContain('owner/a');
     expect(calls[1].args).toContain('owner/b');
     expect(lines).toContain('Installed 2 skill(s).');
+  });
+
+  test('batches skills from the same source into a single skills add call', async () => {
+    const root = await makeTempDir();
+    const lockPath = await writeLock(root, {
+      alpha: { source: 'owner/shared' },
+      beta: { source: 'owner/other' },
+      gamma: { source: 'owner/shared' },
+    });
+    const { calls, spawn } = makeSpawn(0);
+    /** @type {string[]} */
+    const lines = [];
+
+    const code = await installSkills({
+      rootDir: root,
+      lockPath,
+      spawn,
+      log: (line) => lines.push(line),
+    });
+
+    expect(code).toBe(0);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].args).toEqual([
+      'dlx',
+      'skills',
+      'add',
+      'owner/shared',
+      '--skill',
+      'alpha',
+      'gamma',
+      '--agent',
+      'claude-code',
+      'codex',
+      '-y',
+    ]);
+    expect(calls[1].args).toEqual([
+      'dlx',
+      'skills',
+      'add',
+      'owner/other',
+      '--skill',
+      'beta',
+      '--agent',
+      'claude-code',
+      'codex',
+      '-y',
+    ]);
+    expect(lines).toContain('✓ alpha');
+    expect(lines).toContain('✓ gamma');
+    expect(lines).toContain('✓ beta');
+    expect(lines).toContain('Installed 3 skill(s).');
+  });
+
+  test('counts every skill in a failed batch', async () => {
+    const root = await makeTempDir();
+    const lockPath = await writeLock(root, {
+      alpha: { source: 'owner/shared' },
+      gamma: { source: 'owner/shared' },
+    });
+    const { calls, spawn } = makeSpawn(1);
+    /** @type {string[]} */
+    const lines = [];
+
+    const code = await installSkills({
+      rootDir: root,
+      lockPath,
+      spawn,
+      log: (line) => lines.push(line),
+    });
+
+    expect(code).toBe(1);
+    expect(calls).toHaveLength(1);
+    expect(lines).toContain('✗ alpha failed (exit 1)');
+    expect(lines).toContain('✗ gamma failed (exit 1)');
+    expect(lines).toContain('2 of 2 skill(s) failed.');
   });
 
   test('should spawn without a shell outside Windows', async () => {
