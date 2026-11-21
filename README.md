@@ -168,22 +168,28 @@ command. Agent rules: `AGENTS.md` §13; how it works: `docs/harness.md`.
 
 ### Project-owned skills
 
+| Skill             | What it does                                                                  |
+| ----------------- | ----------------------------------------------------------------------------- |
+| `workspace-setup` | Initialise or repair this workspace (deps, skills, links, hooks, memory).     |
+| `context-manager` | Context-degradation prevention and recovery alongside `.claude/hooks/`.       |
+| `web-browsing`    | Tool selection and workflows for web interaction, real-browser sessions, e2e. |
+
+### External skills (`skills-lock.json`)
+
+These are not committed. Install the recommended set with `pnpm skills:install`; each skill is
+installed locally into the git-ignored `.agents/skills/`. Sources and hashes are pinned in
+`skills-lock.json`; each upstream repository ships its own license.
+
+#### Kyoten Skills ([shino369/kyoten-skills](https://github.com/shino369/kyoten-skills), MIT)
+
 | Skill                     | What it does                                                                     |
 | ------------------------- | -------------------------------------------------------------------------------- |
+| `dependency-update`       | Dependabot-style pnpm updates with `analyze_deps.mjs`.                           |
+| `security-update`         | CVE and audit patching with release-age checks.                                  |
+| `transparent-background`  | Flat-background image → transparent PNG with clean edges; specks and recolour.   |
 | `translation-expertise`   | English ↔ Japanese ↔ Traditional Chinese translation methodology and references. |
 | `engineering-terminology` | Trilingual technical glossaries across six engineering domains.                  |
 | `document-writing`        | Document conventions and rhetorical patterns for English, Japanese, and Chinese. |
-| `context-manager`         | Context-degradation prevention and recovery.                                     |
-| `dependency-update`       | Dependabot-style pnpm updates with `analyze_deps.mjs`.                           |
-| `security-update`         | CVE and audit patching with release-age checks.                                  |
-| `web-browsing`            | Tool selection and workflows for web interaction, real-browser sessions, e2e.    |
-| `transparent-background`  | Flat-background image → transparent PNG with clean edges; specks and recolour.   |
-
-### Third-party skills
-
-These are not committed. Install the recommended set with `pnpm skills:install`; each skill is
-installed locally into the git-ignored `.agents/skills/`. All credit belongs to the original authors.
-Sources and hashes are pinned in `skills-lock.json`; each upstream repository ships its own license.
 
 #### Browser & Web
 
