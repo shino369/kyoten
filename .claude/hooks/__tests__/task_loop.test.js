@@ -211,6 +211,48 @@ describe('task_loop processHookInput', () => {
     ).toEqual({ decision: 'allow' });
   });
 
+  test('should run the bounded Antigravity Stop loop for model_stop', () => {
+    const session = 'agy-1';
+    const deps = {
+      rootDir: root,
+      env: { TASK_AGENT: 'tester', TASK_SESSION: session },
+      log: () => {},
+      git: () => ({ branch: 'feat/x', changed: 0, diffStat: null }),
+    };
+    taskCli({
+      argv: [
+        'new',
+        'demo',
+        '--goal',
+        'G',
+        '--verify',
+        'node -e "process.exit(3)"',
+      ],
+      deps,
+    });
+    taskCli({ argv: ['set', '--loop-max', '1'], deps });
+
+    const results = [false, true].map((continuationActive) =>
+      processHookInput(
+        {
+          conversationId: session,
+          terminationReason: 'model_stop',
+          fullyIdle: true,
+          continuationActive,
+        },
+        { rootDir: root, harness: 'agy', deps: { env: {}, git: deps.git } }
+      )
+    );
+
+    expect(results).toEqual([
+      {
+        decision: 'continue',
+        reason: expect.stringContaining('task loop iteration 1/1'),
+      },
+      { decision: 'allow' },
+    ]);
+  });
+
   test('should fail open when the loop throws', () => {
     const run = () => {
       throw new Error('broken state.json');

@@ -37,7 +37,7 @@ export const TAIL_CHUNK_BYTES = 256 * 1024;
 /**
  * @typedef {typeof HARNESSES[number]} Harness
  * @typedef {{ kind: 'shell' | 'edit' | 'read' | 'other', name: string, command: string, files: string[], dir?: string }} ToolEvent
- * @typedef {{ injectSteps: [{ systemMessage: { systemMessage: string, metadata?: { user_markdown: string } } }] }} AgyInjectOutput
+ * @typedef {{ injectSteps: { systemMessage: { systemMessage: string, metadata?: { user_markdown: string } } }[] }} AgyInjectOutput
  */
 
 const SHELL_TOOLS = new Set(['Bash', 'bash', 'pwsh', 'run_command']);

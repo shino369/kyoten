@@ -269,6 +269,43 @@ describe('AGY permission settings', () => {
   );
 
   test.each([
+    'pnpm workspace:setup',
+    'pnpm run workspace:setup',
+    'pnpm memory export',
+    'pnpm run memory export',
+    'pnpm  run  memory export',
+    'pnpm --silent workspace:setup',
+    'pnpm --silent run memory status',
+    'pnpm run --silent memory status',
+    'pnpm run --reporter silent memory status',
+    'pnpm --filter "workspace package" run --if-present workspace:setup',
+    'pnpm run "memory" status',
+    "pnpm run 'workspace:setup'",
+    'pnpm run --test-pattern "C:\\Program Files\\pnpm-store" memory status',
+    'pnpm run --test-pattern="C:\\Program Files\\pnpm-store" memory status',
+  ])(
+    'should explicitly deny shared pnpm commands in write settings (%s)',
+    (cmd) => {
+      const { permissions } = JSON.parse(AGY_WRITE_SETTINGS);
+      const regexDenies = permissions.deny.filter(
+        (/** @type {string} */ rule) => rule.startsWith('command(regex:')
+      );
+      expect(matchesCommand(regexDenies, cmd)).toBe(true);
+    }
+  );
+
+  test.each([
+    'pnpm run --silent workspace:check memory',
+    'pnpm run --test-pattern memory workspace:check',
+  ])(
+    'should leave other pnpm scripts outside the shared-script deny (%s)',
+    (cmd) => {
+      const { permissions } = JSON.parse(AGY_WRITE_SETTINGS);
+      expect(matchesCommand(permissions.deny, cmd)).toBe(false);
+    }
+  );
+
+  test.each([
     'node utils/workspace-setup.js',
     'node utils/memory/cli.js export',
     'node utils/WORKSPACE-SETUP.js',

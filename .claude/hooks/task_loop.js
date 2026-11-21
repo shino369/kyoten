@@ -31,8 +31,10 @@ import { pendingReviewAgents } from '#utils/task/quality.js';
 import { touchSession } from '#utils/task/store.js';
 import { ROOT_DIR } from '#utils/workspace-config.js';
 
+const AGY_NORMAL_STOP_REASONS = new Set(['NO_TOOL_CALL', 'model_stop']);
+
 /**
- * @typedef {{ prompt?: unknown, lastUserInput?: unknown, session_id?: string, conversationId?: string, background_tasks?: unknown, terminationReason?: string, fullyIdle?: boolean, invocationNum?: number }} HookInput
+ * @typedef {{ prompt?: unknown, lastUserInput?: unknown, session_id?: string, conversationId?: string, background_tasks?: unknown, terminationReason?: string, fullyIdle?: boolean, continuationActive?: boolean, invocationNum?: number }} HookInput
  * @typedef {{ decision?: 'block' | 'continue' | 'allow', reason?: string, systemMessage?: string }} HookOutput
  * @typedef {Partial<import('#utils/task/deps.js').Deps>} DepsOverrides
  */
@@ -63,7 +65,7 @@ export function processHookInput(
   if (
     harness === 'agy' &&
     normalized.terminationReason &&
-    normalized.terminationReason !== 'NO_TOOL_CALL'
+    !AGY_NORMAL_STOP_REASONS.has(normalized.terminationReason)
   ) {
     return agyAllow;
   }

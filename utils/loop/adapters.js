@@ -29,6 +29,17 @@ const AGY_SAFE_ARGS = '[^;&|<>`$()\\r\\n]*';
  */
 const AGY_QUOTED_SAFE =
   '("[^;&|<>`$\\\\\\r\\n"]*"|\'[^;&|<>`$\\r\\n\']*\'|[^;&|<>`$()\\r\\n\\s"\']+)';
+/** PNPM options that can consume a separate value before a script name. */
+const AGY_PNPM_VALUE_FLAGS =
+  '(-F|--(store-dir|state-dir|npmrc-auth-file|userconfig|workspace-packages|registry|' +
+  'https?-proxy|no-proxy|reporter|loglevel|filter(-prod)?|test-pattern|' +
+  'changed-files-ignore-pattern|workspace-concurrency))';
+const AGY_PNPM_SWITCHES =
+  '(-[hrswy]+|--(aggregate-output|color|dry-run|help|if-present|ignore-workspace|' +
+  'json|no-color|no-progress|parallel|recursive|reverse|sequential|silent|' +
+  'stream|use-stderr|workspace-root|yes|(no-)?(fail-if-no-match|include-workspace-root|sort)))';
+const AGY_PNPM_OPTION_VALUE = `("[^"\\r\\n]*"|'[^'\\r\\n]*'|[^\\s"']+)`;
+const AGY_PNPM_OPTIONS = `((--|${AGY_PNPM_SWITCHES}|--[\\w.-]+=${AGY_PNPM_OPTION_VALUE}|${AGY_PNPM_VALUE_FLAGS}\\s+${AGY_PNPM_OPTION_VALUE})\\s+)*`;
 /** Relative JS path inside repo dirs with no `..` traversal or shell meta. */
 const AGY_SCRIPT_PATH =
   '[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*(\\.[A-Za-z0-9_-]+)*\\.m?js';
@@ -67,6 +78,7 @@ export const AGY_WRITE_SETTINGS = JSON.stringify({
     deny: [
       ...AGY_SECRET_DENY,
       'write_file(.git/)',
+      `command(regex:^pnpm\\s+${AGY_PNPM_OPTIONS}(run\\s+${AGY_PNPM_OPTIONS})?["']?(workspace:setup|memory)["']?(\\s+.*)?$)`,
       'command(regex:^node utils/(?i:workspace-setup|memory/cli)\\.js( |$))',
       'command(regex:^pnpm\\b.*(\\s-[a-zA-Z]*[gC]|--global\\b|--dir\\b|--workspace-root\\b).*)',
       'command(regex:^git branch\\b.*(\\s-[a-zA-Z]*[dD]|--delete).*)',

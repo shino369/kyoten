@@ -374,6 +374,54 @@ describe('guardDecision', () => {
     ).toBeNull();
   });
 
+  test('should deny protected Codex patches and DSH edits on extended-length drives', () => {
+    const file = '\\\\?\\C:\\proj\\secrets\\sample.txt';
+    const options = {
+      projectDir: 'C:\\proj',
+      home: 'C:\\Users\\me',
+      platform: 'win32',
+    };
+
+    const codex = guardDecision(
+      {
+        tool_name: 'apply_patch',
+        tool_input: {
+          input: '*** Begin Patch\n*** Add File: ' + file + '\n*** End Patch',
+        },
+      },
+      PERMS,
+      { ...options, harness: 'codex' }
+    );
+    const dsh = guardDecision(
+      { tool_name: 'edit', tool_input: { file_path: file } },
+      PERMS,
+      { ...options, harness: 'dsh' }
+    );
+
+    expect([codex?.decision, dsh?.decision]).toEqual(['deny', 'deny']);
+  });
+
+  test.each([
+    ['C:\\proj', '//?/c:/proj/.env.test'],
+    ['\\\\?\\C:\\proj', 'C:\\proj\\.env.test'],
+  ])(
+    'should match protected drive reads with root %s and path %s',
+    (projectDir, file) => {
+      expect(
+        guardDecision(
+          { tool_name: 'read', tool_input: { file_path: file } },
+          PERMS,
+          {
+            harness: 'dsh',
+            projectDir,
+            home: 'C:\\Users\\me',
+            platform: 'win32',
+          }
+        )?.decision
+      ).toBe('deny');
+    }
+  );
+
   test('should resolve . and .. and doubled slashes in relative, absolute, Windows, and home paths', () => {
     for (const file of [
       './secrets/a',

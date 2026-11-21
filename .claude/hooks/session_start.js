@@ -16,6 +16,7 @@ import {
   normalizeHookInput,
   parseHarness,
 } from '#utils/harness/input.js';
+import { handleHook as handleMemoryHook } from '#utils/memory/hook.js';
 import { runIfMain } from '#utils/module-runner.js';
 import { sessionBrief } from '#utils/task/cli.js';
 import { defaultDeps } from '#utils/task/deps.js';
@@ -31,7 +32,7 @@ import { readRegistry } from '#utils/tools/registry.js';
 import { ROOT_DIR } from '#utils/workspace-config.js';
 
 /**
- * @typedef {{ source?: string, session_id?: string, conversationId?: string }} HookInput
+ * @typedef {{ source?: string, session_id?: string, conversationId?: string, hookEventName?: string, transcriptPath?: string, cwd?: string }} HookInput
  * @typedef {{ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: string } }} StandardHookOutput
  * @typedef {StandardHookOutput | import('#utils/harness/input.js').AgyInjectOutput} HookOutput
  */
@@ -62,7 +63,6 @@ export function processHookInput(
     text = `[Task] Could not read the active task — ${error}`;
   }
   const toolText = tools(rootDir);
-  if (!text && !toolText) return null;
 
   const source = normalized.source ?? 'startup';
   const parts = [];
@@ -75,16 +75,31 @@ export function processHookInput(
     );
   }
   if (toolText) parts.push(toolText);
-  return /** @type {any} */ (
-    harness === 'agy'
-      ? agyInjectOutput(parts.join('\n'))
-      : {
-          hookSpecificOutput: {
-            hookEventName: 'SessionStart',
-            additionalContext: parts.join('\n'),
-          },
-        }
-  );
+  if (harness === 'agy') {
+    /** @type {import('#utils/harness/input.js').AgyInjectOutput['injectSteps']} */
+    const injectSteps = parts.length
+      ? agyInjectOutput(parts.join('\n')).injectSteps
+      : [];
+    try {
+      // The configured command already identifies this event. Include both
+      // startup contexts in its response, including when stdin omits the name.
+      const memory = handleMemoryHook(
+        { ...normalized, hook_event_name: 'SessionStart' },
+        { harness: 'agy', rootDir }
+      );
+      if (memory) injectSteps.push(...memory.injectSteps);
+    } catch {
+      // The task brief is still useful if a memory file is unreadable.
+    }
+    return /** @type {any} */ (injectSteps.length ? { injectSteps } : null);
+  }
+  if (!parts.length) return null;
+  return /** @type {any} */ ({
+    hookSpecificOutput: {
+      hookEventName: 'SessionStart',
+      additionalContext: parts.join('\n'),
+    },
+  });
 }
 
 /**

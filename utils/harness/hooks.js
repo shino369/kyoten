@@ -46,7 +46,9 @@ export const HOOKS = [
     claude: [{ event: 'SessionStart', matcher: SESSION_SOURCES }],
     codex: [{ event: 'SessionStart', matcher: SESSION_SOURCES }],
     dsh: [{ event: 'SessionStart', matcher: SESSION_SOURCES }],
-    agy: [{ event: 'SessionStart' }],
+    // The combined handler can spend 15 seconds on three Git queries and
+    // also needs the former stand-alone memory hook's 5-second budget.
+    agy: [{ event: 'SessionStart', timeout: 20 }],
   },
   {
     id: 'memory',
@@ -78,12 +80,8 @@ export const HOOKS = [
     // Antigravity: PreInvocation (invocationNum === 0) is per-turn prompt recall;
     // PostInvocation inspects failed run_command steps in the transcript. No
     // PreToolUse (allow reasons are not shown to the model) and no SessionEnd
-    // (SessionStart catch-up queues idle transcripts for extraction).
-    agy: [
-      { event: 'SessionStart' },
-      { event: 'PreInvocation' },
-      { event: 'PostInvocation' },
-    ],
+    // (task-brief runs SessionStart catch-up for idle transcripts).
+    agy: [{ event: 'PreInvocation' }, { event: 'PostInvocation' }],
   },
   {
     id: 'guard',

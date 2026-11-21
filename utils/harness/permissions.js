@@ -364,14 +364,17 @@ const DRIVE_ROOT = /^[A-Za-z]:(?=\/)/;
 const WINDOWS_ROOT = /^(?:[A-Za-z]:(?=\/)|\/\/[^/]+\/+[^/]+)/;
 
 /**
- * Use forward slashes and compare both Windows UNC forms by their share path.
+ * Use forward slashes and compare ordinary and extended Windows paths by
+ * their drive or UNC share path.
  * @param {string} value
  * @param {string} platform
  */
 function toSlash(value, platform) {
   const slashed = value.replace(/\\/g, '/');
   return platform === 'win32'
-    ? slashed.replace(/^\/\/\?\/UNC\//i, '//')
+    ? slashed
+        .replace(/^\/\/\?\/UNC\//i, '//')
+        .replace(/^\/\/\?\/([A-Za-z]:\/)/, '$1')
     : slashed;
 }
 
