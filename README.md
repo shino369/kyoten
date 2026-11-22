@@ -3,15 +3,29 @@
 [![Test CI](https://github.com/shino369/kyoten/actions/workflows/test.yml/badge.svg)](https://github.com/shino369/kyoten/actions/workflows/test.yml)
 [![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](./LICENSE)
 
-Kyoten (拠点) is a supercharged personal workspace for programming, documentation, research, translation, and
-generative-AI work. It packages reusable rules, subagents, skills, hooks, and a repeatable quality
-gate. Mainly designed for Claude Code, and also works for Codex, DSH, and Antigravity CLI (`agy`).
+Kyoten (拠点, "base of operations") is a home base for coding agents: one workspace for
+programming, documentation, research, translation, and generative-AI work, with shared rules, tasks
+that survive sessions, memory, skills, review roles, hooks, and a repeatable quality gate. Mainly
+designed for Claude Code, and also works for Codex, DSH (the DeepSeek harness), and Antigravity CLI
+(`agy`).
+
+Use it as a clone, or start any agent in it from anywhere with the `kyoten` launcher, no clone
+needed:
+
+```bash
+npx kyoten            # Claude Code
+npx kyoten codex      # Codex
+npx kyoten dsh        # DeepSeek harness (dsh web)
+npx kyoten dscc       # Claude Code on the DeepSeek API
+npx kyoten agy        # Antigravity CLI
+```
 
 ## Table of Contents
 
 - [Overview](#overview)
 - [Requirements](#requirements)
 - [Getting Started](#getting-started)
+- [The kyoten launcher](#the-kyoten-launcher)
 - [CLI Reference](docs/cli.md)
 - [Repository Layout](#repository-layout)
   - [Tasks](#tasks)
@@ -36,9 +50,9 @@ gate. Mainly designed for Claude Code, and also works for Codex, DSH, and Antigr
 
 ## Overview
 
-This workspace keeps the Claude Code setup in one repository:
+This workspace keeps the whole agent setup in one repository:
 
-- `AGENTS.md` — canonical instructions for every agent harness (Claude Code, Codex, DeepSeek harnesses, …)
+- `AGENTS.md` — canonical instructions for every agent harness (Claude Code, Codex, DSH, Antigravity, …)
 - `CLAUDE.md` — imports `AGENTS.md` and adds Claude-Code-only notes
 - `.agents/skills/` — skills (project-owned ones tracked; third-party ones from skills.sh git-ignored)
 - `.claude/skills/` — generated links into `.agents/skills/` for Claude Code (git-ignored)
@@ -46,6 +60,8 @@ This workspace keeps the Claude Code setup in one repository:
 - `.claude/agents/` — role prompts / subagents
 - `.claude/hooks/` — task resume brief, context monitor, audit logger, auto-formatter (Claude Code only)
 - `utils/task/` + `templates/task/` — the `pnpm task` CLI and task templates (every harness)
+- `utils/memory/` — local memory: notes, recall hooks, background extraction, personas
+- `utils/kyoten/` — the `kyoten` launcher and its npm package (`docs/kyoten.md`)
 - `.githooks/` — commit hooks for every harness (format, lint, Conventional Commits)
 - `skills-lock.json` — pinned sources and hashes for third-party skills
 
@@ -55,19 +71,29 @@ subagents — ask Claude directly.
 
 ## Requirements
 
-- Node.js **24 or later** (`.nvmrc` pins 24; `agent-browser` requires 24+)
+- Node.js **24 or later** (`.nvmrc` pins 24; `agent-browser` requires 24+) and git
 - pnpm **12.14.0**, pinned in `package.json` via Corepack. Run `corepack enable`, or prefix
-  commands with `corepack pnpm`
+  commands with `corepack pnpm` (the `kyoten` launcher needs `pnpm` itself on PATH)
+- The agent CLIs you use (Claude Code, Codex, DSH, Antigravity CLI); neither the workspace nor
+  kyoten installs them, and `kyoten doctor` lists what is missing
 - Chrome/Chromium, for Playwright e2e tests and browser-driving skills
 - `uv`, for the `browser-use` runtime and the `skill-creator` and `transparent-background` Python
   scripts
 
 ## Getting Started
 
-Without a clone: `npx kyoten` creates a workspace in `~/.kyoten` and starts Claude Code there
-(`npx kyoten codex`, `dsh`, `dscc`, or `agy` for the others). See [docs/kyoten.md](docs/kyoten.md).
+**Without a clone:**
 
-In a clone:
+```bash
+npx kyoten init       # create the home (~/.kyoten): unpack, pnpm install, pnpm workspace:setup
+npx kyoten doctor     # check Node, git, pnpm, each agent, and the home
+npx kyoten            # start Claude Code in the home (codex, dsh, dscc, agy for the others)
+```
+
+`init` asks one question: whether to save memory automatically (`[y/N]`, off by default; see
+[Memory](#memory)). The first run needs network access (`pnpm install`, the third-party skills).
+
+**In a clone:**
 
 ```bash
 corepack enable
@@ -85,7 +111,40 @@ Quality gate (typecheck, lint, format check, tests at 100% coverage):
 pnpm check
 ```
 
-Then simply run the agent inside this workspace.
+Then run the agent inside this workspace, or `pnpm kyoten [<agent>]`, which uses the clone as its
+home.
+
+## The kyoten launcher
+
+`kyoten` starts an agent **in the home** (a kyoten workspace: `~/.kyoten`, or a clone you register),
+so the hooks, tasks, memory, skills, and roles work exactly as in a clone, whatever folder you start
+it from. Everything after the agent word goes to the agent unchanged, and kyoten never adds a
+permission-bypass flag. Full guide: [docs/kyoten.md](docs/kyoten.md).
+
+| Command                                          | Does                                                                                                     |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `kyoten [claude\|codex\|dsh\|dscc\|agy] [args…]` | Start the agent in the home (`claude` by default; `kyoten -c` is `claude -c`)                            |
+| `kyoten init [<dir>] [--memory on\|off]`         | Create a home and install it; with `<dir>`, make it the default home (an existing clone is not copied)   |
+| `kyoten update`                                  | Merge a newer snapshot into a home kyoten created; your own commits are kept (a clone uses `git pull`)   |
+| `kyoten doctor`                                  | Check prerequisites, agents, trust, memory saving, DSH, the dscc key, then `pnpm workspace:check`        |
+| `kyoten run <script> [args…]`                    | Run a workspace script in the home from any folder: `kyoten run task status`                             |
+| `kyoten where` · `kyoten config …`               | Print the home and the rule that chose it · show or change the config (`home`, `args.<agent>`, `addDir`) |
+| `kyoten reset [--all]`                           | Move a home kyoten created aside (renamed, never deleted; the undo is printed)                           |
+| `kyoten backup` · `kyoten restore <dir>`         | A backup folder of memory, tasks, config, and local commits · bring it back, merging, never overwriting  |
+| `kyoten dscc --set-key` · `--show`               | Save the DeepSeek API key outside every workspace · print the profile with the key masked                |
+
+- **Projects outside the home.** Started inside another git repository, `kyoten`, `kyoten codex`,
+  and `kyoten dscc` add `--add-dir=<repository>` so the agent can edit it while its hooks, tasks,
+  and memory stay in the home (`--no-add-dir` or `"addDir": false` turns it off; a repository at or
+  above your user folder `~` is never added). For multi-step work there:
+  `pnpm task new … --repo <path>`.
+- **DSH:** in the Web UI, click **Choose workspace** and select the home (`kyoten dsh` prints it); a
+  session in another workspace is told so at its start.
+- **What it costs.** Hooks, the audit log, and the formatter are local. The Stop loop runs your
+  tests on code tasks, review rounds use subagents on your plan, and memory extraction (only when
+  saving is on) is one background call per session end.
+- **Updates never overwrite.** A home kyoten created is a git repository: `kyoten/upstream` holds
+  the snapshots, `main` holds them plus your commits, and `kyoten update` merges.
 
 ## Repository Layout
 
@@ -98,14 +157,17 @@ Then simply run the agent inside this workspace.
 │   ├── rules/               # Path-scoped rules (scripts, tests)
 │   ├── skills/              # Links into .agents/skills (generated, ignored)
 │   └── workflows/           # Saved Claude Code workflows (review, implement-plan, research)
+├── .codex/ .dsh/            # Codex config, hooks, roles · DSH workspace patch
 ├── .githooks/               # pre-commit + commit-msg (all harnesses)
 ├── docs/harness.md          # How the harness works (tasks, loops, review), with examples
+├── docs/kyoten.md           # The kyoten launcher (also the npm package README)
+├── docs/cli.md              # Generated reference of every workspace command
 ├── docs/testing/            # Deep testing guides
 ├── e2e/                     # Playwright e2e tests
 ├── tasks/                   # Generated task outputs (git-ignored)
 ├── templates/task/          # plan/NOTES/REVIEW/STUDIES templates for pnpm task
 ├── tools/                   # catalog.json (tracked) + local.json (this machine, ignored)
-├── utils/                   # Shared Node utilities (task/, loop/, swarm/, agent/, tools/ CLIs)
+├── utils/                   # Node CLIs: task/, memory/, loop/, swarm/, agent/, tools/, kyoten/
 ├── AGENTS.md                # Instructions for every agent
 ├── CLAUDE.md                # @AGENTS.md + Claude Code notes
 ├── skills-lock.json         # skills.sh lockfile
@@ -138,11 +200,12 @@ tasks/some-task-260101/
 └── scripts/ docs/ translated/ tmp/
 ```
 
-`tasks/.active` names the active task. In Claude Code, the `SessionStart` hook injects the brief
-after startup, `/clear`, and `/compact`; other harnesses run `pnpm task status` (AGENTS.md §2).
-The full procedure is in `AGENTS.md` §4; `pnpm task help` lists every command. How the pieces fit
-together, with a worked example: `docs/harness.md`. `tasks/` and
-`logs/` are git-ignored — tasks are personal to each machine.
+Each session binds its own task (`tasks/.sessions/<id>.json`, so parallel sessions do not collide);
+`tasks/.active` is only the default for new sessions. In Claude Code, the `SessionStart` hook
+injects the brief after startup, `/clear`, and `/compact`; other harnesses run `pnpm task status`
+(AGENTS.md §2). The full procedure is in `AGENTS.md` §4; `pnpm task help` lists every command. How
+the pieces fit together, with a worked example: `docs/harness.md`. `tasks/` and `logs/` are
+git-ignored — tasks are personal to each machine.
 
 ### Memory
 
@@ -158,16 +221,32 @@ pnpm memory personalize --presets   # how agents talk to you (every message to y
 pnpm memory personalize --language "Japanese"   # keep it even when you write in English
 pnpm memory personalize --persona-file persona.md   # a longer persona, written in markdown
 # or keep it in memory/persona.md: pnpm memory init (and workspace:setup) apply your edits
+pnpm memory personalize --for codex --persona "…"   # a persona for one agent (kyoten launches)
 pnpm memory personalize --off       # pause applying the saved response settings
 pnpm memory personalize --on        # resume applying them in new sessions
 pnpm memory off --session           # an incognito session
+pnpm memory set --extract-agent claude   # run the background jobs on one CLI (default: the session's)
 pnpm memory export                  # back up or move: a checksummed .tar.gz; import <file> --dry-run
 ```
 
-Agents save what they learn as they go and say so; in Claude Code a background job also extracts
-what they missed from each finished session. Every session loads a small core block (your
-settings, pinned notes, recent tasks), and hooks recall the notes that match each prompt or failed
-command. Agent rules: `AGENTS.md` §13; how it works: `docs/harness.md`.
+Agents save what they learn as they go and say so. When saving is on, a background job also
+extracts what they missed from each finished Claude Code, Codex, or Antigravity session, using that
+session's own CLI with no tools, and consolidates the notes weekly. Every session loads a small core
+block (your settings, pinned notes, recent tasks), and hooks recall the notes that match each
+prompt or failed command.
+
+- **Opt-in in a kyoten home:** a home created by `kyoten init` starts with saving off unless you say
+  yes (`kyoten run memory on` later). A clone keeps the workspace default (on).
+- **Per-agent personas:** `--for <claude|codex|ds|agy>` (`ds` = dsh and dscc) writes
+  `memory/persona.<agent>.md`. kyoten starts each agent with `KYOTEN_AGENT`, and the memory hook
+  applies that agent's persona without rewriting `AGENTS.local.md`, so parallel sessions keep
+  theirs.
+- **Headless agents never write to memory:** `pnpm agent ask`, `pnpm loop`, `pnpm swarm`, and the
+  memory jobs run with the memory hooks off, so a headless review is never queued for extraction.
+- **dscc and Anthropic stay apart:** a session on the DeepSeek API is only extracted by a worker on
+  the DeepSeek side, and the other way round.
+
+Agent rules: `AGENTS.md` §13; how it works: `docs/harness.md`.
 
 ## Skills
 
@@ -318,12 +397,13 @@ to read:
 
 ## Using other agents
 
-| Harness                     | Instructions                           | Skills                                                      |
-| --------------------------- | -------------------------------------- | ----------------------------------------------------------- |
-| Claude Code                 | `CLAUDE.md` → `@AGENTS.md`             | `.claude/skills/` links (created by `pnpm workspace:setup`) |
-| Codex                       | `AGENTS.md`                            | `.agents/skills/` (native)                                  |
-| Antigravity CLI (`agy`)     | `AGENTS.md` (≤ 24,000 bytes)           | `.agents/skills/` (native); hooks & roles under `.agents/`  |
-| DeepSeek harness and others | `AGENTS.md` (point it there if needed) | `.agents/skills/`, or `pnpm workspace:setup --target <dir>` |
+| Harness                     | Start with kyoten | Instructions                         | Skills                                                      |
+| --------------------------- | ----------------- | ------------------------------------ | ----------------------------------------------------------- |
+| Claude Code                 | `kyoten`          | `CLAUDE.md` → `@AGENTS.md`           | `.claude/skills/` links (created by `pnpm workspace:setup`) |
+| Claude Code on DeepSeek API | `kyoten dscc`     | `CLAUDE.md` → `@AGENTS.md`           | as Claude Code                                              |
+| Codex                       | `kyoten codex`    | `AGENTS.md`                          | `.agents/skills/` (native)                                  |
+| Antigravity CLI (`agy`)     | `kyoten agy`      | `AGENTS.md` (≤ 24,000 bytes)         | `.agents/skills/` (native); hooks & roles under `.agents/`  |
+| DeepSeek harness (DSH)      | `kyoten dsh`      | `AGENTS.md`; hooks via the DSH patch | `.agents/skills/`, or `pnpm workspace:setup --target <dir>` |
 
 Most of the Claude Code hooks work on other harness after the setup (but some don't). The git hooks in `.githooks/` (enabled by
 `pnpm workspace:setup`) enforce formatting, linting, and commit messages for everyone, and
@@ -350,13 +430,13 @@ pnpm swarm my-task --agent claude --workers 2           # parallel workers, one 
 
 | Hook                   | Event                                                                                | Purpose                                                       |
 | ---------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
-| `session_start.js`     | `SessionStart`                                                                       | Injects the active task's resume brief.                       |
+| `session_start.js`     | `SessionStart`                                                                       | Injects the task brief, tools, and kyoten caller/DSH lines.   |
 | `pre_compact.js`       | `PreCompact`                                                                         | Appends a checkpoint to the task's `NOTES.md`.                |
 | `task_loop.js`         | `Stop`, `UserPromptSubmit`                                                           | Inner loop: verify, then the review loop (code).              |
 | `context_monitor.js`   | `UserPromptSubmit`                                                                   | Warns at 20/40/60% of the context window.                     |
 | `audit_logger.js`      | `PostToolUse` (`*`)                                                                  | Logs tool use to `logs/<YYYYMMDD>/logging.jsonl`.             |
 | `auto_format.js`       | `PostToolUse` (`Edit\|Write`)                                                        | Runs Prettier on edited files.                                |
-| `utils/memory/hook.js` | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUseFailure`, `SessionEnd` | Memory: recall, announcements, extraction queue (also Codex). |
+| `utils/memory/hook.js` | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUseFailure`, `SessionEnd` | Memory: recall, personas, extraction queue (also Codex, agy). |
 
 The context monitor defaults to a 1M window; set `CLAUDE_CONTEXT_WINDOW` to override it.
 
@@ -383,12 +463,12 @@ pnpm test:coverage   # 100% thresholds
 
 Test rules: `.claude/rules/testing.md`. Deep guides: `docs/testing/`.
 
-End-to-end tests use **Playwright** in `e2e/` (the scaffold passes with an empty suite until you add
-`*.e2e.*` tests):
+End-to-end tests use the **Playwright** runner in `e2e/`. `e2e/kyoten.e2e.js` packs HEAD and drives
+the kyoten tarball through `npx` with fake agent CLIs first on PATH (no browser, no real agent):
 
 ```bash
-pnpm exec playwright install chromium
 pnpm test:e2e
+pnpm exec playwright install chromium   # only for browser e2e tests
 ```
 
 Playwright is e2e-only. For normal browsing or text extraction, use `WebFetch` or
@@ -451,8 +531,7 @@ adjust the paths for your machine.
 
 ## Contributing
 
-Forks and suggestions are welcome. Before opening a PR, run
-`pnpm check`.
+Forks and suggestions are welcome. Before opening a PR, run `pnpm check` and `pnpm test:e2e`.
 
 Third-party skills are managed with skills.sh; project-owned skills live in `.agents/skills/`.
 

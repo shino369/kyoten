@@ -285,10 +285,11 @@ persona, and `pnpm memory personalize --off` pauses all of them. `--for … --re
 
 - The npm package holds a snapshot of one git commit, never a working tree: untracked and ignored
   files (tasks, memory, logs, local settings, secrets) cannot be in it. The pack step also checks
-  every file against a deny list and the exact expected file list. The deny list ignores case and
-  matches at any depth: `tasks/`, `memory/`, `logs/`, `node_modules/`, `coverage/`, `secrets/`,
-  `*.local.*`, `tools/local.json`, `.mcp.json`, `.npmrc`, `*.env` and `.env*`, `credentials.json`,
-  `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.crt`, `id_rsa*`, and `id_ed25519*`. Templates such as
+  every file against a deny list and the exact expected file list. The deny list ignores case. At
+  the top level it refuses `tasks/`, `memory/`, `logs/`, `coverage/`, `tools/local.json`, and
+  `.mcp.json`; at any depth `node_modules/`, `secrets/`, `*.local.*`, `.npmrc`, `*.env` and `.env*`,
+  `credentials.json`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.crt`, `id_rsa*`, and `id_ed25519*`. It
+  checks names, not contents. Templates such as
   `.env.example` and `dscc.env.example` are allowed, as is the one tracked
   `templates/memory/AGENTS.local.md`.
 - kyoten's own git commands (init, update, backup, restore, reset) run without the caller's
