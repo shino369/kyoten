@@ -63,6 +63,14 @@ describe('quoteCmdArg', () => {
     expect(quoteCmdArg('')).toBe('""');
   });
 
+  test('should quote cmd.exe batch delimiters (= and ,)', () => {
+    expect(quoteCmdArg('--add-dir=C:\\repo')).toBe('"--add-dir=C:\\repo"');
+    expect(quoteCmdArg('a,b')).toBe('"a,b"');
+    expect(quoteCmdArg('memory,personalization')).toBe(
+      '"memory,personalization"'
+    );
+  });
+
   test('should double trailing backslashes so they do not escape the closing quote', () => {
     expect(quoteCmdArg('C:\\x y\\')).toBe('"C:\\x y\\\\"');
     expect(quoteCmdArg('C:\\x y\\\\')).toBe('"C:\\x y\\\\\\\\"');
@@ -177,6 +185,16 @@ describe('crossSpawn', () => {
         // …crossSpawn can, even from a folder with spaces.
         const result = crossSpawn()(shim, ['world'], { encoding: 'utf-8' });
         expect(String(result.stdout).trim()).toBe('hello world');
+
+        // Batch delimiters (= and ,) stay part of %1 rather than splitting it.
+        const argShim = path.join(dir, 'arg1.cmd');
+        fs.writeFileSync(argShim, '@echo off\r\necho %~1\r\n');
+        const eq = crossSpawn()(argShim, ['--add-dir=C:\\repo'], {
+          encoding: 'utf-8',
+        });
+        expect(String(eq.stdout).trim()).toBe('--add-dir=C:\\repo');
+        const comma = crossSpawn()(argShim, ['a,b'], { encoding: 'utf-8' });
+        expect(String(comma.stdout).trim()).toBe('a,b');
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }
