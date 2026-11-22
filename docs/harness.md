@@ -342,9 +342,11 @@ result and copy or merge it back yourself.
 against `tools/catalog.json`. `pnpm agent ask --agent codex "…"` runs one read-only turn of another
 agent and saves the exchange in the task's `tmp/`. `pnpm loop`, `pnpm swarm`, and the review loop
 use the same adapters (`utils/loop/adapters.js`): fixed argument arrays, prompt on stdin, no shell.
-Every headless child gets `MEMORY_EXTRACT=1`, so the workspace's memory hooks stay silent in it: a
-review or fix runs without the core block, persona, or recalled notes (a clean context), and its
-session is never queued for extraction into memory.
+Every headless child gets `MEMORY_EXTRACT=1`, so the workspace's memory hooks stay silent in it: no
+injected core block, persona, or recalled notes, and its session is never queued for extraction into
+memory. Claude Code and DSH still load `AGENTS.local.md` natively when they run in the workspace root
+(`pnpm agent ask`); `pnpm loop` and `pnpm swarm` worktrees have no such file, so reviews and fixes
+there start with a clean context.
 
 | Agent  | Write mode (fixers)                                                      | Read mode (reviewers, `agent ask`)                                        |
 | ------ | ------------------------------------------------------------------------ | ------------------------------------------------------------------------- |

@@ -344,8 +344,10 @@ export function parseAgyStreamJson(raw) {
  * caller's env without the harness session ids: a child that inherited them
  * would act as the caller's session in `pnpm task` (`TASK_SESSION`, set on
  * purpose, is kept). It also gets EXTRACT_ENV, so the workspace's memory
- * hooks stay silent in it: a headless review or fix neither reads personal
- * memory (a clean context) nor is queued for extraction into it.
+ * hooks stay silent in it: nothing is injected from memory and the session
+ * is never queued for extraction into it. (A Claude or DSH child in the
+ * workspace root still loads AGENTS.local.md natively; loop and swarm
+ * worktrees do not have it.)
  *
  * @param {{ command: AgentCommand, cwd: string, prompt: string, timeoutMs: number, env: NodeJS.ProcessEnv, spawn?: AgentSpawn, now?: () => number, platform?: string }} options
  *   DSH refuses a cwd its hook commands cannot carry (dshDirProblem)
