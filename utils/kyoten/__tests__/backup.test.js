@@ -730,6 +730,23 @@ describe('restoreBackup', () => {
     expect(err.join('\n')).toContain('the backup has 2 commits of yours');
   });
 
+  test.each(['vitest.config.js', '.mcp.json', '.github/workflows/ci.yml'])(
+    'should warn when the backup commits change %s',
+    async (file) => {
+      const source = sourceHome();
+      fs.mkdirSync(path.dirname(path.join(source, file)), { recursive: true });
+      commitFile(source, file, 'x\n', 'chore: config');
+      backupHome(backupInput({ dir: 'bk' }));
+      err = [];
+
+      await restoreBackup(restoreInput());
+
+      expect(err.join('\n')).toContain(
+        `configure the agents: ${file}; restore only`
+      );
+    }
+  );
+
   test('should skip the memory import when the answer is no', async () => {
     makeBackup();
 

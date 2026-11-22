@@ -356,9 +356,10 @@ overwrites:
 - The home is created first if it is missing. A home with uncommitted changes to tracked files is
   refused.
 - `local.bundle` is fetched (with git's object checks) into `refs/kyoten/restored`. kyoten lists
-  your commits in it, warns when they change files that run code or steer the agents (`.githooks/`,
-  `.claude/`, `.codex/`, `.agents/`, `.dsh/`, `utils/`, `tools/`, `package.json`, the pnpm files,
-  `AGENTS.md`, `CLAUDE.md`), and asks `[y/N]` before it merges them into `main` (without a terminal,
+  your commits in it, warns when they change files that run code or steer the agents (the harness
+  folders such as `.githooks/`, `.claude/`, `.codex/`, `.agents/`, `.dsh/`, `.gemini/`, and
+  `.github/`, `utils/`, `tools/`, `package.json`, the pnpm files, `.mcp.json`, the test, lint, and
+  TypeScript configs, `AGENTS.md`, `CLAUDE.md`), and asks `[y/N]` before it merges them into `main` (without a terminal,
   pass `--yes`; on no they stay in `refs/kyoten/restored`). A fresh home has its
   own snapshot commit, so the old snapshot in the bundle is linked first (keeping the new files) and
   then used as the merge base, as in `kyoten update`. Conflicts stay as ordinary git conflicts.
