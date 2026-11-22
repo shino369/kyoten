@@ -580,6 +580,34 @@ describe('consolidation on dscc', () => {
     expect(consolidate(deps()).status).toBe('consolidated');
   });
 
+  test('should not reuse a dscc run model on a normal worker', () => {
+    seed();
+    appendJournal(dir, {
+      status: 'applied',
+      agent: 'claude',
+      model: 'deepseek-v4',
+      side: 'dscc',
+    });
+
+    const run = consolidate(deps());
+
+    expect(run).toMatchObject({ model: null, side: 'normal' });
+  });
+
+  test('should reuse a dscc run model on a dscc worker', () => {
+    seed();
+    appendJournal(dir, {
+      status: 'applied',
+      agent: 'claude',
+      model: 'deepseek-v4',
+      side: 'dscc',
+    });
+
+    const run = consolidate(deps({ env: { KYOTEN_AGENT: 'dscc' } }));
+
+    expect(run).toMatchObject({ model: 'deepseek-v4', side: 'dscc' });
+  });
+
   test('should still run an agy consolidation on a dscc worker', () => {
     seed();
     writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });

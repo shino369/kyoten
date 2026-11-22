@@ -455,7 +455,8 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   defers; a normal worker always consolidates. Consolidation never runs while saving is off
   everywhere (`pnpm memory off`; it stays due and runs once saving is back on); a manual
   `pnpm memory consolidate` then refuses with a Fix line unless `--force` (a `--dry-run` is always
-  allowed).
+  allowed). Consolidation reuses the last run's model only from a run on the same provider side
+  (dscc or not) as the worker.
   Other agents are not affected.
 - **Safety:** every write path refuses text matching `utils/redact.js`; notes are framed as facts;
   `pnpm workspace:check` fails if a memory file is tracked.

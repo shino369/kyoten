@@ -275,11 +275,11 @@ export function cleanProfile(lines) {
 }
 
 /**
- * The agent and model of the latest applied journal run. Old runs have no
- * `agent` field; they ran on claude.
+ * The agent, model, and provider side of the latest applied journal run. Old
+ * runs have no `agent` field (they ran on claude) and no `side` (not dscc).
  *
  * @param {string} dir
- * @returns {{ agent: string, model: string | null } | null}
+ * @returns {{ agent: string, model: string | null, side: 'dscc' | 'normal' } | null}
  */
 function lastRun(dir) {
   const run = readJournal(dir)
@@ -291,6 +291,7 @@ function lastRun(dir) {
   return {
     agent: typeof run.agent === 'string' ? run.agent : 'claude',
     model: typeof run.model === 'string' ? run.model : null,
+    side: run.side === 'dscc' ? 'dscc' : 'normal',
   };
 }
 
@@ -328,12 +329,14 @@ export function consolidate(deps) {
   const prompt = buildConsolidationPrompt({ shown, groups });
   const config = readConfig(dir);
   const last = lastRun(dir);
+  const side = deps.env.KYOTEN_AGENT === 'dscc' ? 'dscc' : 'normal';
   const agent = config.extractAgent ?? last?.agent ?? 'claude';
   const model = modelFor({
     agent,
     configured: config.extractAgent,
     extractModel: config.extractModel,
-    ownModel: last?.agent === agent ? last.model : null,
+    // A model name only fits the provider it ran on: never from the other side.
+    ownModel: last?.agent === agent && last.side === side ? last.model : null,
   });
   // The claude CLI sends the notes to the provider its environment names. A
   // dscc worker may therefore consolidate with claude only when every applied
@@ -394,6 +397,7 @@ export function consolidate(deps) {
     status: 'consolidated',
     agent,
     model,
+    side,
     changes,
     profile: profile.lines.length,
     quarantined: checked.quarantined.length,
