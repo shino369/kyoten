@@ -1015,7 +1015,10 @@ describe('main: run', () => {
 
     const { code, spawn, err } = await run(
       ['--home', home, 'run', 'task', 'status', '--json'],
-      { exit: 3, env: { CODEX_THREAD_ID: 'kept', GONE: undefined } }
+      {
+        exit: 3,
+        env: { CODEX_THREAD_ID: 'kept', GONE: undefined, GIT_DIR: '/o/.git' },
+      }
     );
 
     expect(code).toBe(3);
@@ -1027,6 +1030,7 @@ describe('main: run', () => {
     expect(options.stdio).toBe('inherit');
     expect(options.env.CODEX_THREAD_ID).toBe('kept');
     expect('GONE' in options.env).toBe(false);
+    expect('GIT_DIR' in options.env).toBe(false);
     expect(err).toEqual([]);
   });
 

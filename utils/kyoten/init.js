@@ -8,6 +8,7 @@
 import fs from 'fs';
 import path from 'path';
 import { PNPM_INSTALL, crossSpawn } from '../spawn.js';
+import { childEnv } from './git-env.js';
 import { homeState, writeHomeInfo } from './home.js';
 import { checkNode, checkTool, initRepo } from './repo.js';
 import { materialize } from './snapshot.js';
@@ -25,7 +26,11 @@ import { materialize } from './snapshot.js';
 export function runSetup({ home, log, run = crossSpawn(), env = process.env }) {
   for (const args of [PNPM_INSTALL, ['workspace:setup']]) {
     log(`running pnpm ${args.join(' ')} in ${home}`);
-    const result = run('pnpm', args, { cwd: home, stdio: 'inherit', env });
+    const result = run('pnpm', args, {
+      cwd: home,
+      stdio: 'inherit',
+      env: childEnv(env),
+    });
     if (result.error || result.status !== 0) {
       throw new Error(
         `pnpm ${args.join(' ')} failed in ${home} (see above).\nFix: fix what it reports, then run: kyoten --home "${home}" init`

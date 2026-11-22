@@ -1,4 +1,4 @@
-import { gitEnv } from '../git-env.js';
+import { childEnv, gitEnv } from '../git-env.js';
 
 const INHERITED = {
   PATH: '/bin',
@@ -46,5 +46,45 @@ describe('gitEnv', () => {
     expect(gitEnv().GIT_DIR).toBeUndefined();
     expect(gitEnv().PATH).toBe(process.env.PATH);
     vi.unstubAllEnvs();
+  });
+});
+
+describe('childEnv', () => {
+  test('should drop the variables that pick a repository and keep the rest', () => {
+    const env = childEnv(
+      {
+        GIT_DIR: '/other/.git',
+        GIT_WORK_TREE: '/other',
+        GIT_INDEX_FILE: 'i',
+        GIT_CONFIG_PARAMETERS: "'core.hooksPath'='x'",
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'core.hooksPath',
+        GIT_CONFIG_VALUE_0: 'x',
+        GIT_SSH_COMMAND: 'ssh -i key',
+        GIT_EDITOR: 'vim',
+        PATH: '/bin',
+      },
+      'linux'
+    );
+
+    expect(env).toEqual({
+      GIT_SSH_COMMAND: 'ssh -i key',
+      GIT_EDITOR: 'vim',
+      PATH: '/bin',
+    });
+  });
+
+  test('should match names case-insensitively on Windows', () => {
+    expect(childEnv({ Git_Dir: 'x', Path: 'p' }, 'win32')).toEqual({
+      Path: 'p',
+    });
+  });
+
+  test('should keep a differently cased name on POSIX', () => {
+    expect(childEnv({ git_dir: 'x' }, 'linux')).toEqual({ git_dir: 'x' });
+  });
+
+  test('should default to the process environment', () => {
+    expect(childEnv()).toBeTypeOf('object');
   });
 });

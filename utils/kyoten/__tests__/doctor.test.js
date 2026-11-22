@@ -496,7 +496,7 @@ describe('workspaceCheck', () => {
     const result = workspaceCheck({
       home: tmp,
       run: /** @type {any} */ (run),
-      env: { A: '1' },
+      env: { A: '1', GIT_WORK_TREE: '/other' },
     });
 
     expect(result.status).toBe('ok');

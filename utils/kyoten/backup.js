@@ -24,7 +24,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { writePrivate } from './dscc.js';
-import { gitEnv } from './git-env.js';
+import { childEnv, gitEnv } from './git-env.js';
 import {
   expandHome,
   homeState,
@@ -199,7 +199,7 @@ function writeBackup({
       '--out',
       path.join(target, 'memory.tar.gz'),
     ],
-    { cwd: home, env },
+    { cwd: home, env: childEnv(env) },
     `fix what pnpm memory export reports in ${home} (run: pnpm memory export), then run kyoten backup again`
   );
   record('memory.tar.gz');
@@ -366,9 +366,70 @@ function mergeBlocker({ home, run, env }) {
 }
 
 /**
- * @param {{ folder: string, home: string, run: Spawn, env: NodeJS.ProcessEnv, bundle: string, err: (text: string) => void }} input
+ * Paths whose change runs code or steers the agents: hooks, scripts, the
+ * harness configs, and the workspace's own code. Restored commits that touch
+ * them get a warning before the merge question.
  */
-function restoreBundle({ folder, home, run, env, bundle, err }) {
+export const CODE_PATHS = [
+  '.githooks/',
+  '.claude/',
+  '.codex/',
+  '.agents/',
+  '.dsh/',
+  'utils/',
+  'tools/',
+  'package.json',
+  'pnpm-workspace.yaml',
+  'pnpm-lock.yaml',
+  '.npmrc',
+  'AGENTS.md',
+  'CLAUDE.md',
+];
+const SHOWN = 10;
+
+/**
+ * @param {number} count
+ * @param {string} word
+ */
+const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
+/**
+ * What restore shows before it asks to merge: the user's commits in the
+ * backup and the files among their changes that run code.
+ *
+ * @param {{ commits: string[], risky: string[] }} input
+ * @returns {string[]}
+ */
+export function restoreSummary({ commits, risky }) {
+  const out = [
+    `kyoten: the backup has ${plural(commits.length, 'commit')} of yours:`,
+    ...commits.slice(0, SHOWN).map((line) => `  ${line}`),
+  ];
+  if (commits.length > SHOWN)
+    out.push(`  … and ${commits.length - SHOWN} more`);
+  if (risky.length) {
+    const more =
+      risky.length > SHOWN ? ` and ${risky.length - SHOWN} more` : '';
+    out.push(
+      `kyoten: they change files that run code or configure the agents: ${risky.slice(0, SHOWN).join(', ')}${more}; restore only a backup you made yourself`
+    );
+  }
+  return out;
+}
+
+/**
+ * @param {{ folder: string, home: string, run: Spawn, env: NodeJS.ProcessEnv, bundle: string, err: (text: string) => void, yes: boolean, ask: (question: string) => Promise<string> }} input
+ */
+async function restoreBundle({
+  folder,
+  home,
+  run,
+  env,
+  bundle,
+  err,
+  yes,
+  ask,
+}) {
   const branch = run(
     'git',
     ['-C', home, 'symbolic-ref', '-q', '--short', 'HEAD'],
@@ -388,6 +449,8 @@ function restoreBundle({ folder, home, run, env, bundle, err }) {
     [
       '-C',
       home,
+      '-c',
+      'transfer.fsckObjects=true',
       'fetch',
       '-q',
       bundle,
@@ -405,6 +468,39 @@ function restoreBundle({ folder, home, run, env, bundle, err }) {
     }).status;
   if (git(['merge-base', '--is-ancestor', RESTORED, 'HEAD']) === 0) {
     err('kyoten: your commits from the backup are already in main');
+    return;
+  }
+  /** @param {string[]} args */
+  const lines = (args) =>
+    // Both refs exist after the fetch, so git prints a (maybe empty) list.
+    String(
+      run('git', ['-C', home, ...args], {
+        encoding: 'utf-8',
+        env: gitEnv(env),
+      }).stdout
+    )
+      .split('\n')
+      .filter(Boolean);
+  const range = `${RESTORED_UPSTREAM}..${RESTORED}`;
+  const commits = lines(['log', '--no-merges', '--format=%h %s', range]);
+  const risky = lines([
+    'diff',
+    '--name-only',
+    RESTORED_UPSTREAM,
+    RESTORED,
+  ]).filter((file) =>
+    CODE_PATHS.some((p) => (p.endsWith('/') ? file.startsWith(p) : file === p))
+  );
+  for (const line of restoreSummary({ commits, risky })) err(line);
+  const answer = yes
+    ? 'y'
+    : await ask(
+        `Merge ${plural(commits.length, 'commit')} into main of ${home}? [y/N] `
+      );
+  if (!/^(y|yes)$/i.test(answer.trim())) {
+    err(
+      `kyoten: commits not merged; they stay in ${RESTORED} (git -C "${home}" merge ${RESTORED})`
+    );
     return;
   }
   const mergeFix = `in ${home}, resolve the conflicts and git commit (or git merge --abort), then your commits are in refs/kyoten/restored`;
@@ -469,9 +565,13 @@ export async function restoreBackup({
 }) {
   const folder = path.resolve(cwd, expandHome(dir, homedir));
   const { files } = readManifest(folder);
-  if (files.has('memory.tar.gz') && !yes && !interactive) {
+  if (
+    (files.has('memory.tar.gz') || files.has('local.bundle')) &&
+    !yes &&
+    !interactive
+  ) {
     throw new Error(
-      'kyoten restore asks before it imports memory and there is no terminal.\nFix: kyoten restore <dir> --yes'
+      'kyoten restore asks before it merges commits or imports memory and there is no terminal.\nFix: kyoten restore <dir> --yes'
     );
   }
   const state = homeState(home);
@@ -485,8 +585,9 @@ export async function restoreBackup({
   if (blocker) throw new Error(blocker);
 
   const bundle = files.get('local.bundle');
-  if (bundle) restoreBundle({ folder, home, run, env, bundle, err });
-  else err('kyoten: no local commits in this backup');
+  if (bundle) {
+    await restoreBundle({ folder, home, run, env, bundle, err, yes, ask });
+  } else err('kyoten: no local commits in this backup');
 
   const memory = files.get('memory.tar.gz');
   if (memory) {
@@ -496,14 +597,20 @@ export async function restoreBackup({
       run,
       'pnpm',
       [...base, '--dry-run'],
-      { cwd: home, env, stdio: 'inherit' },
+      { cwd: home, env: childEnv(env), stdio: 'inherit' },
       fix
     );
     const answer = yes
       ? 'y'
       : await ask(`Import these memory notes into ${home}? [y/N] `);
     if (/^(y|yes)$/i.test(answer.trim())) {
-      must(run, 'pnpm', base, { cwd: home, env, stdio: 'inherit' }, fix);
+      must(
+        run,
+        'pnpm',
+        base,
+        { cwd: home, env: childEnv(env), stdio: 'inherit' },
+        fix
+      );
     } else {
       err('kyoten: memory not imported');
     }

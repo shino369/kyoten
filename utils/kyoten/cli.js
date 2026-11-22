@@ -44,6 +44,7 @@ import {
 } from './home.js';
 import { backupHome, restoreBackup } from './backup.js';
 import { runConfig } from './config-cmd.js';
+import { childEnv } from './git-env.js';
 import { initHome } from './init.js';
 import { pauseSaving } from './memory.js';
 import {
@@ -607,7 +608,9 @@ async function commandRun(ctx, args) {
   }
   /** @type {Record<string, string>} */
   const env = {};
-  for (const [name, value] of Object.entries(deps.env)) {
+  for (const [name, value] of Object.entries(
+    childEnv(deps.env, deps.platform)
+  )) {
     if (value !== undefined) env[name] = value;
   }
   const status = await spawnInteractive({

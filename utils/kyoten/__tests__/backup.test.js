@@ -9,6 +9,7 @@ import {
   backupHome,
   readManifest,
   restoreBackup,
+  restoreSummary,
 } from '../backup.js';
 import { HOME_INFO } from '../home.js';
 
@@ -28,7 +29,7 @@ let tmp;
 let out;
 /** @type {string[]} */
 let err;
-/** @type {{ args: string[], cwd?: string }[]} */
+/** @type {{ args: string[], cwd?: string, env?: NodeJS.ProcessEnv }[]} */
 let pnpm;
 
 beforeEach(() => {
@@ -110,7 +111,7 @@ function makeRun({ exportStatus = 0, dryStatus = 0, importStatus = 0 } = {}) {
       options
     );
     if (bin === 'pnpm') {
-      pnpm.push({ args, cwd: opts.cwd });
+      pnpm.push({ args, cwd: opts.cwd, env: opts.env });
       if (args[1] === 'export') {
         if (exportStatus) return { status: exportStatus, stderr: 'no export' };
         fs.writeFileSync(args[args.indexOf('--out') + 1], 'TARBALL');
@@ -669,6 +670,49 @@ describe('restoreBackup', () => {
     expect(pnpm).toHaveLength(2);
   });
 
+  test('should list the backup commits and keep them aside when the merge is declined', async () => {
+    makeBackup();
+    /** @type {string[]} */
+    const questions = [];
+
+    const code = await restoreBackup(
+      restoreInput({
+        yes: false,
+        interactive: true,
+        ask: async (/** @type {string} */ q) => {
+          questions.push(q);
+          return q.startsWith('Merge') ? 'n' : 'y';
+        },
+      })
+    );
+
+    const home = path.join(tmp, 'new-home');
+    expect(code).toBe(0);
+    expect(questions[0]).toBe(`Merge 1 commit into main of ${home}? [y/N] `);
+    expect(err.join('\n')).toMatch(
+      /kyoten: the backup has 1 commit of yours:\n  [0-9a-f]+ feat: local work/
+    );
+    expect(fs.existsSync(path.join(home, 'local.txt'))).toBe(false);
+    expect(err).toContain(
+      `kyoten: commits not merged; they stay in refs/kyoten/restored (git -C "${home}" merge refs/kyoten/restored)`
+    );
+  });
+
+  test('should warn when the backup commits change files that run code', async () => {
+    const source = sourceHome();
+    fs.mkdirSync(path.join(source, '.githooks'));
+    commitFile(source, '.githooks/pre-commit', 'echo hi\n', 'chore: hook');
+    backupHome(backupInput({ dir: 'bk' }));
+    err = [];
+
+    await restoreBackup(restoreInput());
+
+    expect(err).toContain(
+      'kyoten: they change files that run code or configure the agents: .githooks/pre-commit; restore only a backup you made yourself'
+    );
+    expect(err.join('\n')).toContain('the backup has 2 commits of yours');
+  });
+
   test('should skip the memory import when the answer is no', async () => {
     makeBackup();
 
@@ -685,7 +729,7 @@ describe('restoreBackup', () => {
     makeBackup();
 
     await expect(restoreBackup(restoreInput({ yes: false }))).rejects.toThrow(
-      /restore <dir> --yes/
+      /asks before it merges commits or imports memory[\s\S]*restore <dir> --yes/
     );
     expect(fs.existsSync(path.join(tmp, 'new-home'))).toBe(false);
   });
@@ -818,5 +862,40 @@ describe('restoreBackup', () => {
     await expect(restoreBackup(restoreInput({ dir: folder }))).rejects.toThrow(
       /config in the backup cannot be used/
     );
+  });
+});
+
+describe('pnpm children', () => {
+  test('should not see a repository-picking GIT_* variable', async () => {
+    sourceHome();
+    const env = { ...GIT_ENV, GIT_DIR: path.join(tmp, 'other.git') };
+
+    backupHome(backupInput({ dir: 'bk', env }));
+    await restoreBackup(restoreInput({ env }));
+
+    expect(pnpm.length).toBeGreaterThan(1);
+    expect(pnpm.every((call) => call.env && !('GIT_DIR' in call.env))).toBe(
+      true
+    );
+  });
+});
+
+describe('restoreSummary', () => {
+  test('should shorten long lists', () => {
+    const commits = Array.from({ length: 12 }, (_, i) => `c${i} feat: ${i}`);
+    const risky = Array.from({ length: 11 }, (_, i) => `utils/f${i}.js`);
+
+    const lines = restoreSummary({ commits, risky });
+
+    expect(lines[0]).toBe('kyoten: the backup has 12 commits of yours:');
+    expect(lines).toContain('  … and 2 more');
+    expect(lines.at(-1)).toContain('utils/f9.js and 1 more; restore only');
+  });
+
+  test('should say nothing about code without such files', () => {
+    expect(restoreSummary({ commits: ['a x'], risky: [] })).toEqual([
+      'kyoten: the backup has 1 commit of yours:',
+      '  a x',
+    ]);
   });
 });

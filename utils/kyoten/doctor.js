@@ -19,6 +19,7 @@ import {
 import { crossSpawn } from '../spawn.js';
 import { readIfExists } from '../task/store.js';
 import { mask, parseProfile, tokenUnset, TOKEN_KEY } from './dscc.js';
+import { childEnv } from './git-env.js';
 import { homeState, readHomeInfo } from './home.js';
 import { memoryCheck } from './memory.js';
 import { agentInstallHint, findAgentCommand } from './launch.js';
@@ -254,7 +255,7 @@ export function workspaceCheck({ home, run, env }) {
   const result = run('pnpm', ['workspace:check'], {
     cwd: home,
     stdio: 'inherit',
-    env,
+    env: childEnv(env),
   });
   return result.status === 0
     ? { id: 'workspace', status: 'ok', detail: 'pnpm workspace:check passed' }

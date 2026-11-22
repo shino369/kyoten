@@ -17,6 +17,7 @@ import { isExecutable, resolveCommand, which } from '../spawn.js';
 import { HARNESS_SESSION_VARS } from '../task/store.js';
 import { installHint, loadCatalog } from '../tools/catalog.js';
 import { commandFor } from '../tools/registry.js';
+import { childEnv } from './git-env.js';
 
 /** The dsh profile kyoten starts when the first argument does not name one. */
 export const DSH_DEFAULT_PROFILE = 'web';
@@ -178,7 +179,7 @@ export function buildEnv({ env, home, cwd, platform, drop = [], set = {} }) {
     const folded = fold(name);
     return names.has(folded) || prefixes.some((p) => folded.startsWith(p));
   };
-  for (const [name, value] of Object.entries(env)) {
+  for (const [name, value] of Object.entries(childEnv(env, platform))) {
     if (value !== undefined && !isRemoved(name)) out[name] = value;
   }
   const added = { KYOTEN_HOME: home, KYOTEN_CALLER_DIR: cwd, ...set };

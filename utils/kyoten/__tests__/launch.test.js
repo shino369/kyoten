@@ -236,6 +236,19 @@ describe('buildArgv', () => {
 });
 
 describe('buildEnv', () => {
+  test('should drop the GIT_* variables that pick a repository', () => {
+    const env = buildEnv({
+      env: { GIT_DIR: '/other/.git', GIT_INDEX_FILE: 'i', GIT_EDITOR: 'vi' },
+      home: '/h',
+      cwd: '/c',
+      platform: 'linux',
+    });
+
+    expect(env.GIT_DIR).toBeUndefined();
+    expect(env.GIT_INDEX_FILE).toBeUndefined();
+    expect(env.GIT_EDITOR).toBe('vi');
+  });
+
   test('should drop the harness session ids and add the kyoten variables', () => {
     const env = buildEnv({
       env: {

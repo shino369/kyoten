@@ -41,13 +41,16 @@ function git(args, cwd = repo) {
  */
 function fakeRun(pnpm = () => undefined) {
   const real = crossSpawn();
-  /** @type {{ args: string[], cwd?: string }[]} */
+  /** @type {{ args: string[], cwd?: string, env?: NodeJS.ProcessEnv }[]} */
   const calls = [];
   /** @type {import('../../spawn.js').Spawn} */
   const run = (bin, args, options = {}) => {
     if (bin === 'pnpm') {
       if (args[0] === '--version') return { status: 0, stdout: '9.0.0\n' };
-      calls.push({ args, cwd: /** @type {{ cwd?: string }} */ (options).cwd });
+      const opts = /** @type {{ cwd?: string, env?: NodeJS.ProcessEnv }} */ (
+        options
+      );
+      calls.push({ args, cwd: opts.cwd, env: opts.env });
       return pnpm(args) ?? { status: 0 };
     }
     return real(bin, args, { env: gitEnv, ...options });
@@ -310,6 +313,20 @@ describe('initHome', () => {
 });
 
 describe('runSetup', () => {
+  test('should not pass a repository-picking GIT_* variable to pnpm', () => {
+    const home = newHome();
+    const { run, calls } = fakeRun();
+
+    runSetup({
+      home,
+      log: vi.fn(),
+      run,
+      env: { GIT_DIR: '/other/.git', GIT_SSH_COMMAND: 'ssh', PATH: '/bin' },
+    });
+
+    expect(calls[0].env).toEqual({ GIT_SSH_COMMAND: 'ssh', PATH: '/bin' });
+  });
+
   test('should throw when pnpm cannot be spawned', () => {
     const home = newHome();
     const { run } = fakeRun(() => ({ status: null, error: new Error('x') }));
