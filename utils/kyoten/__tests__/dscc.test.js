@@ -17,6 +17,7 @@ import {
   setKey,
   showProfile,
   tokenUnset,
+  writePrivate,
 } from '../dscc.js';
 
 const KEY = 'sk-test-token-1234567890';
@@ -246,15 +247,64 @@ describe('setKey', () => {
     expect(fs.readdirSync(tmp)).toEqual(['p.env']);
   });
 
-  test('should still save the key where chmod is not supported', () => {
-    vi.spyOn(fs, 'chmodSync').mockImplementation(() => {
-      throw new Error('EPERM');
+  test('should create the file with mode 0600 and no chmod afterwards', () => {
+    const chmod = vi.spyOn(fs, 'chmodSync');
+    const file = path.join(tmp, 'p.env');
+
+    writePrivate(file, 'X=1\n');
+
+    expect(chmod).not.toHaveBeenCalled();
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  test('should replace a file with looser permissions by a private one', () => {
+    const file = write('p.env', 'old\n');
+    fs.chmodSync(file, 0o644);
+
+    writePrivate(file, 'new\n');
+
+    expect(fs.readFileSync(file, 'utf-8')).toBe('new\n');
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  test('should use an unpredictable exclusive temporary name', () => {
+    const open = vi.spyOn(fs, 'writeFileSync');
+    const file = path.join(tmp, 'p.env');
+
+    writePrivate(file, 'a');
+    writePrivate(file, 'b');
+
+    const names = open.mock.calls.map(([name]) => String(name));
+    expect(names[0]).not.toBe(names[1]);
+    expect(names[0]).toMatch(/p\.env\.[0-9a-f]{16}\.tmp$/);
+    expect(open.mock.calls[0][2]).toMatchObject({ mode: 0o600, flag: 'wx' });
+  });
+
+  test('should clean up the temporary file when the rename fails', () => {
+    const file = path.join(tmp, 'p.env');
+    vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw new Error('EXDEV');
     });
-    const file = write('p.env', 'X=1\n');
 
-    setKey({ file, key: KEY });
+    expect(() => writePrivate(file, 'x')).toThrow('EXDEV');
+    expect(fs.readdirSync(tmp)).toEqual([]);
+  });
 
-    expect(fs.readFileSync(file, 'utf-8')).toContain(KEY);
+  test('should not follow a planted link at a guessable temporary name', () => {
+    if (process.platform === 'win32') return;
+    const victim = path.join(tmp, 'victim');
+    fs.writeFileSync(victim, 'keep');
+    const file = path.join(tmp, 'p.env');
+    fs.symlinkSync(victim, `${file}.${process.pid}.tmp`);
+
+    writePrivate(file, 'secret');
+
+    expect(fs.readFileSync(victim, 'utf-8')).toBe('keep');
+    expect(fs.readFileSync(file, 'utf-8')).toBe('secret');
   });
 
   test.each([

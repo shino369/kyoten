@@ -7,6 +7,7 @@
  * `--set-key` reads it from a hidden prompt (or one line of piped stdin) and
  * writes the file with mode 0600 on POSIX.
  */
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -154,13 +155,16 @@ export function showProfile(file) {
  * @param {string | Buffer} content
  */
 export function writePrivate(file, content) {
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, content, { mode: 0o600 });
-  fs.renameSync(tmp, file);
+  // An unpredictable name and O_EXCL (`wx`): nobody can plant a link or file
+  // at the temporary path first. The mode applies at creation (POSIX only;
+  // Windows ignores it, and %APPDATA% is private to the user).
+  const tmp = `${file}.${crypto.randomBytes(8).toString('hex')}.tmp`;
   try {
-    fs.chmodSync(file, 0o600);
-  } catch {
-    // Windows has no POSIX modes; %APPDATA% is private to the user.
+    fs.writeFileSync(tmp, content, { mode: 0o600, flag: 'wx' });
+    fs.renameSync(tmp, file);
+  } catch (error) {
+    fs.rmSync(tmp, { force: true });
+    throw error;
   }
 }
 
