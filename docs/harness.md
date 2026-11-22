@@ -405,8 +405,13 @@ digests, at most 3,000 characters) that every session loads. Rules for agents: A
 - **Extraction (B)** (Claude Code, Codex, and Antigravity; DSH has no SessionEnd or transcript):
   SessionEnd (or `SessionStart` idle catch-up in Antigravity, using `condenseAgy`) queues the
   session; a detached worker reads what the transcript gained, condenses it (prompts, final
-  replies, failed commands; secrets left out), and makes one read-only `claude -p` call without
-  tools for ADD/UPDATE/DELETE ops on the related notes. Secrets are refused, instruction-like ops
+  replies, failed commands; secrets left out), and makes one read-only call without tools, on the
+  session's own agent CLI (claude, codex, dsh, or agy; `pnpm memory set --extract-agent <agent>`
+  overrides, `default` restores), for ADD/UPDATE/DELETE ops on the related notes. `--extract-model`
+  pairs with the configured agent (claude by default); otherwise the session's own model is used.
+  Consolidation and `personalize --compact/--audit` follow the same agent choice (consolidation: the
+  last run's agent). Codex needs zero configured MCP servers; a missing CLI or failed check says
+  which `--extract-agent` to switch to. Secrets are refused, instruction-like ops
   wait in `memory/inbox.jsonl`, and the next session announces the saves.
 - **Safety:** every write path refuses text matching `utils/redact.js`; notes are framed as facts;
   `pnpm workspace:check` fails if a memory file is tracked.

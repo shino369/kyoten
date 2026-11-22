@@ -140,6 +140,20 @@ export function headlessCommand({ agent, model = null, rootDir }) {
 }
 
 /**
+ * The Fix text for an agent that cannot run a memory job: another agent.
+ *
+ * @param {string} job
+ * @param {string} agent
+ * @returns {string}
+ */
+function switchFix(job, agent) {
+  const others = CALL_AGENTS.filter((name) => name !== agent).join('|');
+  return job.startsWith('persona')
+    ? `use --agent ${others}`
+    : `pnpm memory set --extract-agent ${others}`;
+}
+
+/**
  * One call in an empty folder, removed afterwards. Throws when the agent
  * fails, naming the job ("the extraction agent exited with code 1: …").
  *
@@ -174,7 +188,7 @@ export function callAgent(
       });
       if (probe.code !== 0 || probe.stdout.trim() !== CODEX_EMPTY_MCP_LIST) {
         throw new Error(
-          'Cannot verify Codex persona isolation. The MCP check must report zero configured servers.\nFix: use --agent claude or --agent dsh.'
+          `Cannot verify Codex persona isolation. The MCP check must report zero configured servers.\nFix: ${switchFix(job, 'codex')}`
         );
       }
     }
@@ -185,6 +199,15 @@ export function callAgent(
       timeoutMs,
       env,
     });
+  } catch (error) {
+    // The adapter's "was not found" error has its own install Fix line.
+    if (
+      error instanceof Error &&
+      /was not found \(agent /.test(error.message)
+    ) {
+      error.message += `\nFix: ${switchFix(job, command.agent)}`;
+    }
+    throw error;
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }

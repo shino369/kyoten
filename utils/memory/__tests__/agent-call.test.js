@@ -207,6 +207,41 @@ describe('callAgent', () => {
     }
   );
 
+  test.each([
+    ['persona-audit', 'use --agent claude|dsh|agy'],
+    ['extraction', 'pnpm memory set --extract-agent claude|dsh|agy'],
+  ])('should point a failed Codex check of %s at another agent', (job, fix) => {
+    const codex = headlessCommand({ agent: 'codex', rootDir: root });
+    const runAgent = agentReturning({ code: 1, stdout: 'x' });
+
+    expect(() => callAgent(deps(runAgent), codex, 'P', { job })).toThrow(
+      new RegExp(`Fix: ${fix.replace(/\|/g, '\\|')}$`)
+    );
+  });
+
+  test('should add a switch-agent Fix line to a missing CLI', () => {
+    const runAgent = vi.fn(() => {
+      throw new Error('claude was not found (agent claude).\nFix: install');
+    });
+
+    expect(() => callAgent(deps(runAgent), command, 'P')).toThrow(
+      /Fix: install\nFix: pnpm memory set --extract-agent codex\|dsh\|agy$/
+    );
+  });
+
+  test('should pass other runner errors through unchanged', () => {
+    const boom = new Error('disk full');
+    const runAgent = vi.fn(() => {
+      throw boom;
+    });
+    expect(() => callAgent(deps(runAgent), command, 'P')).toThrow(boom);
+    const odd = vi.fn(() => {
+      // eslint-disable-next-line no-throw-literal -- a non-Error rejection
+      throw 'plain';
+    });
+    expect(() => callAgent(deps(odd), command, 'P')).toThrow('plain');
+  });
+
   test('should name the job and use its timeout', () => {
     const runAgent = agentReturning();
 

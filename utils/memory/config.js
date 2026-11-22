@@ -6,6 +6,8 @@
  *   these sessions only (an "incognito" session). Recall still works.
  * - `extractModel`: the model extraction uses; null means the main session's
  *   model (the workspace rule).
+ * - `extractAgent`: the agent CLI memory jobs run on; null means the
+ *   session's own CLI (consolidation: the last run's).
  * - `budget`: the core block's size in characters; null means CORE_BUDGET.
  * - `personalizationEnabled`: apply saved personalization to agent sessions.
  *
@@ -14,6 +16,7 @@
 import fs from 'fs';
 import path from 'path';
 import { SESSION_ID_RE, readIfExists, writeFileAtomic } from '../task/store.js';
+import { CALL_AGENTS } from './agent-call.js';
 import { MemoryError } from './store.js';
 
 export const CONFIG_FILE = 'config.json';
@@ -27,6 +30,7 @@ const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$/;
  * @property {boolean} off
  * @property {string[]} offSessions
  * @property {string | null} extractModel
+ * @property {import('./agent-call.js').CallAgent | null} extractAgent
  * @property {number | null} budget
  * @property {boolean} personalizationEnabled
  */
@@ -36,6 +40,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   off: false,
   offSessions: [],
   extractModel: null,
+  extractAgent: null,
   budget: null,
   personalizationEnabled: true,
 });
@@ -94,6 +99,15 @@ export function normalizeConfig(input) {
       `Invalid model name ${JSON.stringify(extractModel)}: one word, such as claude-sonnet-5-5.`
     );
   }
+  const extractAgent = config.extractAgent;
+  if (
+    extractAgent !== null &&
+    !CALL_AGENTS.includes(/** @type {any} */ (extractAgent))
+  ) {
+    invalid(
+      `Invalid agent ${JSON.stringify(extractAgent)}: use ${CALL_AGENTS.join(', ')}, or default.`
+    );
+  }
   const { budget } = config;
   if (
     budget !== null &&
@@ -111,6 +125,7 @@ export function normalizeConfig(input) {
     off: config.off,
     offSessions: normalizeSessions(config.offSessions),
     extractModel,
+    extractAgent,
     budget,
     personalizationEnabled: config.personalizationEnabled,
   };

@@ -21,7 +21,7 @@ import { callAgent } from './agent-call.js';
 import { readConfig } from './config.js';
 import { looksLikeInstruction } from './instructions.js';
 import { kindLabel, refreshAfterWrite, shorten } from './context.js';
-import { applyOps, extractCommand, validateOps } from './extract.js';
+import { applyOps, extractCommand, modelFor, validateOps } from './extract.js';
 import {
   EXTRACT_DIR,
   appendInbox,
@@ -261,16 +261,23 @@ export function cleanProfile(lines) {
 }
 
 /**
- * The model of the latest journal run that had one (the main session's).
+ * The agent and model of the latest applied journal run. Old runs have no
+ * `agent` field; they ran on claude.
  *
  * @param {string} dir
- * @returns {string | null}
+ * @returns {{ agent: string, model: string | null } | null}
  */
-function lastModel(dir) {
+function lastRun(dir) {
   const run = readJournal(dir)
     .reverse()
-    .find((item) => typeof item.model === 'string');
-  return run ? run.model : null;
+    .find(
+      (item) => item.status === 'applied' || item.status === 'consolidated'
+    );
+  if (!run) return null;
+  return {
+    agent: typeof run.agent === 'string' ? run.agent : 'claude',
+    model: typeof run.model === 'string' ? run.model : null,
+  };
 }
 
 /**
@@ -294,11 +301,19 @@ export function consolidate(deps) {
     return run;
   }
   const prompt = buildConsolidationPrompt({ shown, groups });
-  const model = readConfig(dir).extractModel ?? lastModel(dir);
-  if (deps.dryRun) return { ...base, status: 'dry-run', model, prompt };
+  const config = readConfig(dir);
+  const last = lastRun(dir);
+  const agent = config.extractAgent ?? last?.agent ?? 'claude';
+  const model = modelFor({
+    agent,
+    configured: config.extractAgent,
+    extractModel: config.extractModel,
+    ownModel: last?.agent === agent ? last.model : null,
+  });
+  if (deps.dryRun) return { ...base, status: 'dry-run', agent, model, prompt };
 
   const command = extractCommand({
-    agent: 'claude',
+    agent,
     model,
     rootDir: deps.rootDir,
   });
@@ -337,6 +352,7 @@ export function consolidate(deps) {
   const run = {
     ...base,
     status: 'consolidated',
+    agent,
     model,
     changes,
     profile: profile.lines.length,

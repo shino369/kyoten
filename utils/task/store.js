@@ -201,6 +201,22 @@ export function listTaskNames(rootDir) {
 }
 
 /**
+ * The harness running the calling session, by the same precedence as
+ * sessionFromEnv: codex, dsh, agy, then claude (`CLAUDE_CODE_SESSION_ID` or
+ * `CLAUDECODE=1`). Null when none is set; empty values count as unset.
+ *
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {'codex' | 'dsh' | 'agy' | 'claude' | null}
+ */
+export function sessionHarness(env) {
+  if (env.CODEX_THREAD_ID || env.CODEX_SESSION_ID) return 'codex';
+  if (env.DSH_SESSION_ID) return 'dsh';
+  if (env.ANTIGRAVITY_CONVERSATION_ID) return 'agy';
+  if (env.CLAUDE_CODE_SESSION_ID || env.CLAUDECODE === '1') return 'claude';
+  return null;
+}
+
+/**
  * @param {string} rootDir
  * @returns {string | null} the active task name, or null when unset or gone
  */

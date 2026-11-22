@@ -376,6 +376,110 @@ describe('consolidate', () => {
     expect(models).toEqual(['session-model', 'claude-sonnet-5-5']);
   });
 
+  describe('the consolidation agent', () => {
+    /** @param {import('vitest').Mock} runAgent */
+    const lastCall = (runAgent) =>
+      /** @type {any} */ (runAgent.mock.calls.at(-1))[0];
+    const answering = () => agentReturning({ profile: [], ops: [] });
+
+    test('should default to claude without a journal', () => {
+      seed();
+      const runAgent = answering();
+
+      const run = consolidate(deps({ runAgent }));
+
+      expect(lastCall(runAgent).command.agent).toBe('claude');
+      expect(run).toMatchObject({ agent: 'claude', model: null });
+    });
+
+    test('should treat an old journal line without agent as claude', () => {
+      seed();
+      appendJournal(dir, { at: 'x', status: 'applied', model: 'old-model' });
+
+      const run = consolidate(deps({ runAgent: answering() }));
+
+      expect(run).toMatchObject({ agent: 'claude', model: 'old-model' });
+    });
+
+    test('should follow the last applied run, with its model', () => {
+      seed();
+      appendJournal(dir, {
+        at: 'x',
+        status: 'applied',
+        agent: 'dsh',
+        model: 'deepseek-v4',
+      });
+      appendJournal(dir, { at: 'y', status: 'failed', error: 'boom' });
+      const runAgent = answering();
+
+      const run = consolidate(deps({ runAgent }));
+
+      expect(lastCall(runAgent).command.agent).toBe('dsh');
+      expect(lastCall(runAgent).command.args.slice(-2)).toEqual([
+        '--model',
+        'deepseek-v4',
+      ]);
+      expect(run).toMatchObject({ agent: 'dsh', model: 'deepseek-v4' });
+    });
+
+    test('should not pair extractModel with the last run on another agent', () => {
+      seed();
+      appendJournal(dir, {
+        at: 'x',
+        status: 'applied',
+        agent: 'dsh',
+        model: null,
+      });
+      writeConfig(dir, {
+        ...DEFAULT_CONFIG,
+        extractModel: 'claude-sonnet-5-5',
+      });
+
+      const run = consolidate(deps({ runAgent: answering() }));
+
+      expect(run).toMatchObject({ agent: 'dsh', model: null });
+    });
+
+    test('should use the configured agent over the last run', () => {
+      seed();
+      appendJournal(dir, {
+        at: 'x',
+        status: 'applied',
+        agent: 'dsh',
+        model: 'deepseek-v4',
+      });
+      writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });
+      const runAgent = answering();
+
+      const run = consolidate(deps({ runAgent }));
+
+      expect(lastCall(runAgent).command.agent).toBe('agy');
+      expect(run).toMatchObject({ agent: 'agy', model: null });
+    });
+
+    test('should pair extractModel with the configured agent', () => {
+      seed();
+      writeConfig(dir, {
+        ...DEFAULT_CONFIG,
+        extractAgent: 'dsh',
+        extractModel: 'deepseek-v4',
+      });
+
+      const run = consolidate(deps({ runAgent: answering() }));
+
+      expect(run).toMatchObject({ agent: 'dsh', model: 'deepseek-v4' });
+    });
+
+    test('should report the agent on a dry run', () => {
+      seed();
+      appendJournal(dir, { at: 'x', status: 'applied', agent: 'dsh' });
+
+      const run = consolidate(deps({ dryRun: true }));
+
+      expect(run).toMatchObject({ agent: 'dsh', model: null });
+    });
+  });
+
   test('should say when there is nothing to consolidate', () => {
     const run = consolidate(deps());
 

@@ -41,6 +41,7 @@ describe('normalizeConfig', () => {
       off: true,
       offSessions: ['abc-1'],
       extractModel: 'claude-sonnet-5-5',
+      extractAgent: 'codex',
       budget: 4000,
       personalizationEnabled: false,
     };
@@ -61,6 +62,8 @@ describe('normalizeConfig', () => {
     [{ offSessions: ['bad id'] }, 'offSessions must be a list of session ids'],
     [{ extractModel: 'two words' }, 'Invalid model name'],
     [{ extractModel: 7 }, 'Invalid model name'],
+    [{ extractAgent: 'gemini' }, 'claude, codex, dsh, agy'],
+    [{ extractAgent: 7 }, 'Invalid agent 7'],
     [{ budget: 1.5 }, 'The budget must be a whole number'],
     [{ budget: BUDGET_RANGE.min - 1 }, 'The budget must be a whole number'],
     [{ budget: BUDGET_RANGE.max + 1 }, 'The budget must be a whole number'],
