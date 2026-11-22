@@ -1541,18 +1541,14 @@ describe('provider sides', () => {
     writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });
     const configPath = path.join(dir, CONFIG_FILE);
     const readFile = fs.readFileSync;
-    const spy = vi
-      .spyOn(fs, 'readFileSync')
-      .mockImplementation(
-        (/** @type {any} */ file, /** @type {any} */ options) => {
-          const content = readFile(file, options);
-          if (file === configPath) {
-            spy.mockRestore();
-            writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'claude' });
-          }
-          return content;
-        }
-      );
+    const spy = vi.spyOn(fs, 'readFileSync').mockImplementation((...args) => {
+      const content = readFile(...args);
+      if (args[0] === configPath) {
+        spy.mockRestore();
+        writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'claude' });
+      }
+      return content;
+    });
 
     try {
       expect(extractEntry(entry, deps({ env: DSCC, runAgent }))).toMatchObject({
