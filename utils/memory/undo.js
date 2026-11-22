@@ -19,6 +19,7 @@ import path from 'path';
 import { formatLocal } from '../task/markdown.js';
 import { readIfExists, withLock, writeFileAtomic } from '../task/store.js';
 import { refreshAfterWrite } from './context.js';
+import { PERSONA_KEYS, agentPersonaFile } from './personalize.js';
 import { AGENTS_LOCAL_FILE } from './render.js';
 import {
   SNAPSHOTS_DIR,
@@ -50,6 +51,13 @@ const RESTORED = {
   // The core is rendered again below so later edits outside it survive.
   compact: PERSONALIZATION_FILES.slice(0, 2),
   consolidate: [`${MEMORY_DIR}/profile.md`],
+  // A kyoten agent's persona (compaction or reset): its file alone.
+  ...Object.fromEntries(
+    PERSONA_KEYS.map((key) => [
+      `persona-${key}`,
+      [`${MEMORY_DIR}/${agentPersonaFile(key)}`],
+    ])
+  ),
 };
 const NEVER_REMOVED = [AGENTS_LOCAL_FILE, `${MEMORY_DIR}/persona.md`];
 const JOBS = {
@@ -57,6 +65,9 @@ const JOBS = {
   consolidate: 'consolidation',
   import: 'import',
   compact: 'persona compaction',
+  ...Object.fromEntries(
+    PERSONA_KEYS.map((key) => [`persona-${key}`, `${key} persona change`])
+  ),
 };
 
 /**
@@ -83,7 +94,7 @@ export function planUndo(rootDir) {
   const current = readIfExists(path.join(memoryDir(rootDir), LOG_FILE)) ?? '';
   const appended = current.startsWith(before);
   const { ops } = parseLog(appended ? current.slice(before.length) : current);
-  if (snapshot.reason === 'compact') {
+  if (snapshot.reason === 'compact' || snapshot.reason.startsWith('persona-')) {
     // A compaction has no note operations, even at the snapshot's time.
     return { snapshot, log: current, undone: 0, kept: ops.length, lost: 0 };
   }
@@ -147,6 +158,7 @@ export function undoLast(rootDir, { now = new Date(), dryRun = false } = {}) {
         if (content !== null) writeFileAtomic(target, content);
         else if (
           plan.snapshot.reason === 'compact' ||
+          plan.snapshot.reason.startsWith('persona-') ||
           !NEVER_REMOVED.includes(file)
         ) {
           fs.rmSync(target, { force: true });

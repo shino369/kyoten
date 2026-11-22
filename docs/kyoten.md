@@ -199,6 +199,16 @@ When the home was made by another kyoten version, each launch prints a one-line 
   `"`, `%`, or `!` safely. kyoten refuses those arguments with an explanation: type that text inside
   the agent instead.
 
+## Per-agent personas
+
+Each agent can talk in its own voice. `pnpm memory personalize --for <claude|codex|ds|agy>
+--persona "…"` (in the home) writes `memory/persona.<agent>.md`; `ds` is shared by `dsh` and
+`dscc`. kyoten starts every agent with `KYOTEN_AGENT=<agent>`, and the memory hook applies that
+agent's file at session start (and names it on each prompt). Nothing is rewritten at launch, so
+other sessions in the same home are not affected. An agent without a file uses the default
+persona, and `pnpm memory personalize --off` pauses all of them. `--for … --reset` removes a file
+(`pnpm memory undo` restores it). Details: `docs/harness.md`.
+
 ## Security
 
 - The npm package holds a snapshot of one git commit, never a working tree: untracked and ignored

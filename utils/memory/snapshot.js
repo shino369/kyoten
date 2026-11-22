@@ -7,6 +7,7 @@
 import fs from 'fs';
 import path from 'path';
 import { writeFileAtomic } from '../task/store.js';
+import { PERSONA_KEYS, agentPersonaFile } from './personalize.js';
 import { MEMORY_DIR, readJsonOrNull } from './store.js';
 
 export const SNAPSHOTS_DIR = 'snapshots';
@@ -15,6 +16,7 @@ export const SNAPSHOT_FILES = [
   `${MEMORY_DIR}/log.jsonl`,
   `${MEMORY_DIR}/personalization.json`,
   `${MEMORY_DIR}/persona.md`,
+  ...PERSONA_KEYS.map((key) => `${MEMORY_DIR}/${agentPersonaFile(key)}`),
   `${MEMORY_DIR}/profile.md`,
   'AGENTS.local.md',
 ];

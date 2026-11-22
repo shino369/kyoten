@@ -67,7 +67,13 @@ import {
   CORE_START,
   renderStored,
 } from './render.js';
-import { readPersonalization, renderPersonalization } from './personalize.js';
+import {
+  AGENT_ENV,
+  agentPersonalization,
+  personaKeyFor,
+  readPersonalization,
+  renderPersonalization,
+} from './personalize.js';
 import { mainCheckout } from './repo.js';
 import {
   CACHE_DIR,
@@ -94,6 +100,11 @@ const PERSONALIZATION_OFF =
   '[Persona] Workspace memory personalization is off. Disregard the memory-generated Personalization section and its persona reminders.';
 const PERSONALIZATION_EMPTY =
   '[Persona] No workspace memory personalization settings are saved. Use the session’s usual response style.';
+/** Per-agent persona (kyoten): names the agent in the per-prompt line. */
+const agentReminder = (/** @type {string} */ agent) =>
+  `[Persona] Every message to the user, progress notes between tool calls included, follows this session's ${agent} persona from the session start context.`;
+const agentOverride = (/** @type {string} */ agent) =>
+  `[Persona] This ${agent} session has its own persona: apply the personalization below instead of the Personalization section.`;
 /** Characters of the language setting quoted in the reminder. */
 export const REMINDER_LANGUAGE_CHARS = 200;
 
@@ -222,19 +233,23 @@ export function failureText(input) {
  * a broken settings file: the reminder is optional, recall must still run).
  *
  * @param {string} dir the memory directory
+ * @param {string | undefined} [agent] the KYOTEN_AGENT value
  */
-function personaReminder(dir) {
+function personaReminder(dir, agent) {
   let settings;
+  let reminder = PERSONA_REMINDER;
   try {
     if (!readConfig(dir).personalizationEnabled) return PERSONALIZATION_OFF;
-    settings = readPersonalization(dir);
+    const own = agentPersonalization(dir, personaKeyFor(agent));
+    if (own) reminder = agentReminder(/** @type {string} */ (agent));
+    settings = own ?? readPersonalization(dir);
   } catch {
     return '';
   }
   if (Object.keys(settings).length === 0) return '';
-  if (!settings.language) return PERSONA_REMINDER;
+  if (!settings.language) return reminder;
   const language = settings.language.replace(/\s+/g, ' ');
-  return `${PERSONA_REMINDER} Language: ${
+  return `${reminder} Language: ${
     language.length > REMINDER_LANGUAGE_CHARS
       ? `${language.slice(0, REMINDER_LANGUAGE_CHARS)}…`
       : language
@@ -249,20 +264,32 @@ function personaReminder(dir) {
  * @param {string} home
  * @param {Harness} harness
  * @param {import('./config.js').MemoryConfig} config
+ * @param {string | undefined} [agent] the KYOTEN_AGENT value, when kyoten started the session
  */
-function startupMemory(rootDir, home, harness, config) {
+function startupMemory(rootDir, home, harness, config, agent) {
   const localFile = harness === 'dsh' ? AGENTS_LOCAL_FILE : CLAUDE_LOCAL_FILE;
+  // The agent's own persona (memory/persona.<key>.md); personalization off wins.
+  const own = config.personalizationEnabled
+    ? agentPersonalization(memoryDir(home), personaKeyFor(agent))
+    : null;
   if (
     harness === 'codex' ||
     harness === 'agy' ||
     !fs.existsSync(path.join(rootDir, localFile))
   ) {
-    return renderStored(home, config).block;
+    return renderStored(home, config, own).block;
+  }
+  const local = readIfExists(path.join(rootDir, AGENTS_LOCAL_FILE)) ?? '';
+  const start = local.indexOf(CORE_START);
+  if (own) {
+    // The core block loads natively: add this agent's personalization on top.
+    if (rootDir !== home && start < 0) {
+      return renderStored(home, config, own).block;
+    }
+    return `${agentOverride(/** @type {string} */ (agent))}\n\n${renderPersonalization(own)}`;
   }
   if (rootDir === home) return '';
 
-  const local = readIfExists(path.join(rootDir, AGENTS_LOCAL_FILE)) ?? '';
-  const start = local.indexOf(CORE_START);
   if (start < 0) return renderStored(home, config).block;
   if (!config.personalizationEnabled) return '';
 
@@ -373,7 +400,7 @@ export function handleHook(
     const config = readConfig(dir);
     const off = savingOff(config, session);
     const parts = [
-      startupMemory(rootDir, home, harness, config),
+      startupMemory(rootDir, home, harness, config, env[AGENT_ENV]),
       config.personalizationEnabled ? '' : PERSONALIZATION_OFF,
       ...(off
         ? [
@@ -426,7 +453,9 @@ export function handleHook(
     return /** @type {any} */ (
       contextOutput(
         event,
-        [personaReminder(dir), recalled].filter(Boolean).join('\n\n'),
+        [personaReminder(dir, env[AGENT_ENV]), recalled]
+          .filter(Boolean)
+          .join('\n\n'),
         harness
       )
     );

@@ -383,6 +383,23 @@ digests, at most 3,000 characters) that every session loads. Rules for agents: A
   and at each typed prompt. You can still edit, audit, and compact the saved persona while it
   is paused. Run `pnpm memory personalize --on` and start a new session to load the saved settings
   again. `pnpm memory status` shows both the personalization and automatic saving states.
+- **Per-agent personas.** Each agent kyoten starts can have its own persona:
+  `pnpm memory personalize --for <claude|codex|ds|agy> --persona "…"` (or `--persona-file`) writes
+  `memory/persona.<agent>.md` (`ds` serves dsh and dscc), in the format of `memory/persona.md`.
+  Only the persona differs: the call-me, language, tone, and other settings stay the default
+  ones, and the same 1,500-character limit applies to the whole. `--for` also takes `--show`,
+  `--compact [--dry-run]`, and `--audit` (same checks and agent choice as the default persona),
+  and `--reset`, which removes the file (kept in `tasks/.trash/` and a snapshot; `pnpm memory
+undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in the agent's
+  environment, and the hook reads it, so no shared file is rewritten at launch and a second
+  session of another agent in the same home is unaffected. At SessionStart, when personalization
+  is on and the agent's file exists: Codex and Antigravity (core block injected by the hook) get
+  the core with that persona; Claude Code, dscc, and DSH (core block loaded natively) get a
+  `[Persona] This <agent> session has its own persona: …` line and the rendered
+  personalization. The per-prompt `[Persona]` line names it. Without the variable (a plain clone,
+  or an agent not started by kyoten), without the file, or with `personalize --off`, nothing
+  changes: the default persona applies, or none when paused. The `AGENTS.local.md` core block always
+  shows the default persona. `pnpm memory` lists the agent personas.
 - **Persona compaction and audit.** `pnpm memory personalize --compact` shortens a persona
   to fit, then audits the result in a second fresh session. `--audit` checks the original
   persona without writing files. The persona comes from `--persona` or `--persona-file`,

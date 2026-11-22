@@ -238,6 +238,15 @@ Settings
                                 memory/persona.md or the stored persona when no source
                                 flag is given. --agent codex requires zero configured
                                 MCP servers
+  personalize --for claude|codex|ds|agy [--show | --reset]
+      [--persona … | --persona-file <file.md>] [--compact [--dry-run] | --audit]
+                                One persona for the agents kyoten starts (ds: dsh and dscc;
+                                KYOTEN_AGENT), kept in memory/persona.<agent>.md, with the
+                                same limit, audit, and --agent as the default persona. The
+                                other settings stay the default ones; an agent without a
+                                file uses the default persona. --reset removes the file
+                                (a snapshot and tasks/.trash keep it; pnpm memory undo
+                                restores it). Pausing personalization (--off) wins
   personalize --off | --on      Pause or resume applying saved personalization across sessions.
                                 A new session loads the full settings after --on
   set [--extract-agent claude|codex|dsh|agy|default] [--extract-model <model>|default]

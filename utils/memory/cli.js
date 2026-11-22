@@ -23,9 +23,12 @@ import { runIfMain } from '../module-runner.js';
 import {
   SESSION_ID_RE,
   sessionFromEnv,
+  readIfExists,
   sessionHarness,
   withLock,
+  writeFileAtomic,
 } from '../task/store.js';
+import { trashPaths } from '../task/trash.js';
 import { ROOT_DIR } from '../workspace-config.js';
 import { readConfig, savingOff, setSaving, writeConfig } from './config.js';
 import {
@@ -62,8 +65,14 @@ import {
   PERSONA_FILE,
   languageHint,
   listPresets,
+  PERSONA_KEYS,
+  agentPersonaFile,
+  listAgentPersonas,
+  normalizePersonalization,
   personaFromMarkdown,
+  personaMarkdown,
   personaWarnings,
+  readAgentPersona,
   readPersonalization,
   storedPersona,
   syncPersonaFile,
@@ -82,6 +91,7 @@ import {
   workerRunning,
 } from './queue.js';
 import { RECALL_LIMIT, loadIndex, noteLabels, recall } from './recall.js';
+import { takeSnapshot } from './snapshot.js';
 import { formatUndo, undoLast } from './undo.js';
 import {
   AGENTS_LOCAL_FILE,
@@ -187,6 +197,15 @@ Settings
                                 memory/persona.md or the stored persona when no source
                                 flag is given. --agent codex requires zero configured
                                 MCP servers
+  personalize --for ${PERSONA_KEYS.join('|')} [--show | --reset]
+      [--persona … | --persona-file <file.md>] [--compact [--dry-run] | --audit]
+                                One persona for the agents kyoten starts (ds: dsh and dscc;
+                                KYOTEN_AGENT), kept in memory/persona.<agent>.md, with the
+                                same limit, audit, and --agent as the default persona. The
+                                other settings stay the default ones; an agent without a
+                                file uses the default persona. --reset removes the file
+                                (a snapshot and tasks/.trash keep it; pnpm memory undo
+                                restores it). Pausing personalization (--off) wins
   personalize --off | --on      Pause or resume applying saved personalization across sessions.
                                 A new session loads the full settings after --on
   set [--extract-agent ${CALL_AGENTS.join('|')}|default] [--extract-model <model>|default]
@@ -219,6 +238,7 @@ const VALUE_FLAGS = {
   '--persona': 'persona',
   '--persona-file': 'personaFile',
   '--agent': 'agent',
+  '--for': 'for',
   '--tone': 'tone',
   '--traits': 'traits',
   '--extra': 'extra',
@@ -279,7 +299,7 @@ const FIRST_NOTE =
  *   grep?: string, message?: string, preset?: string, callMe?: string,
  *   aboutMe?: string, language?: string, persona?: string, tone?: string,
  *   traits?: string, extra?: string, extractModel?: string, extractAgent?: string, budget?: string,
- *   include?: string, tasks?: string, out?: string, personaFile?: string, agent?: string,
+ *   include?: string, tasks?: string, out?: string, personaFile?: string, agent?: string, for?: string,
  *   triggers: string[],
  *   pin: boolean, force: boolean, failure: boolean, pinned: boolean,
  *   stale: boolean, all: boolean, reset: boolean, show: boolean,
@@ -477,6 +497,30 @@ function checkPersonaOptions(options) {
     }
     return;
   }
+  if (options.for !== undefined) {
+    if (!PERSONA_KEYS.includes(/** @type {any} */ (options.for))) {
+      throw new Error(
+        `--for takes one of ${PERSONA_KEYS.join(', ')} (got "${options.for}").`
+      );
+    }
+    if (
+      options.presets ||
+      options.preset !== undefined ||
+      FIELD_FLAGS.some((key) => key !== 'persona' && options[key] !== undefined)
+    ) {
+      throw new Error(
+        '--for sets only the persona. Run personalize without --for to change other settings.'
+      );
+    }
+    if (
+      options.reset &&
+      (options.persona !== undefined ||
+        options.personaFile !== undefined ||
+        options.show)
+    ) {
+      throw new Error('Use --for --reset by itself.');
+    }
+  }
   if (options.compact && options.audit) {
     throw new Error('Use one of --compact and --audit.');
   }
@@ -508,15 +552,20 @@ function agentLine(agent) {
   return `Memory agent: ${agent ?? "the session's own CLI"}`;
 }
 
-/** @param {Options} options @param {Deps} deps */
-function runPersonaJob(options, deps) {
+/**
+ * @param {Options} options
+ * @param {Deps} deps
+ * @param {import('./personalize.js').PersonaKey} [key] a kyoten agent's persona file instead of the default persona
+ */
+function runPersonaJob(options, deps, key) {
   const dir = dirOf(deps);
   const settings = readPersonalization(dir);
-  const file = path.join(dir, PERSONA_FILE);
+  const file = path.join(dir, key ? agentPersonaFile(key) : PERSONA_FILE);
   const markdown = fs.existsSync(file) ? readPersonaSource(file) : null;
   const persona =
     options.persona ??
-    (personaFromMarkdown(markdown ?? '') || settings.persona || '');
+    (personaFromMarkdown(markdown ?? '') ||
+      (key ? '' : (settings.persona ?? '')));
   const agent =
     options.agent ??
     readConfig(dir).extractAgent ??
@@ -539,17 +588,18 @@ function runPersonaJob(options, deps) {
   let candidate = null;
   let warnings = /** @type {string[]} */ ([]);
   if (result.blocked || options.dryRun) {
-    candidate = writeCandidate(deps.rootDir, { ...result, now });
+    candidate = writeCandidate(deps.rootDir, { ...result, now, key });
   } else {
     ({ snapshot, warnings } = applyCompaction(deps.rootDir, {
       ...job,
+      key,
       markdown,
       persona: result.persona,
       before: result.before,
       now,
     }));
   }
-  const report = formatCompaction(result, { snapshot, candidate });
+  const report = formatCompaction(result, { snapshot, candidate, key });
   output(
     deps,
     options,
@@ -562,10 +612,133 @@ function runPersonaJob(options, deps) {
 /** @param {Options} options */
 function compactFix(options) {
   const file = options.personaFile;
+  const target = options.for === undefined ? '' : ` --for ${options.for}`;
   if (file && /^[a-zA-Z0-9_./:\\-]+$/.test(file)) {
-    return `pnpm memory personalize --persona-file ${file} --compact`;
+    return `pnpm memory personalize${target} --persona-file ${file} --compact`;
   }
   return 'add --compact to the same command (with only the persona input)';
+}
+
+/**
+ * `personalize --for <agent>`: show, set, compact/audit, or reset one agent's
+ * persona file (memory/persona.<agent>.md). The other settings stay the
+ * default ones, so every check is the default persona's.
+ *
+ * @param {Options} options
+ * @param {Deps} deps
+ * @returns {number}
+ */
+function personalizeAgent(options, deps) {
+  const dir = dirOf(deps);
+  const key = /** @type {import('./personalize.js').PersonaKey} */ (
+    options.for
+  );
+  const name = agentPersonaFile(key);
+  const file = path.join(dir, name);
+  if (options.compact || options.audit)
+    return runPersonaJob(options, deps, key);
+  if (options.reset) {
+    if (!fs.existsSync(file)) {
+      output(
+        deps,
+        options,
+        { for: key, removed: false },
+        `No ${key} persona (memory/${name}); nothing to reset.`
+      );
+      return 0;
+    }
+    return withLock(
+      dir,
+      () => {
+        const now = deps.now();
+        const snapshot = takeSnapshot(deps.rootDir, {
+          reason: `persona-${key}`,
+          detail: `reset the ${key} persona`,
+          now,
+        }).id;
+        const { batch } = trashPaths({
+          rootDir: deps.rootDir,
+          scopes: [deps.rootDir],
+          paths: [file],
+          cwd: deps.rootDir,
+          now,
+        });
+        output(
+          deps,
+          options,
+          { for: key, removed: true, snapshot, trash: batch },
+          `Removed the ${key} persona: the agents of "${key}" use the default persona again.\nKept in the trash (${batch}) and in snapshot ${snapshot}. Undo: pnpm memory undo`
+        );
+        return 0;
+      },
+      { label: 'Memory' }
+    );
+  }
+  if (options.persona !== undefined) {
+    const persona = options.persona.trim();
+    if (!persona) {
+      throw new Error(
+        `An empty persona. Remove the ${key} persona with: pnpm memory personalize --for ${key} --reset`
+      );
+    }
+    fs.mkdirSync(dir, { recursive: true });
+    return withLock(
+      dir,
+      () => {
+        let written;
+        try {
+          written = normalizePersonalization({
+            ...readPersonalization(dir),
+            persona,
+          });
+        } catch (error) {
+          if (error instanceof MemoryError && error.code === 'budget') {
+            throw new MemoryError(
+              'budget',
+              `${error.message}\nFix: ${compactFix(options)} (a clean-context agent shortens and audits it)`
+            );
+          }
+          throw error;
+        }
+        const text = /** @type {string} */ (written.persona);
+        writeFileAtomic(file, personaMarkdown(readIfExists(file), text));
+        const warnings = personaWarnings(text);
+        output(
+          deps,
+          options,
+          { for: key, settings: written, warnings },
+          withWarnings(
+            `Saved the ${key} persona (memory/${name}). New sessions of its agents load it.\n\n${withHint(written)}`,
+            warnings
+          )
+        );
+        return 0;
+      },
+      { label: 'Memory' }
+    );
+  }
+  const persona = readAgentPersona(dir, key);
+  const { personalizationEnabled: enabled } = readConfig(dir);
+  if (persona === null) {
+    output(
+      deps,
+      options,
+      { for: key, enabled, persona: null },
+      `No ${key} persona: its agents use the default persona. Set one: pnpm memory personalize --for ${key} --persona "…"`
+    );
+    return 0;
+  }
+  const settings = normalizePersonalization({
+    ...readPersonalization(dir),
+    persona,
+  });
+  output(
+    deps,
+    options,
+    { for: key, enabled, settings },
+    `The ${key} persona (memory/${name}). Personalization is ${enabled ? 'on' : 'off'}.\n\n${withHint(settings)}`
+  );
+  return 0;
 }
 
 /**
@@ -976,6 +1149,7 @@ export const COMMANDS = {
           ? 'off for this session'
           : 'on';
     const fields = Object.keys(core.personalization);
+    const agentPersonas = listAgentPersonas(dir);
     const { extractModel, extractAgent, personalizationEnabled } = core.config;
     const personalizationState = personalizationEnabled ? 'on' : 'off';
     const hint = personalizationEnabled
@@ -1010,6 +1184,7 @@ export const COMMANDS = {
         core: { chars: core.block.length, budget: core.budget },
         personalization: fields,
         personalizationEnabled,
+        agentPersonas,
         saving,
         extractModel,
         extractAgent,
@@ -1026,6 +1201,7 @@ export const COMMANDS = {
             : []),
           `Core block: ${core.block.length}/${core.budget} characters (${AGENTS_LOCAL_FILE})`,
           `Personalization: ${personalizationState} (${fields.length > 0 ? fields.join(', ') : 'no settings, see pnpm memory personalize --presets'})`,
+          `Agent personas: ${agentPersonas.length > 0 ? agentPersonas.join(', ') : 'none'} (kyoten; pnpm memory personalize --for <agent>)`,
           ...[hint].filter(Boolean),
           `Saving: ${saving}${off ? ' (pnpm memory on)' : ''}`,
           agentLine(extractAgent),
@@ -1394,6 +1570,7 @@ export const COMMANDS = {
         );
       }
     }
+    if (options.for !== undefined) return personalizeAgent(options, deps);
     if (options.compact || options.audit) return runPersonaJob(options, deps);
     const fields = FIELD_FLAGS.filter((key) => options[key] !== undefined);
     if (!options.reset && options.preset === undefined && fields.length === 0) {
@@ -1562,10 +1739,13 @@ export function main({ argv = process.argv.slice(2), deps = {} } = {}) {
   }
   if (
     command !== 'personalize' &&
-    (options.compact || options.audit || options.agent !== undefined)
+    (options.compact ||
+      options.audit ||
+      options.agent !== undefined ||
+      options.for !== undefined)
   ) {
     throw new Error(
-      '--compact, --audit, and --agent are only supported on personalize.'
+      '--compact, --audit, --agent, and --for are only supported on personalize.'
     );
   }
   return COMMANDS[command](options, resolved);
