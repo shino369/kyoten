@@ -87,7 +87,7 @@ function writeFakes() {
     `import fs from 'fs';
 import path from 'path';
 const name = path.basename(process.argv[2]);
-const keys = ['KYOTEN_HOME', 'KYOTEN_CALLER_DIR', 'KYOTEN_ADD_DIR', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_SESSION_ID'];
+const keys = ['KYOTEN_HOME', 'KYOTEN_CALLER_DIR', 'KYOTEN_ADD_DIR', 'KYOTEN_AGENT', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_SESSION_ID'];
 const env = Object.fromEntries(keys.map((k) => [k, process.env[k] ?? null]));
 fs.writeFileSync(process.env.FAKE_OUT, JSON.stringify({ name, argv: process.argv.slice(3), cwd: process.cwd(), env }));
 process.exit(Number(process.env.FAKE_EXIT ?? 0));
@@ -203,6 +203,7 @@ test('claude starts in the home with the arguments and exit code passed through'
 
   expect(result.status).toBe(3);
   expect(result.agent.name).toBe('claude');
+  expect(result.agent.env.KYOTEN_AGENT).toBe('claude');
   expect(result.agent.argv).toEqual(['-p', 'hello world']);
   // Real paths: macOS reaches the temp dir through the /var -> /private/var link.
   expect(fs.realpathSync(result.agent.cwd)).toBe(fs.realpathSync(home));
@@ -216,6 +217,7 @@ test('codex starts in the home', () => {
   const result = kyoten(['codex', 'resume']);
 
   expect(result.agent.name).toBe('codex');
+  expect(result.agent.env.KYOTEN_AGENT).toBe('codex');
   expect(result.agent.argv).toEqual(['resume']);
 });
 
@@ -223,6 +225,7 @@ test('dsh starts with its profile and the workspace patch', () => {
   const result = kyoten(['dsh', 'tui']);
 
   expect(result.agent.name).toBe('dsh');
+  expect(result.agent.env.KYOTEN_AGENT).toBe('dsh');
   expect(result.agent.argv).toEqual([
     'tui',
     '--patch',
@@ -249,6 +252,7 @@ test('agy starts in the home with no added arguments', () => {
   const result = kyoten(['agy']);
 
   expect(result.agent.name).toBe('agy');
+  expect(result.agent.env.KYOTEN_AGENT).toBe('agy');
   expect(result.agent.argv).toEqual([]);
   expect(fs.realpathSync(result.agent.cwd)).toBe(fs.realpathSync(home));
 });
@@ -306,6 +310,7 @@ test('dscc saves a piped key, masks it, and starts claude on the DeepSeek profil
   );
   expect(result.agent.env.ANTHROPIC_AUTH_TOKEN).toBe(KEY);
   expect(result.agent.env.ANTHROPIC_API_KEY).toBeNull();
+  expect(result.agent.env.KYOTEN_AGENT).toBe('dscc');
 });
 
 test('run lists the home scripts and runs one there', () => {

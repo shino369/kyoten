@@ -707,8 +707,13 @@ async function launch(ctx, agent, args, addDirFlag) {
       cwd: deps.cwd,
       platform: deps.platform,
       // An inherited KYOTEN_ADD_DIR (kyoten inside kyoten) is not this launch's.
-      drop: [...(profile?.drop ?? []), 'KYOTEN_ADD_DIR'],
-      set: { ...profile?.set, ...(addDir ? { KYOTEN_ADD_DIR: addDir } : {}) },
+      drop: [...(profile?.drop ?? []), 'KYOTEN_ADD_DIR', 'KYOTEN_AGENT'],
+      set: {
+        ...profile?.set,
+        ...(addDir ? { KYOTEN_ADD_DIR: addDir } : {}),
+        // Which persona file the memory hook applies (utils/memory/hook.js).
+        KYOTEN_AGENT: agent,
+      },
     }),
     platform: deps.platform,
     spawn: deps.spawn,

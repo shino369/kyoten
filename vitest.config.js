@@ -35,6 +35,7 @@ export default defineConfig({
       KYOTEN_HOME: '',
       KYOTEN_CALLER_DIR: '',
       KYOTEN_ADD_DIR: '',
+      KYOTEN_AGENT: '',
     },
 
     // Include patterns

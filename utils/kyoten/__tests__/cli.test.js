@@ -769,6 +769,24 @@ describe('main: launch', () => {
       expect(spawn.mock.calls[0][1]).toEqual([]);
     });
 
+    test.each(['claude', 'codex', 'dsh', 'dscc', 'agy'])(
+      'should set KYOTEN_AGENT to %s and replace an inherited value',
+      async (agent) => {
+        const home = makeHome();
+        const profile = path.join(tmp, 'agent-profile.env');
+        fs.writeFileSync(
+          profile,
+          'ANTHROPIC_BASE_URL=https://ds\nANTHROPIC_AUTH_TOKEN=k\n'
+        );
+
+        const { spawn } = await run(['--home', home, agent], {
+          env: { KYOTEN_AGENT: 'stale', DSCC_PROFILE: profile },
+        });
+
+        expect(spawn.mock.calls[0][2].env.KYOTEN_AGENT).toBe(agent);
+      }
+    );
+
     test('should not pass on an inherited KYOTEN_ADD_DIR', async () => {
       const home = makeHome();
 
