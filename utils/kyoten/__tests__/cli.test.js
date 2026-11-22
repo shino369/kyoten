@@ -743,7 +743,9 @@ describe('main: launch', () => {
   describe('projects outside the home', () => {
     /** A git repository outside the home, with a folder inside it. */
     function makeRepo() {
-      const repo = fs.realpathSync(fs.mkdtempSync(path.join(tmp, 'proj-')));
+      const repo = fs.realpathSync.native(
+        fs.mkdtempSync(path.join(tmp, 'proj-'))
+      );
       fs.mkdirSync(path.join(repo, '.git'));
       fs.mkdirSync(path.join(repo, 'src'));
       return repo;

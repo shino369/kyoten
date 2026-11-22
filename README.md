@@ -206,7 +206,7 @@ pnpm memory export                  # checksummed .tar.gz backup; restore via im
 ```
 
 - **Multi-agent background jobs:** Extraction, weekly consolidation, and persona compact/audit run on the **session's own agent CLI** (`claude`, `codex`, `dsh`, or `agy`) by default — or on a chosen CLI via `pnpm memory set --extract-agent <agent>`.
-- **Zero-tool isolation:** Memory jobs run in an empty temp folder with tools disabled. Codex runs out of the box when zero MCP servers are configured (if you configure Codex MCP servers, it fails closed and prints a `Fix:` command to switch `--extract-agent`); Claude and Codex isolation flags avoid double quotes so Windows `.cmd` shims work cleanly.
+- **Zero-tool isolation:** Memory jobs run in an empty temp folder with tools disabled. Codex runs out of the box when zero MCP servers are configured (if you configure Codex MCP servers, it fails closed and prints a `Fix:` command to switch `--extract-agent`); Claude, Codex, and Antigravity isolation flags avoid double quotes so Windows `.cmd` shims work cleanly.
 - **Pausing saves:** Running `pnpm memory off` pauses both extraction and weekly consolidation (manual `pnpm memory consolidate` refuses unless `--force` is passed; `--dry-run` is always allowed).
 - **Managed homes:** A new home starts with automatic saving off unless you opt in at setup. Enable it later with `kyoten run memory on`.
 - **Per-agent personas:** Set one with `pnpm memory personalize --for <claude|codex|ds|agy> --persona-file persona.md`. The launcher's hooks apply the selected persona per session. The `ds` persona serves both DSH and dscc.

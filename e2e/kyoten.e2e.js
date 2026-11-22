@@ -154,8 +154,11 @@ function kyoten(args, { tgz = tarball, env = {}, input, cwd = tmp } = {}) {
 }
 
 test.beforeAll(() => {
-  // The real path: on macOS the temp dir is reached through /var -> /private/var.
-  tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'kyoten-e2e-')));
+  // The real native path: on macOS /var -> /private/var; on Windows 8.3 short
+  // %TEMP% paths (RUNNER~1) and drive/folder casing match outsideRepo().
+  tmp = fs.realpathSync.native(
+    fs.mkdtempSync(path.join(os.tmpdir(), 'kyoten-e2e-'))
+  );
   bin = path.join(tmp, 'bin');
   home = path.join(tmp, 'home');
   writeFakes();
@@ -210,10 +213,12 @@ test('claude starts in the home with the arguments and exit code passed through'
   expect(result.agent.name).toBe('claude');
   expect(result.agent.env.KYOTEN_AGENT).toBe('claude');
   expect(result.agent.argv).toEqual(['-p', 'hello world']);
-  // Real paths: macOS reaches the temp dir through the /var -> /private/var link.
-  expect(fs.realpathSync(result.agent.cwd)).toBe(fs.realpathSync(home));
-  expect(fs.realpathSync(result.agent.env.KYOTEN_CALLER_DIR)).toBe(
-    fs.realpathSync(tmp)
+  // Real native paths: macOS reaches /var -> /private/var; Windows expands 8.3.
+  expect(fs.realpathSync.native(result.agent.cwd)).toBe(
+    fs.realpathSync.native(home)
+  );
+  expect(fs.realpathSync.native(result.agent.env.KYOTEN_CALLER_DIR)).toBe(
+    fs.realpathSync.native(tmp)
   );
   expect(result.agent.env.CLAUDE_CODE_SESSION_ID).toBeNull();
 });
@@ -259,7 +264,9 @@ test('agy starts in the home with no added arguments', () => {
   expect(result.agent.name).toBe('agy');
   expect(result.agent.env.KYOTEN_AGENT).toBe('agy');
   expect(result.agent.argv).toEqual([]);
-  expect(fs.realpathSync(result.agent.cwd)).toBe(fs.realpathSync(home));
+  expect(fs.realpathSync.native(result.agent.cwd)).toBe(
+    fs.realpathSync.native(home)
+  );
 });
 
 test.describe('started inside a git repository outside the home', () => {
