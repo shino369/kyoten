@@ -231,6 +231,6 @@ export function workspaceCheck({ home, run, env }) {
         id: 'workspace',
         status: 'fail',
         detail: 'pnpm workspace:check failed (see above)',
-        fix: `kyoten --home "${home}" init`,
+        fix: `run each Fix command above in the home with kyoten run, e.g. kyoten --home "${home}" run workspace:setup`,
       };
 }

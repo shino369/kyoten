@@ -3,7 +3,7 @@
  * kyoten — start a coding agent in a kyoten workspace (the "home").
  *
  *   kyoten [--home <dir>] [<agent>] [agent args…]     agent: claude (default), codex, dsh, dscc
- *   kyoten [--home <dir>] <command> [options]         init, update, doctor, where, help, version
+ *   kyoten [--home <dir>] <command> [options]         init, update, doctor, run, where, help, version
  *
  * Only the front of the command line is kyoten's: its options, then one word
  * that picks the agent or the command. Everything after that goes to the
@@ -50,6 +50,7 @@ export const COMMANDS = /** @type {const} */ ([
   'init',
   'update',
   'doctor',
+  'run',
   'where',
   'help',
   'version',
@@ -158,6 +159,9 @@ Commands
   update [--no-setup]
             Merge a newer kyoten snapshot into a home kyoten created
   doctor    Check prerequisites, agents, and the home
+  run <script> [args…]
+            Run a workspace script in the home from any folder
+            (pnpm <script> there): kyoten run task status
   where     Print the home (the rule that chose it goes to stderr)
   help      This help
   version   kyoten's version
@@ -335,6 +339,68 @@ function commandDoctor(ctx, args) {
 }
 
 /**
+ * The home must already be a kyoten workspace (no offer to create one).
+ *
+ * @param {Context} ctx
+ */
+function requireWorkspace(ctx) {
+  const { home } = ctx;
+  const state = homeState(home.dir);
+  if (state === 'missing') {
+    throw new Error(`no kyoten home at ${home.dir} yet.\nFix: kyoten init`);
+  }
+  if (state === 'other') {
+    throw new Error(
+      `${home.dir} (${home.source}) is not a kyoten workspace.\nFix: kyoten --home <dir> …, or kyoten init <new dir>`
+    );
+  }
+}
+
+/**
+ * `kyoten run <script> [args…]`: `pnpm <script> [args…]` in the home, with
+ * the terminal and the caller's environment; without a script, the usage
+ * and the home's scripts.
+ *
+ * @param {Context} ctx
+ * @param {string[]} args
+ * @returns {Promise<number>}
+ */
+async function commandRun(ctx, args) {
+  const { deps, home } = ctx;
+  requireWorkspace(ctx);
+  const [script, ...rest] = args;
+  if (script === undefined || script === '--help' || script === '-h') {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(home.dir, 'package.json'), 'utf-8')
+    );
+    const names = Object.keys(pkg.scripts ?? {}).sort();
+    deps.out(
+      [
+        'Usage: kyoten run <script> [args…]',
+        '',
+        `Runs pnpm <script> [args…] in ${home.dir}. Scripts:`,
+        ...(names.length ? names.map((name) => `  ${name}`) : ['  (none)']),
+      ].join('\n')
+    );
+    return 0;
+  }
+  /** @type {Record<string, string>} */
+  const env = {};
+  for (const [name, value] of Object.entries(deps.env)) {
+    if (value !== undefined) env[name] = value;
+  }
+  const status = await spawnInteractive({
+    argv: ['pnpm', script, ...rest],
+    cwd: home.dir,
+    env,
+    platform: deps.platform,
+    spawn: deps.spawn,
+    signals: deps.signals,
+  });
+  return exitCode(status);
+}
+
+/**
  * Make sure the home exists before a launch: in a terminal, offer to create
  * it ([Y/n]); otherwise explain `kyoten init`.
  *
@@ -345,14 +411,8 @@ async function ensureHome(ctx) {
   const { deps, home } = ctx;
   const state = homeState(home.dir);
   if (state === 'workspace') return true;
-  if (state === 'other') {
-    throw new Error(
-      `${home.dir} (${home.source}) is not a kyoten workspace.\nFix: kyoten --home <dir> …, or kyoten init <new dir>`
-    );
-  }
-  if (!deps.stdin.isTTY) {
-    throw new Error(`no kyoten home at ${home.dir} yet.\nFix: kyoten init`);
-  }
+  // Throws for a folder that holds something else, or outside a terminal.
+  if (state === 'other' || !deps.stdin.isTTY) requireWorkspace(ctx);
   const answer = await deps.ask(
     `kyoten: no kyoten home at ${home.dir} yet. Create it now? [Y/n] `
   );
@@ -461,6 +521,8 @@ async function run(parsed, deps) {
       return commandUpdate(ctx, parsed.args);
     case 'doctor':
       return commandDoctor(ctx, parsed.args);
+    case 'run':
+      return commandRun(ctx, parsed.args);
     default:
       return launch(ctx, /** @type {AgentName} */ (parsed.agent), parsed.args);
   }

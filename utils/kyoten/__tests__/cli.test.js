@@ -186,6 +186,7 @@ describe('parseArgs', () => {
     [['dscc', '--set-key'], { agent: 'dscc', args: ['--set-key'] }],
     [['claude', 'update'], { agent: 'claude', args: ['update'] }],
     [['init', '--no-setup'], { command: 'init', args: ['--no-setup'] }],
+    [['run', 'task', 'status'], { command: 'run', args: ['task', 'status'] }],
     [['--init'], { agent: 'claude', args: ['--init'] }],
     [['--home', '/h', 'codex'], { home: '/h', agent: 'codex', args: [] }],
     [['--home=/h', 'where'], { home: '/h', command: 'where', args: [] }],
@@ -514,6 +515,81 @@ describe('main: launch', () => {
     expect(err[0]).toBe(
       'kyoten: dscc profile line 3 skipped: not a variable name: 9X'
     );
+  });
+});
+
+describe('main: run', () => {
+  test('should run the pnpm script in the home and return its exit code', async () => {
+    const home = makeHome();
+
+    const { code, spawn, err } = await run(
+      ['--home', home, 'run', 'task', 'status', '--json'],
+      { exit: 3, env: { CODEX_THREAD_ID: 'kept', GONE: undefined } }
+    );
+
+    expect(code).toBe(3);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const [file, args, options] = spawn.mock.calls[0];
+    expect(path.basename(file)).toMatch(/^pnpm/);
+    expect(args.slice(-3)).toEqual(['task', 'status', '--json']);
+    expect(options.cwd).toBe(home);
+    expect(options.stdio).toBe('inherit');
+    expect(options.env.CODEX_THREAD_ID).toBe('kept');
+    expect('GONE' in options.env).toBe(false);
+    expect(err).toEqual([]);
+  });
+
+  test.each([[[]], [['--help']], [['-h']]])(
+    'should list the home scripts for run %j',
+    async (args) => {
+      const home = makeHome();
+      fs.writeFileSync(
+        path.join(home, 'package.json'),
+        JSON.stringify({
+          name: 'kyoten',
+          scripts: { task: 'node t.js', check: 'x', memory: 'y' },
+        })
+      );
+
+      const { code, out, spawn } = await run(['--home', home, 'run', ...args]);
+
+      expect(code).toBe(0);
+      expect(spawn).not.toHaveBeenCalled();
+      expect(out[0]).toContain('Usage: kyoten run <script> [args…]');
+      expect(out[0]).toContain('  check\n  memory\n  task');
+    }
+  );
+
+  test('should list no scripts for a home without any', async () => {
+    const home = makeHome();
+
+    const { out } = await run(['--home', home, 'run']);
+
+    expect(out[0]).toContain('(none)');
+  });
+
+  test('should explain a missing home', async () => {
+    const { code, err, spawn } = await run([
+      '--home',
+      path.join(tmp, 'none'),
+      'run',
+      'check',
+    ]);
+
+    expect(code).toBe(1);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(err.join('\n')).toContain('Fix: kyoten init');
+  });
+
+  test('should refuse a home that holds something else', async () => {
+    const other = path.join(tmp, 'other');
+    fs.mkdirSync(other);
+    fs.writeFileSync(path.join(other, 'x'), '');
+
+    const { code, err } = await run(['--home', other, 'run', 'check']);
+
+    expect(code).toBe(1);
+    expect(err.join('\n')).toContain('is not a kyoten workspace');
   });
 });
 

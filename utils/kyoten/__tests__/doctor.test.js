@@ -443,6 +443,7 @@ describe('workspaceCheck', () => {
     expect(result).toMatchObject({
       status: 'fail',
       detail: 'pnpm workspace:check failed (see above)',
+      fix: `run each Fix command above in the home with kyoten run, e.g. kyoten --home "${tmp}" run workspace:setup`,
     });
   });
 });

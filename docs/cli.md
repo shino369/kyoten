@@ -80,6 +80,9 @@ Commands
   update [--no-setup]
             Merge a newer kyoten snapshot into a home kyoten created
   doctor    Check prerequisites, agents, and the home
+  run <script> [args…]
+            Run a workspace script in the home from any folder
+            (pnpm <script> there): kyoten run task status
   where     Print the home (the rule that chose it goes to stderr)
   help      This help
   version   kyoten's version

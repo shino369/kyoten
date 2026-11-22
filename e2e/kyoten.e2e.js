@@ -241,6 +241,22 @@ test('dscc saves a piped key, masks it, and starts claude on the DeepSeek profil
   expect(result.agent.env.ANTHROPIC_API_KEY).toBeNull();
 });
 
+test('run lists the home scripts and runs one there', () => {
+  const version = JSON.parse(
+    fs.readFileSync(path.join(home, 'package.json'), 'utf-8')
+  ).version;
+
+  const list = kyoten(['run']);
+  // The home's own kyoten script needs no installed dependencies.
+  const result = kyoten(['run', 'kyoten', 'version']);
+
+  expect(list.status).toBe(0);
+  expect(list.stdout).toContain('Usage: kyoten run <script>');
+  expect(list.stdout).toContain('  task\n');
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain(version);
+});
+
 test('update merges a newer snapshot with a local commit', () => {
   // A scratch kyoten repository: HEAD's files, then a README change.
   const scratch = path.join(tmp, 'scratch');
