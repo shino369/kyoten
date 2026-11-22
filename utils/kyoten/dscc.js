@@ -151,9 +151,9 @@ export function showProfile(file) {
  * a crash never leaves half a profile; 0600 on POSIX (the file holds a key).
  *
  * @param {string} file
- * @param {string} content
+ * @param {string | Buffer} content
  */
-function writePrivate(file, content) {
+export function writePrivate(file, content) {
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, content, { mode: 0o600 });
   fs.renameSync(tmp, file);

@@ -60,13 +60,16 @@ permission flags.
 `--codex` is the same as `codex`. To give Claude a word that is also a kyoten command, name the
 agent: `kyoten claude update`.
 
-| Command                     | Does                                                                                                                                              |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `init [<dir>] [--no-setup]` | Create a home and install it. With `<dir>`, also make it the default home. An existing kyoten workspace is kept as it is and only installed again |
-| `update [--no-setup]`       | Merge this kyoten's snapshot into a home kyoten created                                                                                           |
-| `doctor`                    | Check prerequisites, agents, Codex and Antigravity trust, the dsh path, the dscc key, then `pnpm workspace:check`                                 |
-| `where`                     | Print the home on stdout and the rule that chose it on stderr (`cd "$(kyoten where)"`)                                                            |
-| `help`, `version`           | Help and the version                                                                                                                              |
+| Command                          | Does                                                                                                                                              |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `init [<dir>] [--no-setup]`      | Create a home and install it. With `<dir>`, also make it the default home. An existing kyoten workspace is kept as it is and only installed again |
+| `update [--no-setup]`            | Merge this kyoten's snapshot into a home kyoten created                                                                                           |
+| `doctor`                         | Check prerequisites, agents, Codex and Antigravity trust, memory saving, the dsh path, the dscc key, then `pnpm workspace:check`                  |
+| `where`                          | Print the home on stdout and the rule that chose it on stderr (`cd "$(kyoten where)"`)                                                            |
+| `run <script> [args…]`           | Run a workspace script in the home from any folder (`pnpm <script>` there): `kyoten run task status`                                              |
+| `config [get\|set\|unset\|path]` | Show or change the config file (below)                                                                                                            |
+| `reset [--yes] [--all]`          | Move a home kyoten created aside (below)                                                                                                          |
+| `help`, `version`                | Help and the version                                                                                                                              |
 
 ## The home
 
@@ -118,6 +121,19 @@ kyoten init ~/src/kyoten
 
 `args` adds default arguments for one agent, before the ones you type. That is the place for a
 flag you always want, such as a permission mode: kyoten never adds one itself.
+
+You do not have to edit the file by hand:
+
+```bash
+kyoten config                                   # the path and the content
+kyoten config set home ~/src/kyoten             # must be a kyoten workspace
+kyoten config set args.dscc --dangerously-skip-permissions   # every word after the key is one argument
+kyoten config set addDir true                   # true or false
+kyoten config get args.dscc
+kyoten config unset args.dscc
+```
+
+Writes are atomic and checked against the same rules as reading the file.
 
 ## dscc: Claude Code on the DeepSeek API
 
@@ -187,8 +203,23 @@ When the home was made by another kyoten version, each launch prints a one-line 
 
 ## Remove
 
-Delete the home (`kyoten where` prints it) and the config folder. A global install is removed with
-`pnpm remove -g kyoten`.
+`kyoten reset` moves a home kyoten created aside; delete the renamed folder yourself when you are
+sure. A global install is removed with `pnpm remove -g kyoten`.
+
+### Reset
+
+```bash
+kyoten reset            # shows what is in the home, then asks [y/N]
+kyoten reset --yes      # no terminal, or no question
+kyoten reset --all      # also move the config folder (config.json, the dscc profile)
+```
+
+Only for a home kyoten created. A clone or a registered workspace is not touched: stop using it
+with `kyoten config unset home`. Before asking, reset shows the home, the local commits that are not
+on `kyoten/upstream` (the count and up to five subjects), uncommitted files, open tasks, and memory
+notes, and suggests `kyoten backup`. It then renames the home to `<home>.removed-<YYYYMMDD-HHMMSS>`
+(local time) and prints the command that undoes it (`mv` on macOS and Linux, `Move-Item` on
+Windows). Nothing is deleted. If the config's `home` pointed at the reset home, it is unset.
 
 ## Developing kyoten
 

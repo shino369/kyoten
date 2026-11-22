@@ -90,6 +90,14 @@ Commands
             Run a workspace script in the home from any folder
             (pnpm <script> there): kyoten run task status
   where     Print the home (the rule that chose it goes to stderr)
+  config [path | get <key> | set <key> <value…> | unset <key>]
+            Show or change the config file. Keys: home (a kyoten
+            workspace), args.<agent> (every word after the key is one
+            argument), addDir (true|false)
+  reset [--yes] [--all]
+            Move a home kyoten created aside (renamed to
+            <home>.removed-<time>, never deleted; the undo is printed).
+            Shows what is in it first. --all also moves the config folder
   help      This help
   version   kyoten's version
 

@@ -399,3 +399,17 @@ describe('samePath', () => {
     expect(samePath(path.join(tmp, 'a'), path.join(tmp, 'b'))).toBe(false);
   });
 });
+
+describe('validateConfig addDir', () => {
+  test('should accept a boolean addDir', () => {
+    expect(validateConfig({ addDir: false }, 'c.json')).toEqual({
+      addDir: false,
+    });
+  });
+
+  test('should reject a non-boolean addDir', () => {
+    expect(() => validateConfig({ addDir: 'yes' }, 'c.json')).toThrow(
+      /"addDir" must be true or false/
+    );
+  });
+});

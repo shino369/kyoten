@@ -27,6 +27,7 @@ import {
 import { formatCheck, runChecks, workspaceCheck } from './doctor.js';
 import {
   AGENTS,
+  configDir,
   configFile,
   expandHome,
   homeState,
@@ -35,6 +36,7 @@ import {
   resolveHome,
   writeConfig,
 } from './home.js';
+import { runConfig } from './config-cmd.js';
 import { initHome } from './init.js';
 import { pauseSaving } from './memory.js';
 import {
@@ -45,6 +47,7 @@ import {
   spawnInteractive,
 } from './launch.js';
 import { compareVersions } from './repo.js';
+import { resetHome } from './reset.js';
 import { snapshotSource } from './snapshot.js';
 import { updateHome } from './update.js';
 
@@ -58,6 +61,8 @@ export const COMMANDS = /** @type {const} */ ([
   'doctor',
   'run',
   'where',
+  'config',
+  'reset',
   'help',
   'version',
 ]);
@@ -81,6 +86,7 @@ export const COMMANDS = /** @type {const} */ ([
  *   registry?: (home: string, name: string) => string[] | null,
  *   run: import('../spawn.js').Spawn,
  *   ask: (question: string) => Promise<string>,
+ *   now: () => Date,
  *   root: string,
  * }} KyotenDeps
  */
@@ -177,6 +183,14 @@ Commands
             Run a workspace script in the home from any folder
             (pnpm <script> there): kyoten run task status
   where     Print the home (the rule that chose it goes to stderr)
+  config [path | get <key> | set <key> <value…> | unset <key>]
+            Show or change the config file. Keys: home (a kyoten
+            workspace), args.<agent> (every word after the key is one
+            argument), addDir (true|false)
+  reset [--yes] [--all]
+            Move a home kyoten created aside (renamed to
+            <home>.removed-<time>, never deleted; the undo is printed).
+            Shows what is in it first. --all also moves the config folder
   help      This help
   version   kyoten's version
 
@@ -262,6 +276,35 @@ export function parseCommandArgs(command, args) {
 }
 
 /**
+ * Flags and one optional folder of `kyoten reset|backup|restore`.
+ *
+ * @param {string} command
+ * @param {string[]} args
+ * @param {{ flags: string[], dir?: 'optional' | 'required' }} spec
+ * @returns {{ flags: Set<string>, dir?: string }}
+ */
+export function parseFlags(command, args, { flags, dir }) {
+  const usage = `kyoten ${command}${dir ? ` ${dir === 'required' ? '<dir>' : '[<dir>]'}` : ''}${flags.map((f) => ` [${f}]`).join('')}`;
+  /** @type {{ flags: Set<string>, dir?: string }} */
+  const parsed = { flags: new Set() };
+  for (const arg of args) {
+    if (flags.includes(arg)) {
+      parsed.flags.add(arg);
+    } else if (dir && !arg.startsWith('-') && parsed.dir === undefined) {
+      parsed.dir = arg;
+    } else {
+      throw new Error(
+        `unexpected argument for kyoten ${command}: ${arg}\nFix: ${usage}`
+      );
+    }
+  }
+  if (dir === 'required' && parsed.dir === undefined) {
+    throw new Error(`kyoten ${command} needs a folder.\nFix: ${usage}`);
+  }
+  return parsed;
+}
+
+/**
  * @typedef {{ deps: KyotenDeps, version: string, configPath: string, config: import('./home.js').KyotenConfig, home: import('./home.js').ResolvedHome }} Context
  */
 
@@ -344,6 +387,48 @@ function commandUpdate(ctx, args) {
     env: deps.env,
   });
   return 0;
+}
+
+/**
+ * @param {Context} ctx
+ * @param {string[]} args
+ */
+function commandConfig(ctx, args) {
+  const { deps, configPath, config } = ctx;
+  return runConfig({
+    args,
+    file: configPath,
+    config,
+    cwd: deps.cwd,
+    homedir: deps.homedir,
+    out: deps.out,
+    err: deps.err,
+  });
+}
+
+/**
+ * @param {Context} ctx
+ * @param {string[]} args
+ */
+function commandReset(ctx, args) {
+  const { deps, configPath, config, home } = ctx;
+  const { flags } = parseFlags('reset', args, { flags: ['--yes', '--all'] });
+  return resetHome({
+    home: home.dir,
+    config,
+    configPath,
+    configDir: configDir(deps),
+    all: flags.has('--all'),
+    yes: flags.has('--yes'),
+    interactive: Boolean(deps.stdin.isTTY),
+    ask: deps.ask,
+    run: deps.run,
+    env: deps.env,
+    out: deps.out,
+    err: (text) => deps.err(text),
+    platform: deps.platform,
+    now: deps.now,
+  });
 }
 
 /**
@@ -577,6 +662,10 @@ async function run(parsed, deps) {
       return commandInit(ctx, parsed.args);
     case 'update':
       return commandUpdate(ctx, parsed.args);
+    case 'config':
+      return commandConfig(ctx, parsed.args);
+    case 'reset':
+      return commandReset(ctx, parsed.args);
     case 'doctor':
       return commandDoctor(ctx, parsed.args);
     case 'run':
@@ -621,6 +710,7 @@ export function defaultDeps() {
     tty: process.stderr,
     run: crossSpawn(),
     root: ROOT_DIR,
+    now: () => new Date(),
     ask: (question) =>
       askLine({ input: process.stdin, output: process.stderr, question }),
   };

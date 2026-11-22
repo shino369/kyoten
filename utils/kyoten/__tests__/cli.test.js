@@ -17,6 +17,7 @@ import {
   packageVersion,
   parseArgs,
   parseCommandArgs,
+  parseFlags,
 } from '../cli.js';
 import { HOME_INFO } from '../home.js';
 
@@ -184,6 +185,7 @@ async function run(
       questions.push(question);
       return answer;
     },
+    now: () => new Date(2026, 10, 22, 9, 5, 7),
     root: source,
   });
   return { code, out, err, tty, spawn, questions, pnpm };
@@ -444,6 +446,102 @@ describe('main: init and update', () => {
 
     expect(code).toBe(0);
     expect(err.at(-1)).toBe(`kyoten: ${home} already has kyoten 0.2.0`);
+  });
+});
+
+describe('parseFlags', () => {
+  test('should collect flags and one folder', () => {
+    const parsed = parseFlags('backup', ['d', '--include-key'], {
+      flags: ['--include-key'],
+      dir: 'optional',
+    });
+
+    expect(parsed.dir).toBe('d');
+    expect(parsed.flags.has('--include-key')).toBe(true);
+  });
+
+  test.each([
+    [['--nope'], { flags: ['--yes'] }, /unexpected argument/],
+    [['a', 'b'], { flags: [], dir: 'optional' }, /unexpected argument/],
+    [[], { flags: ['--yes'], dir: 'required' }, /needs a folder/],
+  ])('should reject %j', (args, spec, message) => {
+    expect(() => parseFlags('x', args, /** @type {any} */ (spec))).toThrow(
+      message
+    );
+  });
+});
+
+describe('main: config', () => {
+  const configFile = () => path.join(tmp, 'cfg', 'kyoten', 'config.json');
+
+  test('should set, get, show, and unset through the CLI', async () => {
+    const set = await run([
+      'config',
+      'set',
+      'args.dscc',
+      '--dangerously-skip-permissions',
+    ]);
+    const get = await run(['config', 'get', 'args.dscc']);
+    const show = await run(['config']);
+    const path_ = await run(['config', 'path']);
+    const unset = await run(['config', 'unset', 'args.dscc']);
+
+    expect(set.code).toBe(0);
+    expect(JSON.parse(get.out[0])).toEqual(['--dangerously-skip-permissions']);
+    expect(show.out[0]).toBe(configFile());
+    expect(path_.out).toEqual([configFile()]);
+    expect(unset.code).toBe(0);
+    expect(JSON.parse(fs.readFileSync(configFile(), 'utf-8'))).toEqual({});
+  });
+
+  test('should print a Fix line for a bad key', async () => {
+    const { code, err } = await run(['config', 'set', 'nope', 'x']);
+
+    expect(code).toBe(1);
+    expect(err.join('\n')).toContain('kyoten: Fix:');
+  });
+});
+
+describe('main: reset', () => {
+  test('should move a home aside with --yes and print the undo', async () => {
+    const home = path.join(tmp, 'k');
+    await run(['init', '--no-setup'], { env: { KYOTEN_HOME: home } });
+
+    const { code, out, err } = await run(['reset', '--yes'], {
+      env: { KYOTEN_HOME: home },
+    });
+
+    const removed = `${home}.removed-20261122-090507`;
+    expect(code).toBe(0);
+    expect(fs.existsSync(home)).toBe(false);
+    expect(fs.existsSync(removed)).toBe(true);
+    expect(out.join('\n')).toContain(home);
+    expect(err.join('\n')).toContain(removed);
+  });
+
+  test('should ask first on a terminal', async () => {
+    const home = path.join(tmp, 'k');
+    await run(['init', '--no-setup'], { env: { KYOTEN_HOME: home } });
+
+    const { code, questions } = await run(['reset', '--all'], {
+      env: { KYOTEN_HOME: home },
+      stdin: Object.assign(Readable.from([]), { isTTY: true }),
+      answer: 'n',
+    });
+
+    expect(code).toBe(1);
+    expect(questions[0]).toContain('[y/N]');
+    expect(fs.existsSync(home)).toBe(true);
+  });
+
+  test('should require --yes without a terminal', async () => {
+    const home = path.join(tmp, 'k');
+    await run(['init', '--no-setup'], { env: { KYOTEN_HOME: home } });
+
+    const { code, err } = await run(['reset'], { env: { KYOTEN_HOME: home } });
+
+    expect(code).toBe(1);
+    expect(err.join('\n')).toContain('kyoten reset --yes');
   });
 });
 
@@ -913,6 +1011,7 @@ describe('defaultDeps', () => {
     expect(stderr).toHaveBeenCalledWith('e\n');
     expect(deps.cwd).toBe(process.cwd());
     expect(deps.platform).toBe(process.platform);
+    expect(deps.now()).toBeInstanceOf(Date);
   });
 
   test('should ask on stderr and read the answer from stdin', async () => {

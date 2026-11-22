@@ -347,3 +347,33 @@ test('a second update with the same snapshot changes nothing', () => {
   expect(result.stderr).toContain('already has kyoten');
   expect(git(home, 'rev-parse', 'HEAD')).toBe(head);
 });
+
+test('config sets, gets, and unsets a value', () => {
+  const set = kyoten(['config', 'set', 'args.codex', '--model', 'x']);
+  const get = kyoten(['config', 'get', 'args.codex']);
+  const launched = kyoten(['codex']);
+  const unset = kyoten(['config', 'unset', 'args.codex']);
+  const shown = kyoten(['config']);
+
+  expect(set.status, set.stderr).toBe(0);
+  expect(JSON.parse(get.stdout)).toEqual(['--model', 'x']);
+  expect(launched.agent.argv).toEqual(['--model', 'x']);
+  expect(unset.status).toBe(0);
+  expect(shown.stdout).not.toContain('args');
+});
+
+test('reset --yes moves a home aside and prints the undo', () => {
+  const other = path.join(tmp, 'reset-home');
+  kyoten(['init', '--no-setup'], { env: { KYOTEN_HOME: other } });
+
+  const result = kyoten(['reset', '--yes'], { env: { KYOTEN_HOME: other } });
+
+  expect(result.status, result.stderr).toBe(0);
+  expect(fs.existsSync(other)).toBe(false);
+  const moved = fs
+    .readdirSync(tmp)
+    .filter((name) => name.startsWith('reset-home.removed-'));
+  expect(moved).toHaveLength(1);
+  expect(result.stderr).toContain(moved[0]);
+  expect(result.stderr).toMatch(/mv |Move-Item/);
+});
