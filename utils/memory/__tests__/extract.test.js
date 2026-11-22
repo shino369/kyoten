@@ -1482,6 +1482,15 @@ describe('provider sides', () => {
     expect(runAgent).toHaveBeenCalledTimes(1);
   });
 
+  test('should record the side on an applied run', () => {
+    richSession();
+    extractEntry(queued({ kyotenAgent: 'dscc' }), deps({ env: DSCC }));
+    writeOffset(dir, SESSION, 0, NOW);
+    extractEntry(queued(), deps());
+
+    expect(readJournal(dir).map((run) => run.side)).toEqual(['dscc', 'normal']);
+  });
+
   test('should extract an old entry without a side on a normal worker', () => {
     richSession();
     const entry = { ...queued() };

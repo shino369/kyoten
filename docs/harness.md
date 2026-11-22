@@ -447,7 +447,9 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   provider its environment names, so a dscc session (Claude Code on DeepSeek) is extracted only by a
   worker started from a dscc session, and any other session only by a worker that is not; a
   mismatching entry is deferred (left queued, no attempt, no journal line) for a later matching
-  worker, and `pnpm memory extract` says so. Consolidation on claude is skipped by a dscc worker.
+  worker, and `pnpm memory extract` says so. A dscc worker consolidates with claude only when every applied extraction run in
+  the journal came from dscc (applied runs record their `side`; older runs count as not dscc), else it
+  defers; a normal worker always consolidates.
   Other agents are not affected.
 - **Safety:** every write path refuses text matching `utils/redact.js`; notes are framed as facts;
   `pnpm workspace:check` fails if a memory file is tracked.

@@ -532,6 +532,34 @@ describe('consolidation on dscc', () => {
     expect(readJournal(dir)).toEqual([]);
   });
 
+  test('should consolidate on a dscc worker when every run was dscc', () => {
+    seed();
+    appendJournal(dir, { status: 'applied', side: 'dscc' });
+    const runAgent = agentReturning({ profile: [], ops: [] });
+
+    const run = consolidate(deps({ runAgent, env: { KYOTEN_AGENT: 'dscc' } }));
+
+    expect(run.status).toBe('consolidated');
+    expect(runAgent).toHaveBeenCalled();
+  });
+
+  test('should defer on a dscc worker when a run was not dscc', () => {
+    seed();
+    appendJournal(dir, { status: 'applied', side: 'dscc' });
+    appendJournal(dir, { status: 'applied' });
+
+    const run = consolidate(deps({ env: { KYOTEN_AGENT: 'dscc' } }));
+
+    expect(run.status).toBe('deferred');
+  });
+
+  test('should consolidate on a normal worker after dscc runs', () => {
+    seed();
+    appendJournal(dir, { status: 'applied', side: 'dscc' });
+
+    expect(consolidate(deps()).status).toBe('consolidated');
+  });
+
   test('should still run an agy consolidation on a dscc worker', () => {
     seed();
     writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });

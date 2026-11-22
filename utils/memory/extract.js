@@ -446,7 +446,7 @@ const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
  */
 function deferredMessage(run, name) {
   if (run.job === 'consolidation') {
-    return 'Deferred the consolidation: this worker runs on dscc and it would use claude; run this from a session that is not dscc.';
+    return 'Deferred the consolidation: this worker runs on dscc and some notes came from other sessions; run this from a session that is not dscc.';
   }
   return run.side === 'dscc'
     ? `Deferred ${name}: it ran on dscc; run this from a dscc session.`
@@ -680,6 +680,7 @@ export function extractEntry(entry, deps) {
     {
       ...base,
       status: 'applied',
+      side: entry.kyotenAgent === 'dscc' ? 'dscc' : 'normal',
       ...range,
       agent,
       model,

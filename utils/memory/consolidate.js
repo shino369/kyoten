@@ -287,6 +287,17 @@ function lastRun(dir) {
 }
 
 /**
+ * Whether the journal has applied extraction runs and all came from dscc.
+ *
+ * @param {string} dir
+ * @returns {boolean}
+ */
+function onlyDsccRuns(dir) {
+  const runs = readJournal(dir).filter((item) => item.status === 'applied');
+  return runs.length > 0 && runs.every((item) => item.side === 'dscc');
+}
+
+/**
  * Run one consolidation (the caller holds the worker lock). Throws when the
  * agent fails.
  *
@@ -316,9 +327,20 @@ export function consolidate(deps) {
     extractModel: config.extractModel,
     ownModel: last?.agent === agent ? last.model : null,
   });
-  // A dscc worker must not send the notes to Anthropic, nor another worker
-  // to DeepSeek: the claude call waits for a normal session (still due).
-  const deferred = deferredRun(agent, null, deps.env, base);
+  // The claude CLI sends the notes to the provider its environment names. A
+  // dscc worker may therefore consolidate with claude only when every applied
+  // extraction run came from the dscc side (runs without a `side`, and a
+  // journal without any run, count as not dscc), so a dscc-only user is
+  // consolidated while notes that came from normal sessions never go to
+  // DeepSeek; otherwise the call waits for a normal worker (still due). A
+  // normal worker always consolidates: notes from dscc sessions were already
+  // extracted on DeepSeek, and the user also uses Anthropic.
+  const deferred = deferredRun(
+    agent,
+    deps.env.KYOTEN_AGENT === 'dscc' && onlyDsccRuns(dir) ? 'dscc' : null,
+    deps.env,
+    base
+  );
   if (deferred) return deferred;
   if (deps.dryRun) return { ...base, status: 'dry-run', agent, model, prompt };
 
