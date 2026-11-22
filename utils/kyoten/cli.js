@@ -2,7 +2,7 @@
 /**
  * kyoten — start a coding agent in a kyoten workspace (the "home").
  *
- *   kyoten [--home <dir>] [<agent>] [agent args…]     agent: claude (default), codex, dsh, dscc
+ *   kyoten [--home <dir>] [<agent>] [agent args…]     agent: claude (default), codex, dsh, dscc, agy
  *   kyoten [--home <dir>] <command> [options]         init, update, doctor, run, where, help, version
  *
  * Only the front of the command line is kyoten's: its options, then one word
@@ -40,6 +40,7 @@ import { pauseSaving } from './memory.js';
 import {
   buildEnv,
   exitCode,
+  outsideRepo,
   prepareLaunch,
   spawnInteractive,
 } from './launch.js';
@@ -64,7 +65,7 @@ export const COMMANDS = /** @type {const} */ ([
 /**
  * @typedef {import('./home.js').AgentName} AgentName
  * @typedef {typeof COMMANDS[number]} CommandName
- * @typedef {{ home?: string, help: boolean, version: boolean, agent?: AgentName, command?: CommandName, args: string[] }} KyotenArgs
+ * @typedef {{ home?: string, addDir: boolean, help: boolean, version: boolean, agent?: AgentName, command?: CommandName, args: string[] }} KyotenArgs
  * @typedef {{
  *   env: NodeJS.ProcessEnv,
  *   cwd: string,
@@ -90,7 +91,7 @@ export const COMMANDS = /** @type {const} */ ([
  */
 export function parseArgs(argv) {
   /** @type {KyotenArgs} */
-  const parsed = { help: false, version: false, args: [] };
+  const parsed = { help: false, version: false, addDir: true, args: [] };
   let i = 0;
   for (; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -103,6 +104,8 @@ export function parseArgs(argv) {
         );
       }
       parsed.home = value;
+    } else if (arg === '--no-add-dir') {
+      parsed.addDir = false;
     } else if (arg === '--help' || arg === '-h') {
       parsed.help = true;
     } else if (arg === '--version') {
@@ -141,7 +144,7 @@ export function packageVersion(root = ROOT_DIR) {
  * @param {string} version
  */
 export function helpText(version) {
-  return `Usage: kyoten [--home <dir>] [<agent>] [agent args…]
+  return `Usage: kyoten [--home <dir>] [--no-add-dir] [<agent>] [agent args…]
        kyoten [--home <dir>] <command> [options]
 
 kyoten ${version} — start a coding agent in your kyoten workspace (the home)
@@ -152,9 +155,13 @@ Agents (the first word, default claude; --<agent> works too)
   dsh       DeepSeek harness: dsh <profile> --patch .dsh/workspace.patch.yml
             (profile: the first argument if it is not an option; default web)
   dscc      Claude Code on the DeepSeek API
+  agy       Antigravity CLI
 
 Everything after the agent goes to it unchanged; kyoten adds no permission
-flags. To give Claude a word that is a kyoten command: kyoten claude <word>
+flags. Started inside a git repository outside the home, claude, dscc, and
+codex also get --add-dir=<repository>, so they can edit it (--no-add-dir, or
+"addDir": false in the config, turns that off). To give Claude a word that
+is a kyoten command: kyoten claude <word>
 
 Commands
   init [<dir>] [--no-setup] [--memory on|off]
@@ -181,7 +188,7 @@ The home is the first of: --home, $KYOTEN_HOME, the clone kyoten runs from
 (pnpm kyoten inside it), "home" in the config, ~/.kyoten.
 Config: config.json in %APPDATA%\\kyoten (Windows), else in
 $XDG_CONFIG_HOME/kyoten or ~/.config/kyoten:
-  {"home": "/abs/path", "args": {"dscc": ["--dangerously-skip-permissions"]}}`;
+  {"home": "/abs/path", "addDir": false, "args": {"dscc": ["--dangerously-skip-permissions"]}}`;
 }
 
 /**
@@ -313,7 +320,7 @@ async function commandInit(ctx, args) {
     writeConfig(configPath, { ...config, home: target });
     deps.err(`kyoten: ${target} is now the default home (${configPath})`);
   }
-  deps.err('kyoten: start an agent with: kyoten [claude|codex|dsh|dscc]');
+  deps.err('kyoten: start an agent with: kyoten [claude|codex|dsh|dscc|agy]');
   return 0;
 }
 
@@ -487,15 +494,23 @@ function versionHint(ctx) {
  * @param {Context} ctx
  * @param {AgentName} agent
  * @param {string[]} args
+ * @param {boolean} addDirFlag  false with --no-add-dir
  * @returns {Promise<number>}
  */
-async function launch(ctx, agent, args) {
+async function launch(ctx, agent, args, addDirFlag) {
   const { deps, config, home } = ctx;
+  const addDirEnabled = addDirFlag && config.addDir !== false;
   if (!(await ensureHome(ctx))) return 1;
   versionHint(ctx);
   const profile = agent === 'dscc' ? dsccEnv(profilePath(deps)) : null;
   for (const warning of profile?.warnings ?? [])
     deps.err(`kyoten: dscc profile ${warning}`);
+  const addDir = outsideRepo({
+    agent,
+    cwd: deps.cwd,
+    home: home.dir,
+    enabled: addDirEnabled,
+  });
   const argv = prepareLaunch({
     agent,
     args,
@@ -503,10 +518,13 @@ async function launch(ctx, agent, args) {
     env: deps.env,
     platform: deps.platform,
     defaults: config.args?.[agent],
+    addDir,
     canRun: deps.canRun,
     registry: deps.registry,
   });
-  deps.err(`kyoten: ${agent} in ${home.dir} (${home.source})`);
+  deps.err(
+    `kyoten: ${agent} in ${home.dir} (${home.source})${addDir ? `; --add-dir=${addDir}` : ''}`
+  );
   const status = await spawnInteractive({
     argv,
     cwd: home.dir,
@@ -515,8 +533,9 @@ async function launch(ctx, agent, args) {
       home: home.dir,
       cwd: deps.cwd,
       platform: deps.platform,
-      drop: profile?.drop,
-      set: profile?.set,
+      // An inherited KYOTEN_ADD_DIR (kyoten inside kyoten) is not this launch's.
+      drop: [...(profile?.drop ?? []), 'KYOTEN_ADD_DIR'],
+      set: { ...profile?.set, ...(addDir ? { KYOTEN_ADD_DIR: addDir } : {}) },
     }),
     platform: deps.platform,
     spawn: deps.spawn,
@@ -563,7 +582,12 @@ async function run(parsed, deps) {
     case 'run':
       return commandRun(ctx, parsed.args);
     default:
-      return launch(ctx, /** @type {AgentName} */ (parsed.agent), parsed.args);
+      return launch(
+        ctx,
+        /** @type {AgentName} */ (parsed.agent),
+        parsed.args,
+        parsed.addDir
+      );
   }
 }
 

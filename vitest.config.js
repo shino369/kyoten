@@ -34,6 +34,7 @@ export default defineConfig({
       // A session kyoten started passes these on; tests must not see them.
       KYOTEN_HOME: '',
       KYOTEN_CALLER_DIR: '',
+      KYOTEN_ADD_DIR: '',
     },
 
     // Include patterns

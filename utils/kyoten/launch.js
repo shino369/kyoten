@@ -8,8 +8,11 @@
  * which refuses arguments it cannot pass safely.
  */
 import { spawn as nodeSpawn } from 'child_process';
+import fs from 'fs';
 import os from 'os';
+import path from 'path';
 import { DSH_PATCH, dshDirProblem } from '../loop/adapters.js';
+import { findGitDirs } from '../memory/repo.js';
 import { isExecutable, resolveCommand, which } from '../spawn.js';
 import { HARNESS_SESSION_VARS } from '../task/store.js';
 import { installHint, loadCatalog } from '../tools/catalog.js';
@@ -75,16 +78,61 @@ export function agentInstallHint(agent, home, platform) {
   return `install ${bin} and make sure it is on PATH (kyoten doctor lists what is missing)`;
 }
 
+/** Agents with a verified `--add-dir=<dir>` flag (Claude Code and Codex). */
+const ADD_DIR_AGENTS = new Set(['claude', 'dscc', 'codex']);
+
+/** @param {string} dir */
+function realPath(dir) {
+  try {
+    return fs.realpathSync(dir);
+  } catch {
+    return path.resolve(dir);
+  }
+}
+
+/**
+ * The top of the git repository the caller started kyoten in, when the agent
+ * should get it as an extra directory: the agent takes `--add-dir`, the
+ * repository is not the home or inside it, and the home is not inside it
+ * (the agent could already reach it). Found by walking up for `.git`, links
+ * resolved; null otherwise.
+ *
+ * @param {{ agent: AgentName, cwd: string, home: string, enabled?: boolean }} input
+ * @returns {string | null}
+ */
+export function outsideRepo({ agent, cwd, home, enabled = true }) {
+  if (!enabled || !ADD_DIR_AGENTS.has(agent)) return null;
+  let top;
+  try {
+    top = findGitDirs(cwd)?.top;
+  } catch {
+    return null;
+  }
+  if (!top) return null;
+  const repo = realPath(top);
+  const base = realPath(home);
+  /** @param {string} outer @param {string} inner */
+  const within = (outer, inner) => {
+    const rel = path.relative(outer, inner);
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  };
+  return within(base, repo) || within(repo, base) ? null : repo;
+}
+
 /**
  * The full argv for an agent. `command` is the executable prefix from
  * `findAgentCommand`; `defaults` are the config's arguments for this agent,
- * placed before the user's.
+ * placed before the user's. `addDir` (claude, dscc, codex) goes first, in the
+ * equals form: `--add-dir <dirs...>` is variadic and would take a prompt.
  *
- * @param {{ agent: AgentName, command: string[], args: string[], defaults?: string[] }} input
+ * @param {{ agent: AgentName, command: string[], args: string[], defaults?: string[], addDir?: string | null }} input
  * @returns {string[]}
  */
-export function buildArgv({ agent, command, args, defaults = [] }) {
-  if (agent !== 'dsh') return [...command, ...defaults, ...args];
+export function buildArgv({ agent, command, args, defaults = [], addDir }) {
+  if (agent !== 'dsh') {
+    const extra = addDir ? [`--add-dir=${addDir}`] : [];
+    return [...command, ...extra, ...defaults, ...args];
+  }
   // dsh takes the profile as its first word: `dsh web`, `dsh tui`.
   const named = args.length > 0 && !args[0].startsWith('-');
   const profile = named ? args[0] : DSH_DEFAULT_PROFILE;
@@ -213,7 +261,7 @@ export function exitCode({ code, signal }) {
 /**
  * Check that an agent can start in `home` and return its argv.
  *
- * @param {{ agent: AgentName, args: string[], home: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform, defaults?: string[], canRun?: (file: string) => boolean, registry?: (home: string, name: string) => string[] | null }} input
+ * @param {{ agent: AgentName, args: string[], home: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform, defaults?: string[], addDir?: string | null, canRun?: (file: string) => boolean, registry?: (home: string, name: string) => string[] | null }} input
  * @returns {string[]}
  */
 export function prepareLaunch({
@@ -223,6 +271,7 @@ export function prepareLaunch({
   env,
   platform,
   defaults,
+  addDir,
   canRun,
   registry,
 }) {
@@ -243,5 +292,5 @@ export function prepareLaunch({
       `${agentBin(agent)} was not found (agent ${agent}).\nFix: ${agentInstallHint(agent, home, platform)}`
     );
   }
-  return buildArgv({ agent, command, args, defaults });
+  return buildArgv({ agent, command, args, defaults, addDir });
 }

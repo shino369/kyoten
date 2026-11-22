@@ -1,6 +1,6 @@
 /**
  * kyoten end to end, through the path users take: the packed tarball run with
- * `npx --package <tgz> -- kyoten …`. Fake claude, codex, and dsh go first on
+ * `npx --package <tgz> -- kyoten …`. Fake claude, codex, dsh, and agy go first on
  * PATH (on Windows as .cmd shims, so the cmd.exe path is covered); they record
  * their argv, cwd, and environment and exit with $FAKE_EXIT.
  *
@@ -87,13 +87,13 @@ function writeFakes() {
     `import fs from 'fs';
 import path from 'path';
 const name = path.basename(process.argv[2]);
-const keys = ['KYOTEN_HOME', 'KYOTEN_CALLER_DIR', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_SESSION_ID'];
+const keys = ['KYOTEN_HOME', 'KYOTEN_CALLER_DIR', 'KYOTEN_ADD_DIR', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_SESSION_ID'];
 const env = Object.fromEntries(keys.map((k) => [k, process.env[k] ?? null]));
 fs.writeFileSync(process.env.FAKE_OUT, JSON.stringify({ name, argv: process.argv.slice(3), cwd: process.cwd(), env }));
 process.exit(Number(process.env.FAKE_EXIT ?? 0));
 `
   );
-  for (const name of ['claude', 'codex', 'dsh']) {
+  for (const name of ['claude', 'codex', 'dsh', 'agy']) {
     if (WIN) {
       fs.writeFileSync(
         path.join(bin, `${name}.cmd`),
@@ -228,6 +228,51 @@ test('dsh starts with its profile and the workspace patch', () => {
     '--patch',
     '.dsh/workspace.patch.yml',
   ]);
+});
+
+test('agy starts in the home with no added arguments', () => {
+  const result = kyoten(['agy']);
+
+  expect(result.agent.name).toBe('agy');
+  expect(result.agent.argv).toEqual([]);
+  expect(fs.realpathSync(result.agent.cwd)).toBe(fs.realpathSync(home));
+});
+
+test.describe('started inside a git repository outside the home', () => {
+  /** @type {string} */
+  let repo;
+
+  test.beforeAll(() => {
+    repo = path.join(tmp, 'project');
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    git(repo, 'init', '-q');
+  });
+
+  test('claude and codex get --add-dir=<repo> first', () => {
+    for (const agent of ['claude', 'codex']) {
+      const result = kyoten([agent, 'hello'], { cwd: path.join(repo, 'src') });
+
+      expect(result.agent.name).toBe(agent);
+      expect(result.agent.argv).toEqual([`--add-dir=${repo}`, 'hello']);
+      expect(result.agent.env.KYOTEN_ADD_DIR).toBe(repo);
+      expect(result.stderr).toContain(`; --add-dir=${repo}`);
+    }
+  });
+
+  test('--no-add-dir turns it off', () => {
+    const result = kyoten(['--no-add-dir', 'claude', 'hello'], { cwd: repo });
+
+    expect(result.agent.argv).toEqual(['hello']);
+    expect(result.agent.env.KYOTEN_ADD_DIR).toBeNull();
+  });
+
+  test('dsh and agy do not get it', () => {
+    const dsh = kyoten(['dsh', 'tui'], { cwd: repo });
+    const agy = kyoten(['agy'], { cwd: repo });
+
+    expect(dsh.agent.argv).not.toContain(`--add-dir=${repo}`);
+    expect(agy.agent.argv).toEqual([]);
+  });
 });
 
 test('dscc saves a piped key, masks it, and starts claude on the DeepSeek profile', () => {

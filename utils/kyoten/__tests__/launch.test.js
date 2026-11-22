@@ -5,6 +5,7 @@ import path from 'path';
 import { vi } from 'vitest';
 import { DSH_PATCH } from '../../loop/adapters.js';
 import { ROOT_DIR } from '../../workspace-config.js';
+import { linkDir } from '../../__tests__/support/links.js';
 import {
   DSH_DEFAULT_PROFILE,
   agentBin,
@@ -13,6 +14,7 @@ import {
   buildEnv,
   exitCode,
   findAgentCommand,
+  outsideRepo,
   prepareLaunch,
   spawnInteractive,
 } from '../launch.js';
@@ -169,6 +171,18 @@ describe('buildArgv', () => {
       '--dangerously-skip-permissions',
       '-c',
     ]);
+  });
+
+  test('should put the added directory first, in the equals form', () => {
+    const argv = buildArgv({
+      agent: 'codex',
+      command: ['/bin/codex'],
+      args: ['exec'],
+      defaults: ['--x'],
+      addDir: '/repo',
+    });
+
+    expect(argv).toEqual(['/bin/codex', '--add-dir=/repo', '--x', 'exec']);
   });
 
   test('should start dsh with the default profile and the workspace patch', () => {
@@ -527,5 +541,118 @@ describe('prepareLaunch', () => {
     });
 
     expect(argv).toEqual(['/bin/dsh', 'tui', '--patch', DSH_PATCH, '--x']);
+  });
+
+  test('should put the added directory before the defaults and the arguments', () => {
+    const argv = prepareLaunch({
+      agent: 'claude',
+      args: ['-c'],
+      home: '/home',
+      env: POSIX_ENV,
+      platform: 'linux',
+      defaults: ['--x'],
+      addDir: '/repo',
+      canRun: (file) => file === '/bin/claude',
+    });
+
+    expect(argv).toEqual(['/bin/claude', '--add-dir=/repo', '--x', '-c']);
+  });
+
+  test('should start agy with no added arguments', () => {
+    const argv = prepareLaunch({
+      agent: 'agy',
+      args: [],
+      home: '/home',
+      env: POSIX_ENV,
+      platform: 'linux',
+      canRun: (file) => file === '/bin/agy',
+    });
+
+    expect(argv).toEqual(['/bin/agy']);
+  });
+});
+
+describe('outsideRepo', () => {
+  /** @type {string} */
+  let dir;
+
+  beforeEach(() => {
+    dir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'kyoten-out-'))
+    );
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** @param {string} name */
+  const repo = (name) => {
+    const top = path.join(dir, name);
+    fs.mkdirSync(path.join(top, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(top, 'src'));
+    return top;
+  };
+
+  test('should return the top of the repository the caller is in', () => {
+    const top = repo('proj');
+    const home = path.join(dir, 'home');
+    fs.mkdirSync(home);
+
+    expect(
+      outsideRepo({ agent: 'claude', cwd: path.join(top, 'src'), home })
+    ).toBe(top);
+  });
+
+  test('should accept a worktree, whose .git is a file', () => {
+    const top = path.join(dir, 'wt');
+    fs.mkdirSync(top);
+    fs.writeFileSync(
+      path.join(top, '.git'),
+      `gitdir: ${dir}/main/.git/worktrees/wt\n`
+    );
+
+    expect(
+      outsideRepo({ agent: 'dscc', cwd: top, home: path.join(dir, 'h') })
+    ).toBe(top);
+  });
+
+  test('should compare real paths when a link points into the home', () => {
+    const home = repo('home');
+    const link = path.join(dir, 'link');
+    linkDir(home, link);
+
+    expect(outsideRepo({ agent: 'claude', cwd: link, home })).toBeNull();
+  });
+
+  test('should return null for the home, inside it, or a repository holding it', () => {
+    const outer = repo('outer');
+    const home = path.join(outer, 'home');
+    fs.mkdirSync(path.join(home, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(home, 'tasks', 'x', '.git'), { recursive: true });
+
+    for (const cwd of [home, path.join(home, 'tasks', 'x'), outer]) {
+      expect(outsideRepo({ agent: 'claude', cwd, home })).toBeNull();
+    }
+  });
+
+  test('should return null for agents without the flag, when disabled, or outside git', () => {
+    const top = repo('proj');
+    const home = path.join(dir, 'home');
+    const plain = path.join(dir, 'plain');
+    fs.mkdirSync(plain);
+
+    expect(outsideRepo({ agent: 'dsh', cwd: top, home })).toBeNull();
+    expect(outsideRepo({ agent: 'agy', cwd: top, home })).toBeNull();
+    expect(
+      outsideRepo({ agent: 'claude', cwd: top, home, enabled: false })
+    ).toBeNull();
+    expect(outsideRepo({ agent: 'claude', cwd: plain, home })).toBeNull();
+  });
+
+  test('should return null when the folders cannot be read', () => {
+    expect(
+      outsideRepo({ agent: 'claude', cwd: path.join(dir, 'a\0b'), home: dir })
+    ).toBeNull();
   });
 });

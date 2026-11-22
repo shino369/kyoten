@@ -144,12 +144,19 @@ describe('validateConfig', () => {
     });
   });
 
+  test('should accept addDir as a boolean and args for agy', () => {
+    expect(
+      validateConfig({ addDir: false, args: { agy: ['--x'] } }, 'c.json')
+    ).toEqual({ addDir: false, args: { agy: ['--x'] } });
+  });
+
   test.each([
     [[], 'expected a JSON object'],
     [null, 'expected a JSON object'],
     ['x', 'expected a JSON object'],
     [{ home: 'relative' }, '"home" must be an absolute path'],
     [{ home: 3 }, '"home" must be an absolute path'],
+    [{ addDir: 'no' }, '"addDir" must be true or false'],
     [{ args: [] }, '"args" must map an agent'],
     [{ args: { cursor: [] } }, 'unknown agent "cursor"'],
     [{ args: { claude: '--x' } }, '"args.claude" must be a list of strings'],

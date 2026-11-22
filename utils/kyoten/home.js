@@ -12,7 +12,13 @@ import path from 'path';
 import { readIfExists, writeFileAtomic } from '../task/store.js';
 
 export const PACKAGE_NAME = 'kyoten';
-export const AGENTS = /** @type {const} */ (['claude', 'codex', 'dsh', 'dscc']);
+export const AGENTS = /** @type {const} */ ([
+  'claude',
+  'codex',
+  'dsh',
+  'dscc',
+  'agy',
+]);
 /** Marks the snapshot inside the npm package (pack.js); never in a home. */
 export const SNAPSHOT_FILE = '.kyoten-snapshot.json';
 /** kyoten's record of a home it created (`.kyoten/` is git-ignored). */
@@ -20,7 +26,7 @@ export const HOME_INFO = path.join('.kyoten', 'home.json');
 
 /**
  * @typedef {typeof AGENTS[number]} AgentName
- * @typedef {{ home?: string, args?: Partial<Record<AgentName, string[]>> }} KyotenConfig
+ * @typedef {{ home?: string, addDir?: boolean, args?: Partial<Record<AgentName, string[]>> }} KyotenConfig
  * @typedef {{ dir: string, source: string }} ResolvedHome
  * @typedef {{ env: NodeJS.ProcessEnv, platform: NodeJS.Platform, homedir: string }} UserDirs
  * @typedef {{ managed: true, version: string, sourceCommit: string, createdAt: string, updatedAt?: string }} HomeInfo
@@ -92,7 +98,7 @@ export function validateConfig(data, file) {
   /** @param {string} what */
   const bad = (what) =>
     new Error(
-      `${file}: ${what}.\nFix: correct the file ({"home": "<absolute path>", "args": {"<agent>": ["--flag"]}}) or delete it`
+      `${file}: ${what}.\nFix: correct the file ({"home": "<absolute path>", "addDir": false, "args": {"<agent>": ["--flag"]}}) or delete it`
     );
   if (!isObject(data)) throw bad('expected a JSON object');
   /** @type {KyotenConfig} */
@@ -103,6 +109,11 @@ export function validateConfig(data, file) {
         throw bad('"home" must be an absolute path');
       }
       config.home = value;
+    } else if (key === 'addDir') {
+      if (typeof value !== 'boolean') {
+        throw bad('"addDir" must be true or false');
+      }
+      config.addDir = value;
     } else if (key === 'args') {
       if (!isObject(value))
         throw bad('"args" must map an agent to a list of arguments');

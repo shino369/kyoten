@@ -2,13 +2,14 @@
 
 kyoten (拠点, "base of operations") starts a coding agent inside a kyoten workspace: shared rules
 (`AGENTS.md`), tasks that survive sessions, memory, skills, review roles, hooks, and a quality
-gate, the same for Claude Code, Codex, and the DeepSeek harness.
+gate, the same for Claude Code, Codex, the DeepSeek harness, and Antigravity CLI.
 
 ```bash
 npx kyoten            # Claude Code
 npx kyoten codex      # OpenAI Codex CLI
 npx kyoten dsh        # DeepSeek harness (dsh web)
 npx kyoten dscc       # Claude Code on the DeepSeek API
+npx kyoten agy        # Antigravity CLI
 ```
 
 No clone is needed. The first run offers to create your workspace (the "home", `~/.kyoten`), and
@@ -20,7 +21,8 @@ every later run starts the agent there.
   `corepack enable --install-directory <a folder on your PATH you can write to>`).
 - The agent CLIs you want to use: [Claude Code](https://code.claude.com/docs),
   [Codex](https://developers.openai.com/codex/cli), or
-  [DSH](https://deepseekdocs.com/en/docs/user-guide/cli). kyoten does not install them.
+  [DSH](https://deepseekdocs.com/en/docs/user-guide/cli), or Antigravity CLI (`agy`). kyoten does
+  not install them.
   `kyoten doctor` lists what is missing.
 
 macOS, Linux, and Windows (PowerShell, cmd, Git Bash) are supported.
@@ -39,7 +41,7 @@ Install it globally if you prefer a plain `kyoten` command: `pnpm add -g kyoten`
 ## Command line
 
 ```text
-kyoten [--home <dir>] [<agent>] [agent args…]
+kyoten [--home <dir>] [--no-add-dir] [<agent>] [agent args…]
 kyoten [--home <dir>] <command> [options]
 ```
 
@@ -53,6 +55,7 @@ permission flags.
 | `codex`  | `codex`                                                                                                                                   |
 | `dsh`    | `dsh <profile> --patch .dsh/workspace.patch.yml`; the profile is the first argument if it is not an option, else `web` (`kyoten dsh tui`) |
 | `dscc`   | `claude` with the DeepSeek profile (below)                                                                                                |
+| `agy`    | `agy` (Antigravity CLI), no added arguments                                                                                               |
 
 `--codex` is the same as `codex`. To give Claude a word that is also a kyoten command, name the
 agent: `kyoten claude update`.
@@ -61,7 +64,7 @@ agent: `kyoten claude update`.
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `init [<dir>] [--no-setup]` | Create a home and install it. With `<dir>`, also make it the default home. An existing kyoten workspace is kept as it is and only installed again |
 | `update [--no-setup]`       | Merge this kyoten's snapshot into a home kyoten created                                                                                           |
-| `doctor`                    | Check prerequisites, agents, Codex trust, the dsh path, the dscc key, then `pnpm workspace:check`                                                 |
+| `doctor`                    | Check prerequisites, agents, Codex and Antigravity trust, the dsh path, the dscc key, then `pnpm workspace:check`                                 |
 | `where`                     | Print the home on stdout and the rule that chose it on stderr (`cd "$(kyoten where)"`)                                                            |
 | `help`, `version`           | Help and the version                                                                                                                              |
 
@@ -83,6 +86,18 @@ another repository, start a task for it from the home: `pnpm task new <name> --r
 kyoten passes the directory you started it from as `KYOTEN_CALLER_DIR`, and the session brief
 mentions it when it is a git repository.
 
+### Projects outside the home
+
+Started inside a git repository that is not the home (found by walking up for `.git`), `kyoten`,
+`kyoten codex`, and `kyoten dscc` start the agent with `--add-dir=<repository>` first, so it can
+read and edit that repository while its hooks, tasks, and memory stay in the home. The launch line
+says so (`kyoten: claude in <home> (default); --add-dir=<repository>`). `dsh` and `agy` have no
+verified flag for this; the session brief still mentions the repository. For multi-step work on it,
+start a task: `pnpm task new <name> --repo <path>`.
+
+Turn it off for one launch with `kyoten --no-add-dir …`, or always with `"addDir": false` in the
+config.
+
 Already have a clone? Register it as the default home (nothing is copied):
 
 ```bash
@@ -96,6 +111,7 @@ kyoten init ~/src/kyoten
 ```json
 {
   "home": "/absolute/path/to/home",
+  "addDir": false,
   "args": { "dscc": ["--dangerously-skip-permissions"] }
 }
 ```
@@ -150,6 +166,8 @@ When the home was made by another kyoten version, each launch prints a one-line 
 
 - **Codex** reads the workspace's `.codex/` only when the home is trusted. Accept the trust prompt
   on the first `kyoten codex`, then run `/hooks` once to trust the hooks.
+- **Antigravity CLI** (`agy`) reads the workspace's `.agents/` (hooks, roles, skills) once the home
+  is trusted: accept the trust prompt on the first `kyoten agy`. `kyoten doctor` checks it.
 - **DSH** has no project config; kyoten adds the workspace patch. Install the Claude hooks bridge in
   each DSH profile you start, at the version `dsh --version` prints (see `docs/harness.md` in the
   home). DSH cannot run the hooks from a home path that contains `$`, a backtick, or `"` (or `\` on

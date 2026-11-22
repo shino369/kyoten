@@ -57,7 +57,7 @@ Usage:
 ## `pnpm kyoten`
 
 ```text
-Usage: kyoten [--home <dir>] [<agent>] [agent args…]
+Usage: kyoten [--home <dir>] [--no-add-dir] [<agent>] [agent args…]
        kyoten [--home <dir>] <command> [options]
 
 kyoten 0.1.0 — start a coding agent in your kyoten workspace (the home)
@@ -68,9 +68,13 @@ Agents (the first word, default claude; --<agent> works too)
   dsh       DeepSeek harness: dsh <profile> --patch .dsh/workspace.patch.yml
             (profile: the first argument if it is not an option; default web)
   dscc      Claude Code on the DeepSeek API
+  agy       Antigravity CLI
 
 Everything after the agent goes to it unchanged; kyoten adds no permission
-flags. To give Claude a word that is a kyoten command: kyoten claude <word>
+flags. Started inside a git repository outside the home, claude, dscc, and
+codex also get --add-dir=<repository>, so they can edit it (--no-add-dir, or
+"addDir": false in the config, turns that off). To give Claude a word that
+is a kyoten command: kyoten claude <word>
 
 Commands
   init [<dir>] [--no-setup] [--memory on|off]
@@ -97,7 +101,7 @@ The home is the first of: --home, $KYOTEN_HOME, the clone kyoten runs from
 (pnpm kyoten inside it), "home" in the config, ~/.kyoten.
 Config: config.json in %APPDATA%\kyoten (Windows), else in
 $XDG_CONFIG_HOME/kyoten or ~/.config/kyoten:
-  {"home": "/abs/path", "args": {"dscc": ["--dangerously-skip-permissions"]}}
+  {"home": "/abs/path", "addDir": false, "args": {"dscc": ["--dangerously-skip-permissions"]}}
 ```
 
 ## `pnpm loop`

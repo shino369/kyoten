@@ -177,7 +177,7 @@ async function run(
     signals: new EventEmitter(),
     canRun: (file) =>
       path.dirname(file) === bin &&
-      /^(claude|codex)(\.exe)?$/i.test(path.basename(file)),
+      /^(claude|codex|dsh|agy)(\.exe)?$/i.test(path.basename(file)),
     registry: () => null,
     run: runSpawn,
     ask: async (question) => {
@@ -197,6 +197,13 @@ describe('parseArgs', () => {
     [['codex', '--model', 'x'], { agent: 'codex', args: ['--model', 'x'] }],
     [['--dsh', 'tui'], { agent: 'dsh', args: ['tui'] }],
     [['dscc', '--set-key'], { agent: 'dscc', args: ['--set-key'] }],
+    [['agy', 'chat'], { agent: 'agy', args: ['chat'] }],
+    [['--agy'], { agent: 'agy', args: [] }],
+    [
+      ['--no-add-dir', 'codex', 'exec'],
+      { addDir: false, agent: 'codex', args: ['exec'] },
+    ],
+    [['codex', '--no-add-dir'], { agent: 'codex', args: ['--no-add-dir'] }],
     [['claude', 'update'], { agent: 'claude', args: ['update'] }],
     [['init', '--no-setup'], { command: 'init', args: ['--no-setup'] }],
     [['run', 'task', 'status'], { command: 'run', args: ['task', 'status'] }],
@@ -211,6 +218,7 @@ describe('parseArgs', () => {
     expect(parseArgs(argv)).toEqual({
       help: false,
       version: false,
+      addDir: true,
       ...expected,
     });
   });
@@ -499,6 +507,119 @@ describe('main: launch', () => {
 
     expect(spawn.mock.calls[0][1]).toEqual(['--search', 'resume']);
     expect(err[0]).toBe(`kyoten: codex in ${home} (${configPath})`);
+  });
+
+  test('should start agy in the home with no added arguments', async () => {
+    const home = makeHome();
+
+    const { spawn, err } = await run(['--home', home, 'agy']);
+
+    expect(spawn.mock.calls[0][0]).toBe(agentPath('agy'));
+    expect(spawn.mock.calls[0][1]).toEqual([]);
+    expect(spawn.mock.calls[0][2].cwd).toBe(home);
+    expect(err).toEqual([`kyoten: agy in ${home} (--home)`]);
+  });
+
+  describe('projects outside the home', () => {
+    /** A git repository outside the home, with a folder inside it. */
+    function makeRepo() {
+      const repo = fs.realpathSync(fs.mkdtempSync(path.join(tmp, 'proj-')));
+      fs.mkdirSync(path.join(repo, '.git'));
+      fs.mkdirSync(path.join(repo, 'src'));
+      return repo;
+    }
+
+    test.each(['claude', 'dscc', 'codex'])(
+      'should put --add-dir first for %s',
+      async (agent) => {
+        const home = makeHome();
+        const repo = makeRepo();
+        const profile = path.join(tmp, 'dscc.env');
+        fs.writeFileSync(
+          profile,
+          `ANTHROPIC_BASE_URL=https://ds\nANTHROPIC_AUTH_TOKEN=${KEY}\n`
+        );
+        const configPath = path.join(tmp, 'cfg', 'kyoten', 'config.json');
+        fs.mkdirSync(path.dirname(configPath), { recursive: true });
+        fs.writeFileSync(
+          configPath,
+          JSON.stringify({ args: { [agent]: ['--x'] } })
+        );
+
+        const { spawn, err } = await run(['--home', home, agent, 'fix it'], {
+          cwd: path.join(repo, 'src'),
+          env: { DSCC_PROFILE: profile },
+        });
+
+        expect(spawn.mock.calls[0][1]).toEqual([
+          `--add-dir=${repo}`,
+          '--x',
+          'fix it',
+        ]);
+        expect(spawn.mock.calls[0][2].env.KYOTEN_ADD_DIR).toBe(repo);
+        expect(err.at(-1)).toBe(
+          `kyoten: ${agent} in ${home} (--home); --add-dir=${repo}`
+        );
+      }
+    );
+
+    test.each(['dsh', 'agy'])(
+      'should not add a directory for %s',
+      async (agent) => {
+        const home = makeHome();
+        const repo = makeRepo();
+
+        const { spawn, err } = await run(['--home', home, agent], {
+          cwd: repo,
+        });
+
+        expect(spawn.mock.calls[0][1].join(' ')).not.toContain('--add-dir');
+        expect(spawn.mock.calls[0][2].env.KYOTEN_ADD_DIR).toBeUndefined();
+        expect(err.at(-1)).toBe(`kyoten: ${agent} in ${home} (--home)`);
+      }
+    );
+
+    test('should not add a directory with --no-add-dir', async () => {
+      const home = makeHome();
+      const repo = makeRepo();
+
+      const { spawn } = await run(['--home', home, '--no-add-dir', 'codex'], {
+        cwd: repo,
+      });
+
+      expect(spawn.mock.calls[0][1]).toEqual([]);
+    });
+
+    test('should not add a directory when the config says addDir is false', async () => {
+      const home = makeHome();
+      const repo = makeRepo();
+      const configPath = path.join(tmp, 'cfg', 'kyoten', 'config.json');
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify({ addDir: false }));
+
+      const { spawn } = await run(['--home', home], { cwd: repo });
+
+      expect(spawn.mock.calls[0][1]).toEqual([]);
+    });
+
+    test('should not add a directory when started in the home', async () => {
+      const home = makeHome();
+      fs.mkdirSync(path.join(home, '.git'));
+
+      const { spawn } = await run(['--home', home], { cwd: home });
+
+      expect(spawn.mock.calls[0][1]).toEqual([]);
+    });
+
+    test('should not pass on an inherited KYOTEN_ADD_DIR', async () => {
+      const home = makeHome();
+
+      const { spawn } = await run(['--home', home], {
+        env: { KYOTEN_ADD_DIR: '/stale' },
+      });
+
+      expect(spawn.mock.calls[0][2].env.KYOTEN_ADD_DIR).toBeUndefined();
+    });
   });
 
   test('should hint at kyoten update for a home made by an older kyoten', async () => {

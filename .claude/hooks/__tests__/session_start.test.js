@@ -348,6 +348,30 @@ describe('session_start callerLine', () => {
     expect(line).toContain(`--repo "${path.resolve(repo)}"`);
   });
 
+  test('should say the repository is already added when kyoten added it', () => {
+    const repo = gitRepo(path.join(root, 'project'));
+
+    const line = callerLine(path.join(root, 'home'), {
+      KYOTEN_CALLER_DIR: repo,
+      KYOTEN_ADD_DIR: repo,
+    });
+
+    expect(line).toContain('readable and writable');
+    expect(line).toContain(`--repo "${path.resolve(repo)}"`);
+  });
+
+  test('should keep the plain text when KYOTEN_ADD_DIR names another folder', () => {
+    const repo = gitRepo(path.join(root, 'project'));
+
+    const line = callerLine(path.join(root, 'home'), {
+      KYOTEN_CALLER_DIR: repo,
+      KYOTEN_ADD_DIR: path.join(root, 'elsewhere'),
+    });
+
+    expect(line).not.toContain('readable and writable');
+    expect(line).toContain('work on it through a task');
+  });
+
   test('should stay quiet without KYOTEN_CALLER_DIR', () => {
     expect(callerLine(root, {})).toBeNull();
   });
