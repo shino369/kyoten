@@ -40,20 +40,42 @@ export const isRuntimeFile = (file) =>
 
 /**
  * Paths that must never be packed. They are git-ignored, so a snapshot of a
- * commit cannot hold them; this is the second line of defence.
+ * commit cannot hold them; this is the second line of defence. Every rule is
+ * case-insensitive (a Windows or macOS checkout is) and, unless it names a
+ * root path, applies at any depth:
+ *
+ *   tasks/ memory/ logs/ node_modules/ coverage/     workspace-local folders
+ *   *.local.*                                        local overrides, e.g.
+ *                                                    AGENTS.local.md
+ *   tools/local.json, .mcp.json                      local tool settings
+ *   .npmrc                                           registry tokens
+ *   *.env and .env*                                  secrets; but .env.example
+ *                                                    and dscc.env.example are
+ *                                                    templates and may ship
+ *   *.pem *.key *.p12 *.pfx *.crt                    keys and certificates
+ *   id_rsa* id_ed25519*                              SSH private keys
+ *   credentials.json, secrets/
  */
 export const DENY = [
-  /^(tasks|memory|logs|node_modules|coverage)\//,
-  /(^|\/)node_modules\//,
-  /^(AGENTS|CLAUDE)\.local\.md$/,
-  /^tools\/local\.json$/,
-  /^\.claude\/settings\.local\.json$/,
-  /^\.mcp\.json$/,
-  /(^|\/)\.env(\.(?!example$)[^/]*)?$/,
-  /\.(pem|key|p12|pfx|crt)$/,
-  /(^|\/)credentials\.json$/,
-  /(^|\/)secrets\//,
+  /^(tasks|memory|logs|node_modules|coverage)\//i,
+  /(^|\/)node_modules\//i,
+  /(^|\/)[^/]*\.local\.[^/]*$/i,
+  /^tools\/local\.json$/i,
+  /^\.mcp\.json$/i,
+  /(^|\/)\.npmrc$/i,
+  /\.env$/i,
+  /(^|\/)\.env(?!\.example$)[^/]*$/i,
+  /\.(pem|key|p12|pfx|crt)$/i,
+  /(^|\/)id_(rsa|ed25519)[^/]*$/i,
+  /(^|\/)credentials\.json$/i,
+  /(^|\/)secrets\//i,
 ];
+
+/**
+ * Tracked templates that match a rule above on purpose (copied by
+ * `pnpm memory init`; they hold no secrets). Whole paths only, no patterns.
+ */
+export const ALLOWED_TEMPLATES = ['templates/memory/AGENTS.local.md'];
 
 /**
  * @typedef {import('../spawn.js').Spawn} Spawn
@@ -61,7 +83,8 @@ export const DENY = [
  */
 
 /** @param {string} file  POSIX path */
-export const denied = (file) => DENY.some((rule) => rule.test(file));
+export const denied = (file) =>
+  !ALLOWED_TEMPLATES.includes(file) && DENY.some((rule) => rule.test(file));
 
 /**
  * The paths in a `.tgz` (gzip + ustar, as npm writes them), PAX long names

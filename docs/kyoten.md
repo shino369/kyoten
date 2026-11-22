@@ -203,7 +203,17 @@ When the home was made by another kyoten version, each launch prints a one-line 
 
 - The npm package holds a snapshot of one git commit, never a working tree: untracked and ignored
   files (tasks, memory, logs, local settings, secrets) cannot be in it. The pack step also checks
-  every file against a deny list and the exact expected file list.
+  every file against a deny list and the exact expected file list. The deny list ignores case and
+  matches at any depth: `tasks/`, `memory/`, `logs/`, `node_modules/`, `coverage/`, `secrets/`,
+  `*.local.*`, `tools/local.json`, `.mcp.json`, `.npmrc`, `*.env` and `.env*`, `credentials.json`,
+  `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.crt`, `id_rsa*`, and `id_ed25519*`. Templates such as
+  `.env.example` and `dscc.env.example` are allowed, as is the one tracked
+  `templates/memory/AGENTS.local.md`.
+- kyoten's own git commands (init, update, backup, restore, reset) run without the caller's
+  `GIT_*` environment variables, so a git hook or IDE terminal cannot point them at another
+  repository. The agent CLIs still get your environment unchanged.
+- Files holding a key or your data (the dscc profile, backups) are written through a randomly
+  named temporary file created exclusively with mode 0600, then renamed into place.
 - The package has no install scripts. kyoten itself makes no network calls; `pnpm install` and
   `pnpm workspace:setup` make the ones they always make.
 - Commands run without a shell. On Windows, `.cmd` shims go through `cmd.exe` with strict quoting.
