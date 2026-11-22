@@ -657,6 +657,19 @@ describe('restoreBackup', () => {
     expect(createHome).not.toHaveBeenCalled();
   });
 
+  test('should wait for an asynchronous home creation', async () => {
+    makeBackup();
+    const createHome = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      makeHome(path.join(tmp, 'new-home'), { message: 'snapshot B' });
+    });
+
+    await restoreBackup(restoreInput({ createHome }));
+
+    expect(createHome).toHaveBeenCalledOnce();
+    expect(fs.existsSync(path.join(tmp, 'new-home', '.git'))).toBe(true);
+  });
+
   test('should restore a backup without local commits', async () => {
     const home = path.join(tmp, 'home');
     makeHome(home);

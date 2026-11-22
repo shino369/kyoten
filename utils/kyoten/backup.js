@@ -555,7 +555,7 @@ function checkConfig(data, source) {
 }
 
 /**
- * @param {{ dir: string, yes: boolean, interactive: boolean, ask: (question: string) => Promise<string>, home: string, createHome: () => void, configFile: string, profileFile: string, run: Spawn, env: NodeJS.ProcessEnv, out: (text: string) => void, err: (text: string) => void, cwd: string, homedir: string }} input
+ * @param {{ dir: string, yes: boolean, interactive: boolean, ask: (question: string) => Promise<string>, home: string, createHome: () => void | Promise<void>, configFile: string, profileFile: string, run: Spawn, env: NodeJS.ProcessEnv, out: (text: string) => void, err: (text: string) => void, cwd: string, homedir: string }} input
  * @returns {Promise<number>}
  */
 export async function restoreBackup({
@@ -591,7 +591,7 @@ export async function restoreBackup({
       `${home} is not empty and is not a kyoten workspace.\nFix: kyoten --home <new dir> restore "${folder}"`
     );
   }
-  if (state !== 'workspace') createHome();
+  if (state !== 'workspace') await createHome();
   const blocker = mergeBlocker({ home, run, env });
   if (blocker) throw new Error(blocker);
 
