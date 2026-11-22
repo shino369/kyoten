@@ -364,6 +364,15 @@ test('config sets, gets, and unsets a value', () => {
 
 test('backup, then restore into a fresh home, brings back a local commit and the config', () => {
   kyoten(['config', 'set', 'addDir', 'true']);
+  // The homes are not installed (init --no-setup); borrow this repository's
+  // modules so `pnpm memory export|import` can run.
+  const modules = (/** @type {string} */ dir) =>
+    fs.symlinkSync(
+      path.join(ROOT, 'node_modules'),
+      path.join(dir, 'node_modules'),
+      'junction'
+    );
+  modules(home);
   const folder = path.join(tmp, 'e2e-backup');
 
   const made = kyoten(['backup', folder]);
@@ -376,6 +385,7 @@ test('backup, then restore into a fresh home, brings back a local commit and the
     DSCC_PROFILE: path.join(cfg2, 'dscc.env'),
   };
   kyoten(['init', '--no-setup'], { env: isolated });
+  modules(fresh);
   const restored = kyoten(['restore', folder, '--yes'], { env: isolated });
 
   expect(made.status, made.stderr).toBe(0);
