@@ -89,9 +89,9 @@ permission-bypass flag. Full guide: [docs/kyoten.md](docs/kyoten.md).
 | `kyoten dscc --set-key` · `--show`               | Save the DeepSeek API key outside every workspace · print the profile with the key masked                |
 
 - **Projects outside the home.** Started inside another git repository, `kyoten`, `kyoten codex`,
-  and `kyoten dscc` add `--add-dir=<repository>` so the agent can edit it while its hooks, tasks,
-  and memory stay in the home (`--no-add-dir` or `"addDir": false` turns it off; a repository at or
-  above your user folder `~` is never added). For multi-step work there:
+  `kyoten dscc`, and `kyoten agy` add `--add-dir=<repository>` so the agent can edit it while its
+  hooks, tasks, and memory stay in the home (`--no-add-dir` or `"addDir": false` turns it off; a
+  repository at or above your user folder `~` is never added). For multi-step work there:
   `pnpm task new … --repo <path>`.
 - **DSH:** in the Web UI, click **Choose workspace** and select the home (`kyoten dsh` prints it); a
   session in another workspace is told so at its start.

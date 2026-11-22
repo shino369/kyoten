@@ -79,13 +79,13 @@ export function agentInstallHint(agent, home, platform) {
   return `install ${bin} and make sure it is on PATH (kyoten doctor lists what is missing)`;
 }
 
-/** Agents with a verified `--add-dir=<dir>` flag (Claude Code and Codex). */
-const ADD_DIR_AGENTS = new Set(['claude', 'dscc', 'codex']);
+/** Agents with a verified `--add-dir=<dir>` flag (Claude Code, Codex, and Antigravity). */
+const ADD_DIR_AGENTS = new Set(['claude', 'dscc', 'codex', 'agy']);
 
 /** @param {string} dir */
 function realPath(dir) {
   try {
-    return fs.realpathSync(dir);
+    return fs.realpathSync.native(dir);
   } catch {
     return path.resolve(dir);
   }
@@ -135,8 +135,8 @@ export function outsideRepo({
 /**
  * The full argv for an agent. `command` is the executable prefix from
  * `findAgentCommand`; `defaults` are the config's arguments for this agent,
- * placed before the user's. `addDir` (claude, dscc, codex) goes first, in the
- * equals form: `--add-dir <dirs...>` is variadic and would take a prompt.
+ * placed before the user's. `addDir` (claude, dscc, codex, agy) goes first, in
+ * the equals form: `--add-dir <dirs...>` is variadic and would take a prompt.
  *
  * @param {{ agent: AgentName, command: string[], args: string[], defaults?: string[], addDir?: string | null }} input
  * @returns {string[]}

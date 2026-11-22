@@ -749,7 +749,7 @@ describe('main: launch', () => {
       return repo;
     }
 
-    test.each(['claude', 'dscc', 'codex'])(
+    test.each(['claude', 'dscc', 'codex', 'agy'])(
       'should put --add-dir first for %s',
       async (agent) => {
         const home = makeHome();
@@ -783,21 +783,18 @@ describe('main: launch', () => {
       }
     );
 
-    test.each(['dsh', 'agy'])(
-      'should not add a directory for %s',
-      async (agent) => {
-        const home = makeHome();
-        const repo = makeRepo();
+    test.each(['dsh'])('should not add a directory for %s', async (agent) => {
+      const home = makeHome();
+      const repo = makeRepo();
 
-        const { spawn, err } = await run(['--home', home, agent], {
-          cwd: repo,
-        });
+      const { spawn, err } = await run(['--home', home, agent], {
+        cwd: repo,
+      });
 
-        expect(spawn.mock.calls[0][1].join(' ')).not.toContain('--add-dir');
-        expect(spawn.mock.calls[0][2].env.KYOTEN_ADD_DIR).toBeUndefined();
-        expect(err).toContain(`kyoten: ${agent} in ${home} (--home)`);
-      }
-    );
+      expect(spawn.mock.calls[0][1].join(' ')).not.toContain('--add-dir');
+      expect(spawn.mock.calls[0][2].env.KYOTEN_ADD_DIR).toBeUndefined();
+      expect(err).toContain(`kyoten: ${agent} in ${home} (--home)`);
+    });
 
     test('should not add a directory with --no-add-dir', async () => {
       const home = makeHome();

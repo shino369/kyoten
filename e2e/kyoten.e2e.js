@@ -272,8 +272,8 @@ test.describe('started inside a git repository outside the home', () => {
     git(repo, 'init', '-q');
   });
 
-  test('claude and codex get --add-dir=<repo> first', () => {
-    for (const agent of ['claude', 'codex']) {
+  test('claude, codex, and agy get --add-dir=<repo> first', () => {
+    for (const agent of ['claude', 'codex', 'agy']) {
       const result = kyoten([agent, 'hello'], { cwd: path.join(repo, 'src') });
 
       expect(result.agent.name).toBe(agent);
@@ -290,12 +290,10 @@ test.describe('started inside a git repository outside the home', () => {
     expect(result.agent.env.KYOTEN_ADD_DIR).toBeNull();
   });
 
-  test('dsh and agy do not get it', () => {
+  test('dsh does not get it', () => {
     const dsh = kyoten(['dsh', 'tui'], { cwd: repo });
-    const agy = kyoten(['agy'], { cwd: repo });
 
     expect(dsh.agent.argv).not.toContain(`--add-dir=${repo}`);
-    expect(agy.agent.argv).toEqual([]);
   });
 });
 

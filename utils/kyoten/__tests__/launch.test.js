@@ -652,6 +652,9 @@ describe('outsideRepo', () => {
     expect(
       outsideRepo({ agent: 'claude', cwd: path.join(top, 'src'), home })
     ).toBe(top);
+    expect(
+      outsideRepo({ agent: 'agy', cwd: path.join(top, 'src'), home })
+    ).toBe(top);
   });
 
   test('should accept a worktree, whose .git is a file', () => {
@@ -693,7 +696,6 @@ describe('outsideRepo', () => {
     fs.mkdirSync(plain);
 
     expect(outsideRepo({ agent: 'dsh', cwd: top, home })).toBeNull();
-    expect(outsideRepo({ agent: 'agy', cwd: top, home })).toBeNull();
     expect(
       outsideRepo({ agent: 'claude', cwd: top, home, enabled: false })
     ).toBeNull();
