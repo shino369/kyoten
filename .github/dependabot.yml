@@ -9,6 +9,20 @@ updates:
       default-days: 7
     commit-message:
       prefix: chore(deps)
+    groups:
+      playwright:
+        patterns:
+          - 'playwright'
+          - '@playwright/*'
+      vitest:
+        patterns:
+          - 'vitest'
+          - '@vitest/*'
+    ignore:
+      # Track the minimum supported Node.js major in package.json (engines.node >=24).
+      - dependency-name: '@types/node'
+        update-types:
+          - 'version-update:semver-major'
 
   - package-ecosystem: github-actions
     directory: /
@@ -18,3 +32,7 @@ updates:
       default-days: 7
     commit-message:
       prefix: chore(deps)
+    groups:
+      github-actions:
+        patterns:
+          - '*'
