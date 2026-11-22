@@ -412,7 +412,8 @@ describe('runChecks dsh hooks', () => {
     byId(
       check({
         home,
-        platform: 'linux',
+        // The home is a real tmp path, so it must meet this platform's rule.
+        platform: process.platform,
         registry: (_h, name) => (name === 'dsh' ? ['dsh'] : null),
       }),
       'dsh-hooks'

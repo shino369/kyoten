@@ -68,6 +68,9 @@ function makeHome(dir, { managed = true, message = 'snapshot' } = {}) {
   fs.writeFileSync(path.join(dir, 'utils', 'kyoten', 'cli.js'), '');
   fs.writeFileSync(path.join(dir, 'a.txt'), 'one\ntwo\nthree\n');
   fs.writeFileSync(path.join(dir, '.gitignore'), '/.kyoten/\n');
+  // Like kyoten's own source: LF checkouts even under core.autocrlf=true
+  // (the Windows runner's system git config), which kyoten's git calls read.
+  fs.writeFileSync(path.join(dir, '.gitattributes'), '* text eol=lf\n');
   if (managed) {
     fs.mkdirSync(path.join(dir, '.kyoten'));
     fs.writeFileSync(
@@ -471,6 +474,14 @@ describe('readManifest', () => {
     fs.writeFileSync(path.join(folder, 'config.json'), '{"a":2}');
 
     expect(() => readManifest(folder)).toThrow(/checksum/);
+  });
+
+  test('should refuse a folder instead of a file', () => {
+    const folder = writeFolder({ 'config.json': '{}' });
+    fs.rmSync(path.join(folder, 'config.json'));
+    fs.mkdirSync(path.join(folder, 'config.json'));
+
+    expect(() => readManifest(folder)).toThrow(/not a regular file/);
   });
 
   test.skipIf(!POSIX)('should refuse a link instead of a file', () => {

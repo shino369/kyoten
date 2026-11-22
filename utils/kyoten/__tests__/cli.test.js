@@ -179,7 +179,13 @@ async function run(
     });
   };
   const code = await main(argv, {
-    env: { PATH: bin, XDG_CONFIG_HOME: path.join(tmp, 'cfg'), ...env },
+    // configDir reads %APPDATA% on Windows and XDG_CONFIG_HOME elsewhere.
+    env: {
+      PATH: bin,
+      XDG_CONFIG_HOME: path.join(tmp, 'cfg'),
+      APPDATA: path.join(tmp, 'cfg'),
+      ...env,
+    },
     cwd,
     platform: process.platform,
     homedir: path.join(tmp, 'user'),
@@ -1152,7 +1158,10 @@ describe('main: errors', () => {
     const code = await main(['where'], {
       ...defaultDeps(),
       cwd: tmp,
-      env: { XDG_CONFIG_HOME: path.join(tmp, 'cfg') },
+      env: {
+        XDG_CONFIG_HOME: path.join(tmp, 'cfg'),
+        APPDATA: path.join(tmp, 'cfg'),
+      },
       out: () => {
         // eslint-disable-next-line no-throw-literal -- main() must also report a thrown non-Error
         throw 'boom';

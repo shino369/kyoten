@@ -86,6 +86,9 @@ beforeAll(() => {
   fs.writeFileSync(path.join(repo, 'package.json'), '{"name":"kyoten"}\n');
   fs.writeFileSync(path.join(repo, 'utils', 'kyoten', 'cli.js'), '');
   fs.writeFileSync(path.join(repo, '.gitignore'), '/.kyoten/\n');
+  // Like kyoten's own source: LF checkouts even under core.autocrlf=true
+  // (the Windows runner's system git config), which kyoten's git calls read.
+  fs.writeFileSync(path.join(repo, '.gitattributes'), '* text eol=lf\n');
   fs.writeFileSync(path.join(repo, 'dir', '.gitignore'), 'x\n');
   fs.writeFileSync(path.join(repo, 'dir', 'b.txt'), 'b\n');
   fs.writeFileSync(path.join(repo, 'bin', 'run.sh'), '#!/bin/sh\n', {
