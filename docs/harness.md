@@ -413,6 +413,11 @@ digests, at most 3,000 characters) that every session loads. Rules for agents: A
   last run's agent). Codex needs zero configured MCP servers; a missing CLI or failed check says
   which `--extract-agent` to switch to. Secrets are refused, instruction-like ops
   wait in `memory/inbox.jsonl`, and the next session announces the saves.
+  Memory jobs build their isolation arguments without a double quote, so they start through
+  Windows `.cmd` shims (which refuse `"`): Codex gets bare or single-quoted TOML values, Claude gets
+  its settings as a file in the job's temporary folder. Antigravity takes its settings as JSON on
+  the command line, so it needs a native `agy.exe`; behind a `.cmd` shim the job fails with a Fix
+  line naming another `--extract-agent`. Not verified on a real Windows machine.
 - **Safety:** every write path refuses text matching `utils/redact.js`; notes are framed as facts;
   `pnpm workspace:check` fails if a memory file is tracked.
 - **Worktrees:** `pnpm loop` and `pnpm swarm` copy `AGENTS.local.md` and `CLAUDE.local.md` into
