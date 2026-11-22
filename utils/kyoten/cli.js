@@ -36,6 +36,7 @@ import {
   resolveHome,
   writeConfig,
 } from './home.js';
+import { backupHome, restoreBackup } from './backup.js';
 import { runConfig } from './config-cmd.js';
 import { initHome } from './init.js';
 import { pauseSaving } from './memory.js';
@@ -63,6 +64,8 @@ export const COMMANDS = /** @type {const} */ ([
   'where',
   'config',
   'reset',
+  'backup',
+  'restore',
   'help',
   'version',
 ]);
@@ -191,6 +194,14 @@ Commands
             Move a home kyoten created aside (renamed to
             <home>.removed-<time>, never deleted; the undo is printed).
             Shows what is in it first. --all also moves the config folder
+  backup [<dir>] [--include-key]
+            Write a new folder (default ./kyoten-backup-<time>) with the
+            memory export, config, and your local commits; personal data.
+            --include-key adds the DeepSeek key file
+  restore <dir> [--yes]
+            Check a backup folder, then merge its commits and memory into the
+            home (created first if missing) and copy config files that are
+            not there yet
   help      This help
   version   kyoten's version
 
@@ -435,6 +446,61 @@ function commandReset(ctx, args) {
  * @param {Context} ctx
  * @param {string[]} args
  */
+function commandBackup(ctx, args) {
+  const { deps, version, home } = ctx;
+  const { flags, dir } = parseFlags('backup', args, {
+    flags: ['--include-key'],
+    dir: 'optional',
+  });
+  return backupHome({
+    home: home.dir,
+    dir,
+    includeKey: flags.has('--include-key'),
+    configFile: ctx.configPath,
+    profileFile: profilePath(deps),
+    version,
+    run: deps.run,
+    env: deps.env,
+    out: deps.out,
+    err: deps.err,
+    now: deps.now,
+    cwd: deps.cwd,
+    homedir: deps.homedir,
+  });
+}
+
+/**
+ * @param {Context} ctx
+ * @param {string[]} args
+ */
+function commandRestore(ctx, args) {
+  const { deps, home } = ctx;
+  const { flags, dir } = parseFlags('restore', args, {
+    flags: ['--yes'],
+    dir: 'required',
+  });
+  return restoreBackup({
+    dir: /** @type {string} */ (dir),
+    yes: flags.has('--yes'),
+    interactive: Boolean(deps.stdin.isTTY),
+    ask: deps.ask,
+    home: home.dir,
+    createHome: () => createHome(ctx, home.dir, true),
+    configFile: ctx.configPath,
+    profileFile: profilePath(deps),
+    run: deps.run,
+    env: deps.env,
+    out: deps.out,
+    err: deps.err,
+    cwd: deps.cwd,
+    homedir: deps.homedir,
+  });
+}
+
+/**
+ * @param {Context} ctx
+ * @param {string[]} args
+ */
 function commandDoctor(ctx, args) {
   const { deps, version, home } = ctx;
   parseCommandArgs('doctor', args);
@@ -666,6 +732,10 @@ async function run(parsed, deps) {
       return commandConfig(ctx, parsed.args);
     case 'reset':
       return commandReset(ctx, parsed.args);
+    case 'backup':
+      return commandBackup(ctx, parsed.args);
+    case 'restore':
+      return commandRestore(ctx, parsed.args);
     case 'doctor':
       return commandDoctor(ctx, parsed.args);
     case 'run':

@@ -157,6 +157,9 @@ async function run(
   const runSpawn = (file, args, options) => {
     if (file === 'pnpm') {
       pnpm.push(args);
+      if (args[0] === 'memory' && args[1] === 'export') {
+        fs.writeFileSync(args[3], 'TAR');
+      }
       return { status: pnpmStatus, stdout: '12.14.0\n' };
     }
     const opts = /** @type {{ env?: NodeJS.ProcessEnv }} */ (options);
@@ -542,6 +545,54 @@ describe('main: reset', () => {
 
     expect(code).toBe(1);
     expect(err.join('\n')).toContain('kyoten reset --yes');
+  });
+});
+
+describe('main: backup and restore', () => {
+  test('should back up a home and restore it into another', async () => {
+    const home = path.join(tmp, 'k');
+    await run(['init', '--no-setup'], { env: { KYOTEN_HOME: home } });
+    const folder = path.join(tmp, 'bk');
+
+    const backup = await run(['backup', folder], {
+      env: { KYOTEN_HOME: home },
+    });
+    const other = path.join(tmp, 'k2');
+    const restore = await run(['restore', folder, '--yes'], {
+      env: { KYOTEN_HOME: other },
+    });
+
+    expect(backup.code).toBe(0);
+    expect(backup.out).toEqual([folder]);
+    expect(fs.existsSync(path.join(folder, 'manifest.json'))).toBe(true);
+    expect(restore.code, restore.err.join('\n')).toBe(0);
+    expect(restore.out).toEqual([other]);
+    expect(fs.existsSync(path.join(other, HOME_INFO))).toBe(true);
+    expect(restore.pnpm.map((args) => args[0])).toContain('memory');
+  });
+
+  test('should use the dscc profile path and --include-key', async () => {
+    const home = path.join(tmp, 'k');
+    await run(['init', '--no-setup'], { env: { KYOTEN_HOME: home } });
+    await run(['dscc', '--set-key'], {
+      stdin: Readable.from([`${KEY}\n`]),
+      env: { KYOTEN_HOME: home },
+    });
+    const folder = path.join(tmp, 'bk');
+
+    const { code } = await run(['backup', folder, '--include-key'], {
+      env: { KYOTEN_HOME: home },
+    });
+
+    expect(code).toBe(0);
+    expect(fs.existsSync(path.join(folder, 'dscc.env'))).toBe(true);
+  });
+
+  test('should name the missing folder for restore', async () => {
+    const { code, err } = await run(['restore']);
+
+    expect(code).toBe(1);
+    expect(err.join('\n')).toContain('needs a folder');
   });
 });
 

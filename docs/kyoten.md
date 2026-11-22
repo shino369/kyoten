@@ -69,6 +69,8 @@ agent: `kyoten claude update`.
 | `run <script> [args…]`           | Run a workspace script in the home from any folder (`pnpm <script>` there): `kyoten run task status`                                              |
 | `config [get\|set\|unset\|path]` | Show or change the config file (below)                                                                                                            |
 | `reset [--yes] [--all]`          | Move a home kyoten created aside (below)                                                                                                          |
+| `backup [<dir>] [--include-key]` | Write a backup folder with your memory, config, and local commits (below)                                                                         |
+| `restore <dir> [--yes]`          | Bring a backup folder back into the home (below)                                                                                                  |
 | `help`, `version`                | Help and the version                                                                                                                              |
 
 ## The home
@@ -220,6 +222,43 @@ on `kyoten/upstream` (the count and up to five subjects), uncommitted files, ope
 notes, and suggests `kyoten backup`. It then renames the home to `<home>.removed-<YYYYMMDD-HHMMSS>`
 (local time) and prints the command that undoes it (`mv` on macOS and Linux, `Move-Item` on
 Windows). Nothing is deleted. If the config's `home` pointed at the reset home, it is unset.
+
+## Backup and restore
+
+```bash
+kyoten backup                   # ./kyoten-backup-<YYYYMMDD-HHMMSS> in the current folder
+kyoten backup ~/safe/kyoten     # a new (or empty) folder of your choice
+kyoten backup --include-key     # also copy the DeepSeek key file
+kyoten restore ~/safe/kyoten    # into the home (created first if missing)
+```
+
+A backup is a new folder, mode 0700 on macOS and Linux (it is never an existing non-empty one). It
+holds:
+
+| File            | What                                                                                            |
+| --------------- | ----------------------------------------------------------------------------------------------- |
+| `memory.tar.gz` | `pnpm memory export` of the home: notes and personalization                                     |
+| `config.json`   | kyoten's config file, when there is one                                                         |
+| `home.json`     | `.kyoten/home.json`, for a home kyoten created                                                  |
+| `local.bundle`  | a `git bundle` of `main` and `kyoten/upstream`, only for a home kyoten created with own commits |
+| `dscc.env`      | the DeepSeek profile, only with `--include-key` (mode 0600)                                     |
+| `manifest.json` | kyoten version, time, and the sha256 and size of every file above                               |
+
+**The folder holds personal data** (your notes, settings, and with `--include-key` your API key).
+Keep it private and out of git and cloud folders you share.
+
+`restore` checks the manifest and the sha256 of every file first and refuses a changed folder or an
+unknown file name. It then merges, and never overwrites:
+
+- The home is created first if it is missing. A home with uncommitted changes to tracked files is
+  refused.
+- `local.bundle` is fetched into `refs/kyoten/restored` and merged into `main`. A fresh home has its
+  own snapshot commit, so the old snapshot in the bundle is linked first (keeping the new files) and
+  then used as the merge base, as in `kyoten update`. Conflicts stay as ordinary git conflicts.
+- `pnpm memory import` merges the notes (never `--replace`). It shows the `--dry-run` result first
+  and asks `[y/N]`; without a terminal, pass `--yes`.
+- `config.json` and `dscc.env` are copied only where none exists; otherwise the current one is kept
+  and kyoten says so.
 
 ## Developing kyoten
 

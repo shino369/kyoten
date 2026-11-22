@@ -362,6 +362,39 @@ test('config sets, gets, and unsets a value', () => {
   expect(shown.stdout).not.toContain('args');
 });
 
+test('backup, then restore into a fresh home, brings back a local commit and the config', () => {
+  kyoten(['config', 'set', 'addDir', 'true']);
+  const folder = path.join(tmp, 'e2e-backup');
+
+  const made = kyoten(['backup', folder]);
+  const fresh = path.join(tmp, 'restored-home');
+  const cfg2 = path.join(tmp, 'cfg2');
+  const isolated = {
+    KYOTEN_HOME: fresh,
+    XDG_CONFIG_HOME: cfg2,
+    APPDATA: cfg2,
+    DSCC_PROFILE: path.join(cfg2, 'dscc.env'),
+  };
+  kyoten(['init', '--no-setup'], { env: isolated });
+  const restored = kyoten(['restore', folder, '--yes'], { env: isolated });
+
+  expect(made.status, made.stderr).toBe(0);
+  expect(fs.existsSync(path.join(folder, 'manifest.json'))).toBe(true);
+  expect(fs.existsSync(path.join(folder, 'dscc.env'))).toBe(false);
+  expect(restored.status, restored.stderr).toBe(0);
+  expect(
+    fs.readFileSync(path.join(fresh, 'docs', 'harness.md'), 'utf-8')
+  ).toContain('Local note.');
+  expect(git(fresh, 'log', '--format=%s', '--no-merges')).toContain(
+    'docs: local note'
+  );
+  expect(
+    JSON.parse(
+      fs.readFileSync(path.join(cfg2, 'kyoten', 'config.json'), 'utf-8')
+    )
+  ).toEqual({ addDir: true });
+});
+
 test('reset --yes moves a home aside and prints the undo', () => {
   const other = path.join(tmp, 'reset-home');
   kyoten(['init', '--no-setup'], { env: { KYOTEN_HOME: other } });

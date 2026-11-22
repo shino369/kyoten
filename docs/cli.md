@@ -98,6 +98,14 @@ Commands
             Move a home kyoten created aside (renamed to
             <home>.removed-<time>, never deleted; the undo is printed).
             Shows what is in it first. --all also moves the config folder
+  backup [<dir>] [--include-key]
+            Write a new folder (default ./kyoten-backup-<time>) with the
+            memory export, config, and your local commits; personal data.
+            --include-key adds the DeepSeek key file
+  restore <dir> [--yes]
+            Check a backup folder, then merge its commits and memory into the
+            home (created first if missing) and copy config files that are
+            not there yet
   help      This help
   version   kyoten's version
 
