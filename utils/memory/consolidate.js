@@ -18,7 +18,7 @@ import { answerOf } from '../agent/cli.js';
 import { findSecrets, redactSecrets } from '../redact.js';
 import { writeFileAtomic } from '../task/store.js';
 import { callAgent } from './agent-call.js';
-import { readConfig } from './config.js';
+import { readConfig, savingOff } from './config.js';
 import { looksLikeInstruction } from './instructions.js';
 import { kindLabel, refreshAfterWrite, shorten } from './context.js';
 import {
@@ -115,6 +115,14 @@ export function consolidationDue(rootDir, { now = new Date() } = {}) {
   const since = (iso) =>
     typeof iso === 'string' ? now.getTime() - Date.parse(iso) : Infinity;
   if (since(state?.tried) < DAY_MS) return null;
+  // Consolidation sends the notes to a model: not while saving is off. Its
+  // state is untouched, so it is due again once saving is back on.
+  // An unreadable config counts as off: nothing leaves without a clear yes.
+  try {
+    if (savingOff(readConfig(dir), null)) return null;
+  } catch {
+    return null;
+  }
   const changes = countOps(dir) - (state?.ops ?? 0);
   if (since(state?.at) >= WEEK_MS && changes >= MIN_CHANGES) return 'weekly';
   if (

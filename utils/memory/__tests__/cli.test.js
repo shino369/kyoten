@@ -814,6 +814,27 @@ describe('consolidate and undo', () => {
     lock?.release();
   });
 
+  test('should refuse while saving is off unless forced, and allow a dry run', () => {
+    writeConfig(dir, { ...DEFAULT_CONFIG, off: true });
+    const runAgent = agent({ profile: [], ops: [] });
+
+    expect(() => run(['consolidate'], { runAgent })).toThrow(
+      /Saving to memory is off everywhere.*Fix: pnpm memory on.*--force/s
+    );
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(run(['consolidate', '--dry-run'], { runAgent }).out).toMatch(
+      /^Would send the consolidation/
+    );
+    expect(run(['consolidate', '--force'], { runAgent }).code).toBe(0);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+  });
+
+  test('should refuse when only this session has saving off', () => {
+    writeConfig(dir, { ...DEFAULT_CONFIG, offSessions: ['sess-1'] });
+
+    expect(() => run(['consolidate'])).toThrow(/off for this session/);
+  });
+
   test('should refuse before memory is set up', () => {
     fs.rmSync(dir, { recursive: true });
 

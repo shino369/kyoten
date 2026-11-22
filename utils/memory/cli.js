@@ -156,8 +156,10 @@ Extraction and consolidation
                                 be sent to the model and changes nothing
   inbox [--reset]               Changes extraction held back for you to review (they read
                                 like instructions); --reset clears the list
-  consolidate [--dry-run]       Tidy the notes and rewrite the profile now (normally weekly,
-                                in the background)
+  consolidate [--dry-run] [--force]
+                                Tidy the notes and rewrite the profile now (normally weekly,
+                                in the background; never while saving is off, --force
+                                overrides for a manual run)
   undo [--dry-run]              Revert the last extraction, consolidation, import, or persona
                                 compaction (notes saved since are kept)
 
@@ -1047,6 +1049,12 @@ export const COMMANDS = {
   consolidate(options, deps) {
     if (!fs.existsSync(dirOf(deps))) {
       throw new Error('Memory is not set up. Fix: pnpm memory init');
+    }
+    const off = savingOff(readConfig(dirOf(deps)), sessionFromEnv(deps.env));
+    if (off && !options.force && !options.dryRun) {
+      throw new Error(
+        `Saving to memory is off ${off === 'global' ? 'everywhere' : 'for this session'}, so the notes were not sent to a model.\nFix: pnpm memory on — or add --force if the user asked to consolidate now`
+      );
     }
     const extractDeps = defaultExtractDeps({
       rootDir: deps.rootDir,

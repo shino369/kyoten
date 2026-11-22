@@ -175,6 +175,26 @@ describe('consolidationDue', () => {
     expect(consolidationDue(root, { now: NOW })).toBeNull();
   });
 
+  test('should not be due while saving is off, and be due again once it is on', () => {
+    for (let i = 0; i < MIN_CHANGES; i++)
+      add({ text: `Filler fact number ${i} about builds.`, tags: [`f${i}`] });
+    writeConfig(dir, { ...DEFAULT_CONFIG, off: true });
+
+    expect(consolidationDue(root, { now: NOW })).toBeNull();
+
+    writeConfig(dir, { ...DEFAULT_CONFIG, off: false });
+
+    expect(consolidationDue(root, { now: NOW })).toBe('weekly');
+  });
+
+  test('should not be due when the config cannot be read', () => {
+    for (let i = 0; i < MIN_CHANGES; i++)
+      add({ text: `Filler fact number ${i} about builds.`, tags: [`f${i}`] });
+    fs.writeFileSync(path.join(dir, 'config.json'), '{oops');
+
+    expect(consolidationDue(root, { now: NOW })).toBeNull();
+  });
+
   test('should use the current time and stay quiet before memory exists', () => {
     fs.rmSync(dir, { recursive: true });
 

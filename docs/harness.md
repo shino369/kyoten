@@ -452,7 +452,10 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   mismatching entry is deferred (left queued, no attempt, no journal line) for a later matching
   worker, and `pnpm memory extract` says so. A dscc worker consolidates with claude only when every applied extraction run in
   the journal came from dscc (applied runs record their `side`; older runs count as not dscc), else it
-  defers; a normal worker always consolidates.
+  defers; a normal worker always consolidates. Consolidation never runs while saving is off
+  everywhere (`pnpm memory off`; it stays due and runs once saving is back on); a manual
+  `pnpm memory consolidate` then refuses with a Fix line unless `--force` (a `--dry-run` is always
+  allowed).
   Other agents are not affected.
 - **Safety:** every write path refuses text matching `utils/redact.js`; notes are framed as facts;
   `pnpm workspace:check` fails if a memory file is tracked.
