@@ -329,6 +329,9 @@ result and copy or merge it back yourself.
 against `tools/catalog.json`. `pnpm agent ask --agent codex "…"` runs one read-only turn of another
 agent and saves the exchange in the task's `tmp/`. `pnpm loop`, `pnpm swarm`, and the review loop
 use the same adapters (`utils/loop/adapters.js`): fixed argument arrays, prompt on stdin, no shell.
+Every headless child gets `MEMORY_EXTRACT=1`, so the workspace's memory hooks stay silent in it: no
+injected core block, persona, or recalled notes, and its session is never queued for extraction into
+memory.
 
 | Agent  | Write mode (fixers)                                                      | Read mode (reviewers, `agent ask`)                                        |
 | ------ | ------------------------------------------------------------------------ | ------------------------------------------------------------------------- |

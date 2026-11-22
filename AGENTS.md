@@ -252,8 +252,8 @@ Use `trilingual-translator` with `translation-expertise`. Write drafts and passe
 
 - **Look first:** `pnpm tools list` (`--all` adds install hints); details: `pnpm tools show <name>`.
 - **Call another agent:** `pnpm agent ask --agent claude|codex|dsh|agy "…"` (or `-` for stdin).
-  Read-only by default, saved in the active task's `tmp/`. `--write` allows edits (use only in a
-  worktree).
+  Read-only by default, memory hooks off, saved in the active task's `tmp/`. `--write` allows edits
+  (use only in a worktree).
 - **Record installs:** `pnpm tools add <name> --kind agent|cli|runtime|source (--path … | --command "…")`.
   Clone source checkouts into `pnpm tools sources` (`~/.cache/agent-tools/src/<name>`), read-only
   (do not build or run). Never record secret values (`--env` takes var names only).
