@@ -549,6 +549,46 @@ describe('consolidate', () => {
     expect(runAgent).not.toHaveBeenCalled();
     expect(readConsolidated(dir)).toBeNull();
   });
+
+  test('should not write when saving is turned off while the agent runs', () => {
+    seed();
+    const runAgent = vi.fn(() => {
+      writeConfig(dir, { ...DEFAULT_CONFIG, off: true });
+      return {
+        code: 0,
+        signal: null,
+        output: '',
+        stdout: JSON.stringify({
+          profile: ['Prefers terse answers.'],
+          ops: [],
+        }),
+        durationMs: 12,
+      };
+    });
+
+    const run = consolidate(deps({ runAgent }));
+
+    expect(run).toMatchObject({ status: 'off', job: 'consolidation' });
+    expect(fs.existsSync(path.join(dir, PROFILE_FILE))).toBe(false);
+    expect(readConsolidated(dir)).toBeNull();
+    expect(readJournal(dir).at(-1)?.status).toBe('off');
+  });
+
+  test('should write when forced even if saving is turned off', () => {
+    seed();
+    writeConfig(dir, { ...DEFAULT_CONFIG, off: true });
+    const runAgent = agentReturning({
+      profile: ['Prefers terse answers.'],
+      ops: [],
+    });
+
+    const run = consolidate(deps({ runAgent, force: true }));
+
+    expect(run.status).toBe('consolidated');
+    expect(fs.readFileSync(path.join(dir, PROFILE_FILE), 'utf-8')).toBe(
+      '- Prefers terse answers.\n'
+    );
+  });
 });
 
 describe('consolidateLocked', () => {

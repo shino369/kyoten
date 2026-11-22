@@ -102,6 +102,31 @@ describe('module-runner', () => {
       expect(called).toBe(true);
     });
 
+    test('should run when both import.meta.url and process.argv[1] go through a linked folder', () => {
+      const tmp = fs.realpathSync(
+        fs.mkdtempSync(path.join(os.tmpdir(), 'runner-'))
+      );
+      const real = path.join(tmp, 'real');
+      fs.mkdirSync(real);
+      fs.writeFileSync(path.join(real, 'script.js'), '');
+      linkDir(real, path.join(tmp, 'link'));
+      const linkedScript = path.join(tmp, 'link', 'script.js');
+      const originalArgv = process.argv[1];
+      process.argv[1] = linkedScript;
+      let called = false;
+
+      try {
+        runIfMain(pathToFileURL(linkedScript).href, () => {
+          called = true;
+        });
+      } finally {
+        process.argv[1] = originalArgv;
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+
+      expect(called).toBe(true);
+    });
+
     test('should run when process.argv[1] is a relative path', () => {
       let called = false;
       const mockFn = () => {

@@ -121,6 +121,7 @@ const CHANGE_FIELDS = /** @type {const} */ ([
  * @property {typeof defaultRunAgent} runAgent
  * @property {() => string} tmpdir
  * @property {boolean} [dryRun] build the prompt, call and change nothing
+ * @property {boolean} [force] override the saving-off guard for manual runs
  * @property {import('./queue.js').LockOptions} [lock]
  */
 

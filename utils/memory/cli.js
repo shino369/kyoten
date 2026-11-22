@@ -889,6 +889,7 @@ export const COMMANDS = {
       now: deps.now,
       runAgent: deps.runAgent,
       dryRun: options.dryRun,
+      force: options.force,
     });
     const run = options.dryRun
       ? consolidate(extractDeps)

@@ -16,7 +16,11 @@ import fs from 'fs';
 import path from 'path';
 import { answerOf } from '../agent/cli.js';
 import { findSecrets, redactSecrets } from '../redact.js';
-import { sessionHarness, writeFileAtomic } from '../task/store.js';
+import {
+  sessionFromEnv,
+  sessionHarness,
+  writeFileAtomic,
+} from '../task/store.js';
 import { callAgent } from './agent-call.js';
 import { readConfig, savingOff } from './config.js';
 import { looksLikeInstruction } from './instructions.js';
@@ -328,6 +332,18 @@ export function consolidate(deps) {
   });
   const result = callAgent(deps, command, prompt, { job: 'consolidation' });
   const answer = parseConsolidation(answerOf(result));
+  // Saving may have been turned off while the agent ran.
+  if (!deps.force && savingOff(readConfig(dir), sessionFromEnv(deps.env))) {
+    const run = {
+      ...base,
+      status: 'off',
+      agent,
+      model,
+      durationMs: result.durationMs,
+    };
+    appendJournal(dir, run);
+    return run;
+  }
   /** @type {string[]} */
   const noAdds = [];
   // ADD ops become NOOPs, so validateOps numbers the rest as the model did.
