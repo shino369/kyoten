@@ -16,6 +16,7 @@
  * codex `read-only` sandbox, dsh `read-only` preset, or agy `--settings`
  * with `write_file(*)` and protected-path deny rules and inspection grants.
  */
+import { EXTRACT_ENV } from '../memory/extract-env.js';
 import { crossSpawn } from '../spawn.js';
 import { HARNESS_SESSION_VARS } from '../task/store.js';
 
@@ -342,7 +343,9 @@ export function parseAgyStreamJson(raw) {
  * Run one headless agent turn with the prompt on stdin. The child gets the
  * caller's env without the harness session ids: a child that inherited them
  * would act as the caller's session in `pnpm task` (`TASK_SESSION`, set on
- * purpose, is kept).
+ * purpose, is kept). It also gets EXTRACT_ENV, so the workspace's memory
+ * hooks stay silent in it: a headless review or fix neither reads personal
+ * memory (a clean context) nor is queued for extraction into it.
  *
  * @param {{ command: AgentCommand, cwd: string, prompt: string, timeoutMs: number, env: NodeJS.ProcessEnv, spawn?: AgentSpawn, now?: () => number, platform?: string }} options
  *   DSH refuses a cwd its hook commands cannot carry (dshDirProblem)
@@ -378,9 +381,14 @@ export function runAgent({
     // A detached caller (the memory worker, queue.js) has no console, so
     // Windows would give every headless child a new, visible console window.
     windowsHide: true,
-    env: Object.fromEntries(
-      Object.entries(env).filter(([key]) => !HARNESS_SESSION_VARS.includes(key))
-    ),
+    env: {
+      ...Object.fromEntries(
+        Object.entries(env).filter(
+          ([key]) => !HARNESS_SESSION_VARS.includes(key)
+        )
+      ),
+      [EXTRACT_ENV]: '1',
+    },
   });
   if (result.error?.code === 'ENOENT') {
     throw new Error(

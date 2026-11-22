@@ -1,4 +1,5 @@
 import { vi } from 'vitest';
+import { EXTRACT_ENV } from '../../memory/extract-env.js';
 import {
   AGENTS,
   AGY_READ_SETTINGS,
@@ -535,9 +536,31 @@ describe('runAgent', () => {
     expect(spawn).toHaveBeenCalledWith(
       'codex',
       command.args,
-      expect.objectContaining({ env: { A: '1', TASK_SESSION: 'mine' } })
+      expect.objectContaining({
+        env: { A: '1', TASK_SESSION: 'mine', MEMORY_EXTRACT: '1' },
+      })
     );
     expect(env.CLAUDE_CODE_SESSION_ID).toBe('cc-1');
+  });
+
+  test('should keep the memory hooks silent in every headless child', () => {
+    const spawn = vi.fn(() => ({ status: 0, stdout: '', stderr: '' }));
+
+    runAgent({
+      command,
+      cwd: '/wt',
+      prompt: 'p',
+      timeoutMs: 1,
+      env: { MEMORY_EXTRACT: '0' },
+      spawn,
+      now,
+    });
+
+    expect(spawn).toHaveBeenCalledWith(
+      'codex',
+      command.args,
+      expect.objectContaining({ env: { [EXTRACT_ENV]: '1' } })
+    );
   });
 
   test('should pass the prompt on stdin and join stdout and stderr', () => {
@@ -562,7 +585,7 @@ describe('runAgent', () => {
         cwd: '/wt',
         input: 'fix it',
         timeout: 5000,
-        env: { A: '1' },
+        env: { A: '1', MEMORY_EXTRACT: '1' },
       })
     );
     expect(result).toEqual({

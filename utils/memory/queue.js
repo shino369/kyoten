@@ -22,6 +22,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { SESSION_ID_RE, readIfExists, writeFileAtomic } from '../task/store.js';
+import { EXTRACT_ENV } from './extract-env.js';
 import { readJsonOrNull } from './store.js';
 import { TRANSCRIPT_ADAPTERS } from './transcript.js';
 
@@ -41,8 +42,8 @@ export const OFFSET_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 export const WORKER_STALE_MS = 15 * 60 * 1000;
 /** Failed extractions of one entry before it is dropped. */
 export const MAX_ATTEMPTS = 3;
-/** Set for the worker and the extraction agent: memory hooks stay silent. */
-export const EXTRACT_ENV = 'MEMORY_EXTRACT';
+// Set for the worker and every headless agent: memory hooks stay silent.
+export { EXTRACT_ENV };
 export const WORKER_SCRIPT = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   'worker.js'
