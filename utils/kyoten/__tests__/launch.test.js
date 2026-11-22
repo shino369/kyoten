@@ -618,6 +618,32 @@ describe('outsideRepo', () => {
     return top;
   };
 
+  test.each([
+    ['is the user home folder', ''],
+    ['holds the user home folder', 'me'],
+  ])('should not add a repository that %s', (_label, sub) => {
+    const top = repo('dotfiles');
+    const home = path.join(dir, 'kyoten-home');
+    fs.mkdirSync(home);
+
+    expect(
+      outsideRepo({
+        agent: 'claude',
+        cwd: path.join(top, 'src'),
+        home,
+        userHome: path.join(top, sub),
+      })
+    ).toBeNull();
+  });
+
+  test('should see a repository named ..x inside the home as inside', () => {
+    const top = repo('..proj');
+
+    expect(
+      outsideRepo({ agent: 'claude', cwd: path.join(top, 'src'), home: dir })
+    ).toBeNull();
+  });
+
   test('should return the top of the repository the caller is in', () => {
     const top = repo('proj');
     const home = path.join(dir, 'home');

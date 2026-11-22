@@ -123,7 +123,8 @@ verified flag for this; the session brief still mentions the repository. For mul
 start a task: `pnpm task new <name> --repo <path>`.
 
 Turn it off for one launch with `kyoten --no-add-dir …`, or always with `"addDir": false` in the
-config.
+config. A repository that is your home folder itself or above it (a dotfiles repository at `~`) is
+never added: it would open every file you have.
 
 Already have a clone? Register it as the default home (nothing is copied):
 
@@ -174,8 +175,10 @@ model mapping.
 
 The key goes only where the profile says:
 
-- Every `ANTHROPIC_*` variable inherited from your shell is dropped, and so are the Bedrock,
-  Vertex, and Foundry switches (`CLAUDE_CODE_USE_*`, `CLAUDE_CODE_SKIP_*_AUTH`).
+- Every `ANTHROPIC_*` variable inherited from your shell is dropped, and so are your Claude login
+  token (`CLAUDE_CODE_OAUTH_TOKEN`) and the Bedrock, Vertex, and Foundry switches
+  (`CLAUDE_CODE_USE_*`, `CLAUDE_CODE_SKIP_*_AUTH`). `--show` masks every value whose name looks
+  secret and the `user:password@` part of a URL.
 - The profile may set only `ANTHROPIC_*`, `CLAUDE_CODE_*`, and `API_TIMEOUT_MS`; other lines
   are skipped with a warning.
 - `ANTHROPIC_BASE_URL` must be an `https` URL, or dscc refuses to start. A host other than
@@ -286,7 +289,10 @@ persona, and `pnpm memory personalize --off` pauses all of them. `--for … --re
   `templates/memory/AGENTS.local.md`.
 - kyoten's own git commands (init, update, backup, restore, reset) run without the caller's
   `GIT_*` environment variables, so a git hook or IDE terminal cannot point them at another
-  repository. The agent CLIs still get your environment unchanged.
+  repository. The agent CLIs and kyoten's pnpm calls (setup, workspace check, memory export and
+  import, `kyoten run`) get your environment without the variables git sets to pick a repository
+  (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_CONFIG_PARAMETERS`, …); your own git settings
+  such as `GIT_SSH_COMMAND` stay.
 - Files holding a key or your data (the dscc profile, backups) are written through a randomly
   named temporary file created exclusively with mode 0600, then renamed into place.
 - The package has no install scripts. kyoten itself makes no network calls; `pnpm install` and
@@ -335,20 +341,27 @@ holds:
 | `manifest.json` | kyoten version, time, and the sha256 and size of every file above                               |
 
 **The folder holds personal data** (your notes, settings, and with `--include-key` your API key).
-Keep it private and out of git and cloud folders you share.
+Keep it private and out of cloud folders you share. It holds a `.gitignore` of `*`, so a backup made
+inside a project is not committed with it.
 
 `restore` checks the manifest and the sha256 of every file first and refuses a changed folder or an
-unknown file name. It then merges, and never overwrites:
+unknown file name. The checksums catch damage, not a deliberate change (whoever can write the folder
+can rewrite the manifest too), so restore only a backup you made. It then merges, and never
+overwrites:
 
 - The home is created first if it is missing. A home with uncommitted changes to tracked files is
   refused.
-- `local.bundle` is fetched into `refs/kyoten/restored` and merged into `main`. A fresh home has its
+- `local.bundle` is fetched (with git's object checks) into `refs/kyoten/restored`. kyoten lists
+  your commits in it, warns when they change files that run code or steer the agents (`.githooks/`,
+  `.claude/`, `.codex/`, `.agents/`, `.dsh/`, `utils/`, `tools/`, `package.json`, the pnpm files,
+  `AGENTS.md`, `CLAUDE.md`), and asks `[y/N]` before it merges them into `main` (without a terminal,
+  pass `--yes`; on no they stay in `refs/kyoten/restored`). A fresh home has its
   own snapshot commit, so the old snapshot in the bundle is linked first (keeping the new files) and
   then used as the merge base, as in `kyoten update`. Conflicts stay as ordinary git conflicts.
 - `pnpm memory import` merges the notes (never `--replace`). It shows the `--dry-run` result first
   and asks `[y/N]`; without a terminal, pass `--yes`.
 - `config.json` and `dscc.env` are copied only where none exists; otherwise the current one is kept
-  and kyoten says so.
+  and kyoten says so. A `home` in the backup's config that names another folder is left out.
 
 ## Developing kyoten
 

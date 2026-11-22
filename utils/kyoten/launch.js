@@ -95,13 +95,20 @@ function realPath(dir) {
  * The top of the git repository the caller started kyoten in, when the agent
  * should get it as an extra directory: the agent takes `--add-dir`, the
  * repository is not the home or inside it, and the home is not inside it
- * (the agent could already reach it). Found by walking up for `.git`, links
- * resolved; null otherwise.
+ * (the agent could already reach it), and it is not the user's home folder
+ * or above it (a dotfiles repository at ~ would open every file the user
+ * has). Found by walking up for `.git`, links resolved; null otherwise.
  *
- * @param {{ agent: AgentName, cwd: string, home: string, enabled?: boolean }} input
+ * @param {{ agent: AgentName, cwd: string, home: string, enabled?: boolean, userHome?: string }} input
  * @returns {string | null}
  */
-export function outsideRepo({ agent, cwd, home, enabled = true }) {
+export function outsideRepo({
+  agent,
+  cwd,
+  home,
+  enabled = true,
+  userHome = os.homedir(),
+}) {
   if (!enabled || !ADD_DIR_AGENTS.has(agent)) return null;
   let top;
   try {
@@ -115,9 +122,14 @@ export function outsideRepo({ agent, cwd, home, enabled = true }) {
   /** @param {string} outer @param {string} inner */
   const within = (outer, inner) => {
     const rel = path.relative(outer, inner);
-    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+    const up = rel === '..' || rel.startsWith(`..${path.sep}`);
+    return rel === '' || (!up && !path.isAbsolute(rel));
   };
-  return within(base, repo) || within(repo, base) ? null : repo;
+  return within(base, repo) ||
+    within(repo, base) ||
+    within(repo, realPath(userHome))
+    ? null
+    : repo;
 }
 
 /**

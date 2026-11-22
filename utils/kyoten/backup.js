@@ -129,6 +129,9 @@ export function backupHome({
     // Windows has no POSIX modes; the profile folder is the user's own.
   }
   try {
+    // The folder holds personal data (and maybe the key); made inside a
+    // project, it must not end up in that project's commits.
+    writePrivate(path.join(target, '.gitignore'), '*\n');
     return writeBackup({
       home,
       target,
@@ -616,10 +619,10 @@ export async function restoreBackup({
     }
   }
 
-  for (const [name, dest, priv] of /** @type {[string, string, boolean][]} */ ([
-    ['config.json', configFile, false],
-    ['dscc.env', profileFile, true],
-  ])) {
+  for (const [name, dest] of [
+    ['config.json', configFile],
+    ['dscc.env', profileFile],
+  ]) {
     const source = files.get(name);
     if (!source) continue;
     if (fs.existsSync(dest)) {
@@ -642,8 +645,9 @@ export async function restoreBackup({
       }
     }
     fs.mkdirSync(path.dirname(dest), { recursive: true });
-    if (priv) writePrivate(dest, data);
-    else fs.writeFileSync(dest, data);
+    // Through a new file renamed into place: never half written, and a link
+    // left at the path is replaced, not written through.
+    writePrivate(dest, data);
     err(`kyoten: restored ${dest}`);
   }
   out(home);

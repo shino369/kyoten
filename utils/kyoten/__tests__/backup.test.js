@@ -575,6 +575,23 @@ describe('restoreBackup', () => {
     );
   });
 
+  test.skipIf(!POSIX)(
+    'should replace a dangling link at the config path, not write through it',
+    async () => {
+      makeBackup();
+      const target = path.join(tmp, 'elsewhere.json');
+      fs.mkdirSync(path.join(tmp, 'cfg2'), { recursive: true });
+      fs.symlinkSync(target, path.join(tmp, 'cfg2', 'config.json'));
+
+      await restoreBackup(restoreInput());
+
+      expect(fs.existsSync(target)).toBe(false);
+      expect(fs.lstatSync(path.join(tmp, 'cfg2', 'config.json')).isFile()).toBe(
+        true
+      );
+    }
+  );
+
   test('should keep a home in the restored config that names this home', async () => {
     makeBackup({ home: path.join(tmp, 'new-home') });
 
@@ -861,6 +878,18 @@ describe('restoreBackup', () => {
 
     await expect(restoreBackup(restoreInput({ dir: folder }))).rejects.toThrow(
       /config in the backup cannot be used/
+    );
+  });
+});
+
+describe('backup folder', () => {
+  test('should ignore itself in any git work tree', () => {
+    sourceHome();
+
+    backupHome(backupInput({ dir: 'bk' }));
+
+    expect(fs.readFileSync(path.join(tmp, 'bk', '.gitignore'), 'utf-8')).toBe(
+      '*\n'
     );
   });
 });

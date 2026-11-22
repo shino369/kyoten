@@ -149,6 +149,25 @@ describe('tokenUnset', () => {
 });
 
 describe('showProfile', () => {
+  test('should mask every secret-looking value and URL credentials', () => {
+    const file = write(
+      'p.env',
+      [
+        'ANTHROPIC_CUSTOM_HEADERS=Authorization: Bearer abcdefghijklmnopqrstuvwxyz',
+        'ANTHROPIC_BASE_URL=https://user:hunter2@proxy.example/anthropic',
+        'ANTHROPIC_MODEL=deepseek-chat',
+      ].join('\n')
+    );
+
+    const lines = showProfile(file);
+
+    expect(lines).toContain('ANTHROPIC_CUSTOM_HEADERS=Auth...wxyz');
+    expect(lines).toContain(
+      'ANTHROPIC_BASE_URL=https://****@proxy.example/anthropic'
+    );
+    expect(lines).toContain('ANTHROPIC_MODEL=deepseek-chat');
+  });
+
   test('should print the profile with both key names masked', () => {
     const file = write(
       'p.env',
@@ -356,9 +375,10 @@ describe('dsccEnv', () => {
     });
   });
 
-  test('should drop every ANTHROPIC_ name and the cloud provider switches', () => {
+  test('should drop every ANTHROPIC_ name, the Claude login, and the cloud provider switches', () => {
     expect(DSCC_DROP).toEqual([
       'ANTHROPIC_*',
+      'CLAUDE_CODE_OAUTH_TOKEN',
       'CLAUDE_CODE_USE_BEDROCK',
       'CLAUDE_CODE_USE_VERTEX',
       'CLAUDE_CODE_USE_FOUNDRY',

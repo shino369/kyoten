@@ -27,11 +27,13 @@ export const TOKEN_KEY = 'ANTHROPIC_AUTH_TOKEN';
 export const TOKEN_KEYS = [TOKEN_KEY, 'ANTHROPIC_API_KEY'];
 /**
  * What a dscc launch removes from the caller's environment: every
- * ANTHROPIC_* name (endpoint, headers, account) and the switches that send
- * Claude Code to a cloud provider. Entries ending in `*` are name prefixes.
+ * ANTHROPIC_* name (endpoint, headers, account), the Claude login token
+ * (never to be sent to another endpoint), and the switches that send Claude
+ * Code to a cloud provider. Entries ending in `*` are name prefixes.
  */
 export const DSCC_DROP = [
   'ANTHROPIC_*',
+  'CLAUDE_CODE_OAUTH_TOKEN',
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
   'CLAUDE_CODE_USE_FOUNDRY',
@@ -43,6 +45,8 @@ const DEEPSEEK_HOST = 'api.deepseek.com';
 const DEEPSEEK_URL = `https://${DEEPSEEK_HOST}/anthropic`;
 
 const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** Names whose value `--show` masks besides the token keys. */
+const SECRET_NAME_RE = /KEY|TOKEN|SECRET|AUTH|HEADERS|PASSWORD/i;
 const ALLOWED_RE = /^(ANTHROPIC_|CLAUDE_CODE_)|^API_TIMEOUT_MS$/;
 
 /**
@@ -142,7 +146,12 @@ export function showProfile(file) {
   const { pairs, warnings } = parseProfile(readProfileText(file));
   const lines = [`profile: ${file}`, ''];
   for (const [key, value] of pairs) {
-    lines.push(`${key}=${TOKEN_KEYS.includes(key) ? mask(value) : value}`);
+    const secret = TOKEN_KEYS.includes(key) || SECRET_NAME_RE.test(key);
+    // A URL's user:password@ part is a credential too.
+    const shown = secret
+      ? mask(value)
+      : value.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/@]*@/i, '$1****@');
+    lines.push(`${key}=${shown}`);
   }
   return [...lines, ...warnings.map((w) => `warning: ${w}`)];
 }

@@ -688,6 +688,7 @@ async function launch(ctx, agent, args, addDirFlag) {
     cwd: deps.cwd,
     home: home.dir,
     enabled: addDirEnabled,
+    userHome: deps.homedir,
   });
   const argv = prepareLaunch({
     agent,
