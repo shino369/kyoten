@@ -9,7 +9,8 @@
  * job's own (they carry the job's time) and ops on notes the job created.
  * When the job replaced the log (`import --replace`), later ops cannot be
  * kept and are counted as lost. Only the files the job could change are put
- * back: for an import or compaction the settings, persona.md, and AGENTS.local.md;
+ * back: for an import, the settings, persona.md, AGENTS.local.md and any
+ * per-agent personas the import changed; for compaction, the relevant persona;
  * for a consolidation the profile; an extraction changes notes only. The
  * state before the undo is kept as an `undo` snapshot,
  * which undo itself never picks.
@@ -140,8 +141,15 @@ export function undoLast(rootDir, { now = new Date(), dryRun = false } = {}) {
       const files =
         RESTORED[/** @type {keyof typeof RESTORED} */ (plan.snapshot.reason)] ??
         [];
+      const imported = plan.snapshot.importedPersonas;
+      const importedFiles =
+        plan.snapshot.reason === 'import' && Array.isArray(imported)
+          ? PERSONA_KEYS.filter((key) => imported.includes(key)).map(
+              (key) => `${MEMORY_DIR}/${agentPersonaFile(key)}`
+            )
+          : [];
       // Read what to put back before the backup snapshot may prune old ones.
-      const restore = files.map((file) => ({
+      const restore = [...files, ...importedFiles].map((file) => ({
         file,
         content: plan.snapshot.files.includes(file)
           ? fs.readFileSync(path.join(from, file))

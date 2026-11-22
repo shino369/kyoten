@@ -280,10 +280,13 @@ describe('undoLast', () => {
     fs.rmSync(path.join(root, AGENTS_LOCAL_FILE));
     takeSnapshot(root, { reason: 'import', now: JOB });
     fs.writeFileSync(path.join(root, AGENTS_LOCAL_FILE), 'Imported\n');
+    const agentPersona = path.join(dir, 'persona.codex.md');
+    fs.writeFileSync(agentPersona, 'A persona added after the old import.\n');
 
     undoLast(root, { now: LATER });
 
     expect(fs.existsSync(path.join(root, AGENTS_LOCAL_FILE))).toBe(true);
+    expect(fs.existsSync(agentPersona)).toBe(true);
   });
 
   test('should do nothing before memory is set up', () => {

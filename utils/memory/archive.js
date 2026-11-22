@@ -794,7 +794,12 @@ export function applyImport(
     instructions !== null ||
     (replace && plan.notes !== null);
   const snapshot = storeChanges
-    ? takeSnapshot(rootDir, { reason: 'import', now, detail }).id
+    ? takeSnapshot(rootDir, {
+        reason: 'import',
+        now,
+        detail,
+        importedPersonas: personas,
+      }).id
     : null;
   /** @type {string[]} */
   const warnings = [];

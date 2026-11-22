@@ -29,6 +29,7 @@ import {
   initLocal,
 } from '../render.js';
 import { listSnapshots } from '../snapshot.js';
+import { undoLast } from '../undo.js';
 import {
   LOG_FILE,
   addNote,
@@ -1281,6 +1282,33 @@ describe('per-agent personas', () => {
         'utf-8'
       )
     ).toContain('Proud claude.');
+  });
+
+  test('should undo added and overwritten personas without touching other keys', () => {
+    initLocal(source);
+    persona(source, 'codex', 'Imported codex.');
+    persona(source, 'claude', 'Imported claude.');
+    const archive = readArchive(exportAll({ parts: ['personalization'] }).file);
+    initLocal(target);
+    persona(target, 'claude', 'My own claude.');
+
+    const plan = planImport(target, archive, { include: null, replace: true });
+    applyImport(target, archive, plan, {
+      now: NOW,
+      detail: 'x',
+      replace: true,
+    });
+    persona(target, 'agy', 'Created after import.');
+    undoLast(target);
+
+    const dir = memoryDir(target);
+    expect(fs.existsSync(path.join(dir, 'persona.codex.md'))).toBe(false);
+    expect(
+      fs.readFileSync(path.join(dir, 'persona.claude.md'), 'utf-8')
+    ).toContain('My own claude.');
+    expect(
+      fs.readFileSync(path.join(dir, 'persona.agy.md'), 'utf-8')
+    ).toContain('Created after import.');
   });
 
   test('should import an old archive without personas', () => {

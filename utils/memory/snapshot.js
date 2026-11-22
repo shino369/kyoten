@@ -25,7 +25,7 @@ export const MAX_SNAPSHOTS = 20;
 const REASON_RE = /^[a-z][a-z-]*$/;
 
 /**
- * @typedef {{ id: string, reason: string, at: string, detail: string, files: string[], logBytes: number, undone?: string }} SnapshotMeta
+ * @typedef {{ id: string, reason: string, at: string, detail: string, files: string[], logBytes: number, importedPersonas?: string[], undone?: string }} SnapshotMeta
  *   `at`: the job's time (every op the job writes has it); `logBytes`: the
  *   log's size when the snapshot was taken
  */
@@ -50,12 +50,12 @@ function stamp(date) {
  * Copy the store files that exist into a new snapshot.
  *
  * @param {string} rootDir the checkout that holds memory/
- * @param {{ reason: string, now?: Date, detail?: string }} options
+ * @param {{ reason: string, now?: Date, detail?: string, importedPersonas?: string[] }} options
  * @returns {{ id: string, dir: string }}
  */
 export function takeSnapshot(
   rootDir,
-  { reason, now = new Date(), detail = '' }
+  { reason, now = new Date(), detail = '', importedPersonas }
 ) {
   if (!REASON_RE.test(reason)) {
     throw new Error(`Invalid snapshot reason "${reason}".`);
@@ -85,6 +85,7 @@ export function takeSnapshot(
     detail,
     files,
     logBytes: log ? log.size : 0,
+    ...(importedPersonas?.length ? { importedPersonas } : {}),
   };
   writeFileAtomic(
     path.join(dir, 'meta.json'),
