@@ -7,6 +7,7 @@
 import fs from 'fs';
 import path from 'path';
 import { homeState, readHomeInfo, samePath, writeConfig } from './home.js';
+import { gitEnv } from './git-env.js';
 import { UPSTREAM } from './repo.js';
 
 /** @typedef {import('../spawn.js').Spawn} Spawn */
@@ -52,7 +53,7 @@ export function inspectHome({ home, run, env }) {
   const git = (args) => {
     const result = run('git', ['-C', home, ...args], {
       encoding: 'utf-8',
-      env,
+      env: gitEnv(env),
     });
     return result.error || result.status !== 0
       ? null

@@ -104,7 +104,7 @@ describe('initRepo', () => {
 
   test('should not be broken by a global commit.gpgSign=true', () => {
     fs.writeFileSync(
-      env.GIT_CONFIG_GLOBAL ?? '',
+      path.join(tmp, '.gitconfig'),
       '[commit]\n\tgpgSign = true\n[gpg]\n\tprogram = /nonexistent/gpg\n'
     );
 
@@ -141,7 +141,7 @@ describe('writeTree', () => {
     const ignore = path.join(tmp, 'ignore');
     fs.writeFileSync(ignore, 'a.txt\n');
     fs.writeFileSync(
-      env.GIT_CONFIG_GLOBAL ?? '',
+      path.join(tmp, '.gitconfig'),
       `[core]\n\texcludesFile = ${ignore.replace(/\\/g, '/')}\n`
     );
     spawnSync('git', ['init', '-q', home], { env });
@@ -240,7 +240,11 @@ describe('mergeEnv', () => {
   test('should keep the environment when the repo has a user.email', () => {
     git(['config', 'user.email', 'me@example.com']);
 
-    expect(mergeEnv({ home, env })).toBe(env);
+    const merged = mergeEnv({ home, env });
+
+    expect(merged.HOME).toBe(env.HOME);
+    expect(merged.GIT_AUTHOR_NAME).toBeUndefined();
+    expect(Object.keys(merged).some((n) => n.startsWith('GIT_'))).toBe(false);
   });
 
   test('should add the kyoten identity when no user.email is set', () => {
@@ -323,5 +327,75 @@ describe('compareVersions', () => {
     ['x.y.z', '0.0.0', 0],
   ])('should compare %s with %s as %i', (a, b, expected) => {
     expect(compareVersions(a, b)).toBe(expected);
+  });
+});
+
+describe('an inherited git environment', () => {
+  /** @type {string} */
+  let decoy;
+  /** @type {NodeJS.ProcessEnv} */
+  let polluted;
+
+  beforeEach(() => {
+    decoy = path.join(tmp, 'decoy');
+    fs.mkdirSync(decoy);
+    spawnSync('git', ['init', '-q', decoy], { env });
+    polluted = {
+      ...env,
+      GIT_DIR: path.join(decoy, '.git'),
+      GIT_WORK_TREE: decoy,
+      GIT_INDEX_FILE: path.join(decoy, 'index-elsewhere'),
+      GIT_CEILING_DIRECTORIES: tmp,
+    };
+  });
+
+  /** @param {string} dir */
+  const refs = (dir) =>
+    spawnSync('git', ['-C', dir, 'for-each-ref'], { env, encoding: 'utf-8' })
+      .stdout;
+
+  test('should not redirect init, snapshot and commit to another repository', () => {
+    const commit = initRepo({ home, version: '0.1.0', env: polluted });
+
+    expect(git(['rev-parse', 'refs/heads/main'])).toBe(commit);
+    expect(git(['ls-tree', '--name-only', 'HEAD']).split(/\r?\n/)).toEqual([
+      'a.txt',
+      'b.txt',
+    ]);
+    expect(refs(decoy)).toBe('');
+    expect(fs.existsSync(path.join(decoy, 'index-elsewhere'))).toBe(false);
+  });
+
+  test('should keep a scratch index kyoten sets on purpose', () => {
+    initRepo({ home, version: '0.1.0', env });
+    const other = path.join(tmp, 'other');
+    fs.mkdirSync(other);
+    fs.writeFileSync(path.join(other, 'c.txt'), 'gamma\n');
+    const index = path.join(tmp, 'scratch-index');
+
+    const tree = writeTree({ home, workTree: other, index, env: polluted });
+
+    expect(git(['ls-tree', '--name-only', tree])).toBe('c.txt');
+    expect(fs.existsSync(index)).toBe(true);
+  });
+
+  test('should keep the kyoten identity in a snapshot commit', () => {
+    initRepo({ home, version: '0.1.0', env: polluted });
+
+    expect(git(['log', '-1', '--format=%an <%ae>'])).toBe(
+      'kyoten <kyoten@localhost>'
+    );
+  });
+
+  test('should read the home when asked about blockers or identity', () => {
+    initRepo({ home, version: '0.1.0', env });
+    for (const [name, value] of Object.entries(polluted)) {
+      vi.stubEnv(name, value);
+    }
+
+    expect(updateBlocker({ home })).toBeNull();
+    expect(mergeEnv({ home, env: polluted }).GIT_DIR).toBeUndefined();
+    expect(mergeEnv({ home, env: polluted }).GIT_AUTHOR_NAME).toBe('kyoten');
+    vi.unstubAllEnvs();
   });
 });

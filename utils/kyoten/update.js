@@ -10,6 +10,7 @@
 import fs from 'fs';
 import path from 'path';
 import { crossSpawn } from '../spawn.js';
+import { gitEnv } from './git-env.js';
 import { readHomeInfo, writeHomeInfo } from './home.js';
 import { runSetup } from './init.js';
 import {
@@ -37,8 +38,10 @@ import { capture, materialize } from './snapshot.js';
  */
 function advanceUpstream({ home, source, run, env }) {
   const ref = `refs/heads/${UPSTREAM}`;
+  const clean = gitEnv(env);
   const found = run('git', ['-C', home, 'rev-parse', '--verify', '-q', ref], {
     encoding: 'utf-8',
+    env: clean,
   });
   if (found.status !== 0) {
     throw new Error(
@@ -63,12 +66,12 @@ function advanceUpstream({ home, source, run, env }) {
       index: path.join(scratch, 'index'),
       env,
     });
-    const current = capture(run, 'git', [
-      '-C',
-      home,
-      'rev-parse',
-      `${parent}^{tree}`,
-    ]).trim();
+    const current = capture(
+      run,
+      'git',
+      ['-C', home, 'rev-parse', `${parent}^{tree}`],
+      { env: clean }
+    ).trim();
     if (next === current) return false;
     const commit = commitTree({
       run,
@@ -79,7 +82,7 @@ function advanceUpstream({ home, source, run, env }) {
       env,
     });
     capture(run, 'git', ['-C', home, 'update-ref', ref, commit, parent], {
-      env,
+      env: clean,
     });
     return true;
   } finally {
@@ -111,7 +114,7 @@ export function updateHome({
       `this kyoten (${source.version}) is older than the home (${info.version}); updating would take the home back.\nFix: npx kyoten@latest update`
     );
   }
-  const blocker = updateBlocker({ run, home });
+  const blocker = updateBlocker({ run, home, env });
   if (blocker) throw new Error(blocker);
   checkNode();
   if (setup) checkTool({ run, bin: 'pnpm' });
@@ -120,6 +123,7 @@ export function updateHome({
   const contained =
     run('git', ['-C', home, 'merge-base', '--is-ancestor', UPSTREAM, 'HEAD'], {
       encoding: 'utf-8',
+      env: gitEnv(env),
     }).status === 0;
   if (!contained) {
     log(`merging kyoten ${source.version} (${UPSTREAM}) into your branch`);

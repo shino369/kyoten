@@ -437,3 +437,36 @@ describe('materialize', () => {
     expect(fs.readFileSync(path.join(dest, 'd', 'x.txt'), 'utf-8')).toBe('x');
   });
 });
+
+describe('git environment', () => {
+  test.each([
+    ['capture', (/** @type {any} */ r) => capture(r, 'git', ['--version'])],
+    ['listTree', (/** @type {any} */ r) => listTree({ repo, run: r })],
+    [
+      'readBlobs',
+      (/** @type {any} */ r) => readBlobs({ repo, shas: ['x'], run: r }),
+    ],
+  ])('should not pass inherited GIT_* variables from %s', (_name, call) => {
+    vi.stubEnv('GIT_DIR', '/elsewhere/.git');
+    vi.stubEnv('GIT_WORK_TREE', '/elsewhere');
+    /** @type {NodeJS.ProcessEnv[]} */
+    const seen = [];
+    /** @type {import('../../spawn.js').Spawn} */
+    const spy = (_bin, _args, options) => {
+      seen.push(/** @type {any} */ (options).env);
+      return { status: 1, stdout: '', stderr: '' };
+    };
+
+    try {
+      call(spy);
+    } catch {
+      // The fake git fails; only its environment matters.
+    }
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].GIT_DIR).toBeUndefined();
+    expect(seen[0].GIT_WORK_TREE).toBeUndefined();
+    expect(seen[0].PATH).toBe(process.env.PATH);
+    vi.unstubAllEnvs();
+  });
+});

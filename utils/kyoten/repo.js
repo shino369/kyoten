@@ -12,7 +12,10 @@ import fs from 'fs';
 import path from 'path';
 import { crossSpawn } from '../spawn.js';
 import { MIN_NODE_MAJOR } from '../workspace-config.js';
+import { gitEnv } from './git-env.js';
 import { capture } from './snapshot.js';
+
+export { gitEnv };
 
 export const UPSTREAM = 'kyoten/upstream';
 export const KYOTEN_IDENTITY = {
@@ -42,10 +45,10 @@ export function writeTree({
   index,
   env = process.env,
 }) {
-  const gitEnv = index ? { ...env, GIT_INDEX_FILE: index } : env;
+  const clean = gitEnv(env, index ? { GIT_INDEX_FILE: index } : {});
   const base = ['--git-dir', path.join(home, '.git'), '--work-tree', workTree];
-  capture(run, 'git', [...base, 'add', '-A', '-f'], { env: gitEnv });
-  return capture(run, 'git', [...base, 'write-tree'], { env: gitEnv }).trim();
+  capture(run, 'git', [...base, 'add', '-A', '-f'], { env: clean });
+  return capture(run, 'git', [...base, 'write-tree'], { env: clean }).trim();
 }
 
 /**
@@ -71,7 +74,7 @@ export function commitTree({
   ];
   if (parent) args.push('-p', parent);
   return capture(run, 'git', args, {
-    env: { ...env, ...KYOTEN_IDENTITY },
+    env: gitEnv(env, KYOTEN_IDENTITY),
   }).trim();
 }
 
@@ -86,8 +89,9 @@ export function initRepo({
   run = crossSpawn(),
   home,
   version,
-  env = process.env,
+  env: inherited = process.env,
 }) {
+  const env = gitEnv(inherited);
   capture(run, 'git', ['init', '-q', home], { env });
   // `git init -b` needs git 2.28; this works everywhere.
   capture(run, 'git', ['-C', home, 'symbolic-ref', 'HEAD', 'refs/heads/main'], {
@@ -110,10 +114,11 @@ export function initRepo({
 /**
  * Why `home` cannot take an update now, or null.
  *
- * @param {{ run?: Spawn, home: string }} input
+ * @param {{ run?: Spawn, home: string, env?: NodeJS.ProcessEnv }} input
  * @returns {string | null}
  */
-export function updateBlocker({ run = crossSpawn(), home }) {
+export function updateBlocker({ run = crossSpawn(), home, env = process.env }) {
+  const clean = gitEnv(env);
   const gitDir = path.join(home, '.git');
   for (const [file, what] of [
     ['MERGE_HEAD', 'a merge'],
@@ -127,17 +132,17 @@ export function updateBlocker({ run = crossSpawn(), home }) {
   if (
     run('git', ['-C', home, 'symbolic-ref', '-q', 'HEAD'], {
       encoding: 'utf-8',
+      env: clean,
     }).status !== 0
   ) {
     return `${home} is not on a branch (detached HEAD).\nFix: git -C "${home}" switch main, then run kyoten update again`;
   }
-  const changed = capture(run, 'git', [
-    '-C',
-    home,
-    'status',
-    '--porcelain',
-    '--untracked-files=no',
-  ]);
+  const changed = capture(
+    run,
+    'git',
+    ['-C', home, 'status', '--porcelain', '--untracked-files=no'],
+    { env: clean }
+  );
   if (changed.trim()) {
     return `${home} has uncommitted changes to tracked files.\nFix: commit or stash them, then run kyoten update again`;
   }
@@ -151,13 +156,14 @@ export function updateBlocker({ run = crossSpawn(), home }) {
  * @param {{ run?: Spawn, home: string, env?: NodeJS.ProcessEnv }} input
  */
 export function mergeEnv({ run = crossSpawn(), home, env = process.env }) {
+  const clean = gitEnv(env);
   const email = run('git', ['-C', home, 'config', 'user.email'], {
     encoding: 'utf-8',
-    env,
+    env: clean,
   });
   return email.status === 0 && String(email.stdout).trim()
-    ? env
-    : { ...env, ...KYOTEN_IDENTITY };
+    ? clean
+    : gitEnv(clean, KYOTEN_IDENTITY);
 }
 
 /**

@@ -24,6 +24,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { writePrivate } from './dscc.js';
+import { gitEnv } from './git-env.js';
 import {
   expandHome,
   homeState,
@@ -226,7 +227,7 @@ function writeBackup({
           'main',
           UPSTREAM,
         ],
-        { env },
+        { env: gitEnv(env) },
         'fix what git reports, then run kyoten backup again'
       );
       record('local.bundle');
@@ -270,7 +271,7 @@ function localCommits({ home, run, env }) {
   const result = run(
     'git',
     ['-C', home, 'rev-list', '--count', `${UPSTREAM}..main`],
-    { encoding: 'utf-8', env }
+    { encoding: 'utf-8', env: gitEnv(env) }
   );
   return result.error || result.status !== 0
     ? null
@@ -352,7 +353,7 @@ function mergeBlocker({ home, run, env }) {
   const status = run(
     'git',
     ['-C', home, 'status', '--porcelain', '--untracked-files=no'],
-    { encoding: 'utf-8', env }
+    { encoding: 'utf-8', env: gitEnv(env) }
   );
   if (status.error || status.status !== 0) {
     return `git cannot read ${home}.\nFix: make sure it is a git repository (git -C "${home}" status)`;
@@ -372,7 +373,7 @@ function restoreBundle({ folder, home, run, env, bundle, err }) {
     ['-C', home, 'symbolic-ref', '-q', '--short', 'HEAD'],
     {
       encoding: 'utf-8',
-      env,
+      env: gitEnv(env),
     }
   );
   if (branch.status !== 0 || String(branch.stdout).trim() !== 'main') {
@@ -392,12 +393,15 @@ function restoreBundle({ folder, home, run, env, bundle, err }) {
       `+refs/heads/main:${RESTORED}`,
       `+refs/heads/${UPSTREAM}:${RESTORED_UPSTREAM}`,
     ],
-    { env },
+    { env: gitEnv(env) },
     'the bundle in the backup could not be read; restore the rest by hand (git bundle verify)'
   );
   /** @param {string[]} args */
   const git = (args) =>
-    run('git', ['-C', home, ...args], { encoding: 'utf-8', env }).status;
+    run('git', ['-C', home, ...args], {
+      encoding: 'utf-8',
+      env: gitEnv(env),
+    }).status;
   if (git(['merge-base', '--is-ancestor', RESTORED, 'HEAD']) === 0) {
     err('kyoten: your commits from the backup are already in main');
     return;

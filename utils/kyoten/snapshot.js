@@ -14,6 +14,7 @@ import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
 import { crossSpawn } from '../spawn.js';
+import { gitEnv } from './git-env.js';
 import { SNAPSHOT_FILE } from './home.js';
 
 /** The bundle's name, next to the package's runtime/ folder. */
@@ -28,7 +29,8 @@ const MAGIC = 'KYOTEN-BUNDLE 1\n';
  */
 
 /**
- * Run a command and return its stdout, or throw with its stderr.
+ * Run a command and return its stdout, or throw with its stderr. A git
+ * command without its own `env` gets the caller's environment minus `GIT_*`.
  *
  * @param {Spawn} run
  * @param {string} bin
@@ -37,7 +39,11 @@ const MAGIC = 'KYOTEN-BUNDLE 1\n';
  * @returns {string}
  */
 export function capture(run, bin, args, options = {}) {
-  const result = run(bin, args, { encoding: 'utf-8', ...options });
+  const result = run(bin, args, {
+    encoding: 'utf-8',
+    ...(bin === 'git' && { env: gitEnv() }),
+    ...options,
+  });
   if (result.error) throw result.error;
   if (result.status !== 0) {
     const detail =
@@ -90,6 +96,7 @@ export function readBlobs({ repo, shas, run = crossSpawn() }) {
   if (shas.length === 0) return [];
   const result = run('git', ['-C', repo, 'cat-file', '--batch'], {
     input: `${shas.join('\n')}\n`,
+    env: gitEnv(),
     maxBuffer: 256 * 1024 * 1024,
   });
   if (result.error) throw result.error;
