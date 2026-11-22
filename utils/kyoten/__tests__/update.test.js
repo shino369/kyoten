@@ -316,6 +316,36 @@ describe('updateHome', () => {
     expect(fs.existsSync(path.join(home, HOME_INFO))).toBe(true);
   });
 
+  test('should finish setup on a retry after a failed install', () => {
+    const home = makeHome();
+    const failing = fakeRun((args) =>
+      args[0] === 'install' ? { status: 1 } : undefined
+    );
+    const source = sourceAt(second, '2.0.0');
+
+    expect(() =>
+      updateHome({ home, source, log: vi.fn(), run: failing.run })
+    ).toThrow(/failed in/);
+    const retry = fakeRun();
+    const log = vi.fn();
+    const result = updateHome({ home, source, log, run: retry.run, now: t2 });
+
+    expect(result).toEqual({ changed: true });
+    expect(retry.calls.map((c) => c.args)).toEqual([
+      PNPM_INSTALL,
+      ['workspace:setup'],
+    ]);
+    expect(readHomeInfo(home)?.version).toBe('2.0.0');
+    expect(fs.existsSync(path.join(home, '.kyoten', 'setup-pending'))).toBe(
+      false
+    );
+    const again = fakeRun();
+    expect(updateHome({ home, source, log: vi.fn(), run: again.run })).toEqual({
+      changed: false,
+    });
+    expect(again.calls).toHaveLength(0);
+  });
+
   test('should not run pnpm when setup is false', () => {
     const home = makeHome();
     const { run, calls } = fakeRun();

@@ -90,6 +90,9 @@ function advanceUpstream({ home, source, run, env }) {
   }
 }
 
+/** Present while a setup started by `kyoten update` has not finished. */
+const SETUP_PENDING = path.join('.kyoten', 'setup-pending');
+
 /**
  * @param {{ home: string, source: SnapshotSource, log: (text: string) => void, setup?: boolean, run?: Spawn, env?: NodeJS.ProcessEnv, now?: () => Date }} input
  * @returns {{ changed: boolean }}
@@ -137,12 +140,24 @@ export function updateHome({
       );
     }
   }
-  const changed = advanced || !contained || info.version !== source.version;
+  // A failed setup leaves the marker, so a retry finishes it even though the
+  // branch tips and the version already match.
+  const pending = path.join(home, SETUP_PENDING);
+  const changed =
+    advanced ||
+    !contained ||
+    info.version !== source.version ||
+    fs.existsSync(pending);
   if (!changed) {
     log(`${home} already has kyoten ${source.version}`);
     return { changed };
   }
-  if (setup) runSetup({ home, log, run, env });
+  if (setup) {
+    fs.mkdirSync(path.dirname(pending), { recursive: true });
+    fs.writeFileSync(pending, `${source.version}\n`);
+    runSetup({ home, log, run, env });
+    fs.rmSync(pending, { force: true });
+  }
   writeHomeInfo(home, {
     ...info,
     version: source.version,
