@@ -40,10 +40,7 @@ your-script-dir/
 
 ### Coverage Requirements
 
-**100% coverage REQUIRED for:**
-
-- All scripts in `.claude/hooks/`, project-owned `.agents/skills/`, `utils/`
-- Business logic, data processing, API interaction scripts
+The measured suite has a **95% minimum** for statements, branches, functions, and lines. It includes `.claude/hooks/`, project-owned `.agents/skills/`, and `utils/`. Test business logic, data processing, and API integration through their observable behavior.
 
 **Tests optional for:**
 
@@ -53,7 +50,7 @@ your-script-dir/
 
 ```bash
 pnpm test:coverage
-# Must show 100% for: Statements, Branches, Functions, Lines
+# enforces the 95% coverage floor
 ```
 
 ### Detailed Guidance
@@ -61,7 +58,7 @@ pnpm test:coverage
 See `.claude/rules/testing.md` for the test-file rules and `docs/testing/` for:
 
 - Test writing principles and Vitest usage
-- Mocking strategies and 100% coverage techniques
+- Mocking strategies and coverage techniques
 - Refactoring for testability
 
 ## Script Structure

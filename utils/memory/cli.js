@@ -59,6 +59,7 @@ import {
   defaultExtractDeps,
   extractEntry,
   formatRun,
+  modelFor,
   runWorker,
 } from './extract.js';
 import {
@@ -568,15 +569,23 @@ function runPersonaJob(options, deps, key) {
     options.persona ??
     (personaFromMarkdown(markdown ?? '') ||
       (key ? '' : (settings.persona ?? '')));
+  const config = readConfig(dir);
   const agent =
     options.agent ??
-    readConfig(dir).extractAgent ??
+    config.extractAgent ??
     sessionHarness(deps.env) ??
     'claude';
+  const model = modelFor({
+    agent,
+    configured: config.extractAgent,
+    extractModel: config.extractModel,
+    ownModel: null,
+  });
   const job = {
     persona,
     settings,
     agent,
+    model,
     deps: { ...deps, tmpdir: os.tmpdir },
   };
   if (options.audit) {
@@ -1068,6 +1077,7 @@ export const COMMANDS = {
       now: deps.now,
       runAgent: deps.runAgent,
       dryRun: options.dryRun,
+      force: options.force,
     });
     const run = options.dryRun
       ? consolidate(extractDeps)
@@ -1682,9 +1692,21 @@ export const COMMANDS = {
       updates.budget = budget === 'default' ? null : Number(budget);
     }
     const { config, warnings } = Object.keys(updates).length
-      ? changeConfig(deps, (current) => ({ ...current, ...updates }), {
-          refresh: true,
-        })
+      ? changeConfig(
+          deps,
+          (current) => ({
+            ...current,
+            ...updates,
+            // Switching agents without naming a new model clears the old
+            // agent's model so a model name is not sent to another CLI.
+            ...(updates.extractAgent !== undefined &&
+            updates.extractModel === undefined &&
+            updates.extractAgent !== current.extractAgent
+              ? { extractModel: null }
+              : {}),
+          }),
+          { refresh: true }
+        )
       : { config: readConfig(dirOf(deps)), warnings: [] };
     output(
       deps,

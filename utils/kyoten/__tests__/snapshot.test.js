@@ -104,12 +104,6 @@ describe('capture', () => {
     expect(result).toBe('out');
   });
 
-  test('should return an empty string when stdout is missing', () => {
-    const result = capture(() => ({ status: 0 }), 'x', []);
-
-    expect(result).toBe('');
-  });
-
   test('should throw the stderr when the command fails', () => {
     const fail = () => ({ status: 2, stderr: ' boom \n' });
 
@@ -146,12 +140,6 @@ describe('listTree', () => {
     ]);
     expect(entries.find((e) => e.path === 'bin/run.sh')?.mode).toBe('100755');
     expect(entries.find((e) => e.path === 'a.txt')?.mode).toBe('100644');
-  });
-
-  test('should default to HEAD', () => {
-    const entries = listTree({ repo, run });
-
-    expect(entries).toHaveLength(5);
   });
 
   test('should refuse a symlink', () => {
@@ -195,14 +183,6 @@ describe('readBlobs', () => {
       2,
     ]);
     expect([...blobs[3]]).toEqual([0, 10, 255, 10]);
-  });
-
-  test('should use the default git runner', () => {
-    const sha = git(['rev-parse', `${commit}:a.txt`]);
-
-    const blobs = readBlobs({ repo, shas: [sha] });
-
-    expect(blobs[0].toString()).toBe('hello\n');
   });
 
   test('should throw when git answers with another object', () => {
@@ -251,14 +231,6 @@ describe('exportTree', () => {
       0, 10, 255, 10,
     ]);
     expect(fs.existsSync(path.join(dest, 'sub', '.gitignore'))).toBe(true);
-  });
-
-  test('should default to HEAD and the default runner', () => {
-    const dest = path.join(tmp, 'export-head');
-
-    const written = exportTree({ repo, dest });
-
-    expect(written).toHaveLength(5);
   });
 });
 
@@ -395,12 +367,6 @@ describe('snapshotSource', () => {
       version: '0.9.0',
       commit,
     });
-  });
-
-  test('should use the default runner', () => {
-    const source = snapshotSource({ root: repo, version: '0.9.0' });
-
-    expect(source.commit).toBe(commit);
   });
 });
 

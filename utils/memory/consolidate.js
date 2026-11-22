@@ -16,7 +16,11 @@ import fs from 'fs';
 import path from 'path';
 import { answerOf } from '../agent/cli.js';
 import { findSecrets, redactSecrets } from '../redact.js';
-import { writeFileAtomic } from '../task/store.js';
+import {
+  sessionFromEnv,
+  sessionHarness,
+  writeFileAtomic,
+} from '../task/store.js';
 import { callAgent } from './agent-call.js';
 import { readConfig, savingOff } from './config.js';
 import { looksLikeInstruction } from './instructions.js';
@@ -318,6 +322,13 @@ export function consolidate(deps) {
   const now = deps.now();
   const at = now.toISOString();
   const base = { at, job: 'consolidation', session: 'consolidation' };
+  const config = readConfig(dir);
+  const session = sessionFromEnv(deps.env);
+  if (!deps.dryRun && !deps.force && savingOff(config, session)) {
+    const run = { ...base, status: 'off' };
+    appendJournal(dir, run);
+    return run;
+  }
   const { shown, groups } = consolidationInput(loadNotes(dir).notes);
   if (shown.length === 0) {
     const run = { ...base, status: 'nothing' };
@@ -327,10 +338,10 @@ export function consolidate(deps) {
     return run;
   }
   const prompt = buildConsolidationPrompt({ shown, groups });
-  const config = readConfig(dir);
   const last = lastRun(dir);
   const side = deps.env.KYOTEN_AGENT === 'dscc' ? 'dscc' : 'normal';
-  const agent = config.extractAgent ?? last?.agent ?? 'claude';
+  const agent =
+    config.extractAgent ?? last?.agent ?? sessionHarness(deps.env) ?? 'claude';
   const model = modelFor({
     agent,
     configured: config.extractAgent,
@@ -360,8 +371,28 @@ export function consolidate(deps) {
     model,
     rootDir: deps.rootDir,
   });
-  const result = callAgent(deps, command, prompt);
+  const result = callAgent(deps, command, prompt, {
+    job: 'consolidation',
+    cancel: () => !deps.force && Boolean(savingOff(readConfig(dir), session)),
+  });
+  if (result.cancelled) {
+    const run = { ...base, status: 'off', agent, model };
+    appendJournal(dir, run);
+    return run;
+  }
   const answer = parseConsolidation(answerOf(result));
+  // Saving may have been turned off while the agent ran.
+  if (!deps.force && savingOff(readConfig(dir), session)) {
+    const run = {
+      ...base,
+      status: 'off',
+      agent,
+      model,
+      durationMs: result.durationMs,
+    };
+    appendJournal(dir, run);
+    return run;
+  }
   /** @type {string[]} */
   const noAdds = [];
   // ADD ops become NOOPs, so validateOps numbers the rest as the model did.

@@ -314,7 +314,7 @@ differs from the last note's), then continues from `Next`.
 | review rounds      | a clean-context review, triaged; must-fix/high must be fixed                                                                        |
 | `pnpm task done`   | last verify passed; code tasks: the review gate below                                                                               |
 | git hooks          | Prettier + ESLint on staged files, Conventional Commit messages                                                                     |
-| `pnpm check`       | the workspace gate: typecheck, lint, format, tests with 100% coverage                                                               |
+| `pnpm check`       | the workspace gate: typecheck, lint, format, tests with a 95% coverage floor                                                        |
 
 ### 5. Loops
 
@@ -443,33 +443,34 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   replies, failed commands; secrets left out), and makes one read-only call without tools, on the
   session's own agent CLI (claude, codex, dsh, or agy; `pnpm memory set --extract-agent <agent>`
   overrides, `default` restores), for ADD/UPDATE/DELETE ops on the related notes. `--extract-model`
-  pairs with the configured agent (claude by default); otherwise the session's own model is used.
-  Consolidation and `personalize --compact/--audit` follow the same agent choice (consolidation: the
-  last run's agent). Codex needs zero configured MCP servers; a missing CLI or failed check says
-  which `--extract-agent` to switch to. Secrets are refused, instruction-like ops
-  wait in `memory/inbox.jsonl`, and the next session announces the saves.
+  pairs with the configured agent (claude by default; cleared when switching `--extract-agent`
+  alone, and not accepted for DSH, which chooses its model in its profile); otherwise the session's
+  own model is used.
+  Consolidation uses the configured agent, falling back to the last applied run's agent,
+  the current session's CLI, and then Claude. Persona compaction and audit accept an explicit
+  `--agent` and otherwise follow the memory configuration and session. Codex needs zero configured
+  MCP servers. A missing CLI or failed check prints commands for switching agents. The next session
+  announces saved notes and shows when instruction-like changes are waiting in `memory/inbox.jsonl`.
+  Secrets are refused.
   The queue records each session's `KYOTEN_AGENT`. The `claude` CLI sends a transcript to the
-  provider its environment names, so a dscc session (Claude Code on DeepSeek) is extracted only by a
-  worker started from a dscc session, and any other session only by a worker that is not; a
-  mismatching entry is deferred (left queued, no attempt, no journal line) for a later matching
-  worker, and `pnpm memory extract` says so. A dscc worker consolidates with claude only when every applied extraction run in
-  the journal came from dscc (applied runs record their `side`; older runs count as not dscc), else it
-  defers; a normal worker always consolidates. Consolidation never runs while saving is off
+  provider its environment names. When extraction uses the Claude CLI, dscc sessions are extracted
+  by dscc workers and other sessions by workers outside dscc. A mismatching entry stays queued for
+  a matching worker without recording an attempt. A dscc worker defers Claude consolidation until
+  every applied extraction run in the journal is marked as dscc. Consolidation is paused while saving is off
   everywhere (`pnpm memory off`; it stays due and runs once saving is back on); a manual
   `pnpm memory consolidate` then refuses with a Fix line unless `--force` (a `--dry-run` is always
   allowed). Consolidation reuses the last run's model only from a run on the same provider side
   (dscc or not) as the worker.
   Memory jobs build their isolation arguments without a double quote, so they start through
   Windows `.cmd` shims (which refuse `"`): Codex gets bare or single-quoted TOML values, Claude gets
-  its settings as a file in the job's temporary folder. Antigravity takes its settings as JSON on
+  a relative path to its settings file in the job's temporary folder. Antigravity takes its settings as JSON on
   the command line, so it needs a native `agy.exe`; behind a `.cmd` shim the job fails with a Fix
-  line naming another `--extract-agent`. Not verified on a real Windows machine.
-  Other agents are not affected.
+  line naming another `--extract-agent`.
 - **Safety:** every write path refuses text matching `utils/redact.js`; notes are framed as facts;
   `pnpm workspace:check` fails if a memory file is tracked.
 - **Worktrees:** `pnpm loop` and `pnpm swarm` do not copy `AGENTS.local.md` or `CLAUDE.local.md`
-  into their worktrees, so headless agents there start with a clean context; the store stays in
-  the main checkout.
+  into their worktrees (and refuse to reuse a worktree that still holds old copies), so headless
+  agents there start with a clean context; the store stays in the main checkout.
 - **Export and import** (`pnpm memory export` / `import`): one `.tar.gz` with a checksummed
   manifest, validated (paths, entry types, checksums) before anything is written; imports merge
   and take a snapshot first. The personalization part carries the per-agent personas

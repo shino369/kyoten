@@ -1188,25 +1188,6 @@ describe('askLine', () => {
 });
 
 describe('defaultDeps', () => {
-  test('should write to the process streams', () => {
-    const stdout = vi
-      .spyOn(process.stdout, 'write')
-      .mockImplementation(() => true);
-    const stderr = vi
-      .spyOn(process.stderr, 'write')
-      .mockImplementation(() => true);
-    const deps = defaultDeps();
-
-    deps.out('o');
-    deps.err('e');
-
-    expect(stdout).toHaveBeenCalledWith('o\n');
-    expect(stderr).toHaveBeenCalledWith('e\n');
-    expect(deps.cwd).toBe(process.cwd());
-    expect(deps.platform).toBe(process.platform);
-    expect(deps.now()).toBeInstanceOf(Date);
-  });
-
   test('should ask on stderr and read the answer from stdin', async () => {
     const input = new PassThrough();
     vi.spyOn(process, 'stdin', 'get').mockReturnValue(

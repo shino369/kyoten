@@ -122,6 +122,7 @@ const CHANGE_FIELDS = /** @type {const} */ ([
  * @property {typeof defaultRunAgent} runAgent
  * @property {() => string} tmpdir
  * @property {boolean} [dryRun] build the prompt, call and change nothing
+ * @property {boolean} [force] override the saving-off guard for manual runs
  * @property {import('./queue.js').LockOptions} [lock]
  */
 
@@ -569,6 +570,7 @@ export function extractCommand({ agent, model, rootDir }) {
  * @returns {string | null}
  */
 export function modelFor({ agent, configured, extractModel, ownModel }) {
+  if (agent === 'dsh') return null;
   if (extractModel && agent === (configured ?? 'claude')) return extractModel;
   return ownModel;
 }
@@ -604,12 +606,9 @@ export function extractEntry(entry, deps) {
   // The claude CLI sends the transcript to whatever provider its environment
   // names, so a dscc session and a normal one are never mixed. Deferred:
   // the entry stays queued, untouched, for a worker of the matching side.
-  const deferred = deferredRun(
-    readConfig(dir).extractAgent ?? harness,
-    entry.kyotenAgent,
-    deps.env,
-    base
-  );
+  const config = readConfig(dir);
+  const agent = config.extractAgent ?? harness;
+  const deferred = deferredRun(agent, entry.kyotenAgent, deps.env, base);
   if (deferred) return deferred;
 
   const from = readOffsets(dir)[session]?.offset ?? 0;
@@ -636,12 +635,9 @@ export function extractEntry(entry, deps) {
   const { notes, index } = loadIndex(dir);
   const related = relatedNotes(notes, index, sessionText, { repo });
   const prompt = buildPrompt({ session: sessionText, related, repo });
-  // The extractor is the configured agent, else the session's own CLI.
   // `extractModel` pairs with the configured agent (claude when none is
   // set); otherwise only the session's own model name, and only when the
   // extractor is the session's own CLI, is passed on.
-  const config = readConfig(dir);
-  const agent = config.extractAgent ?? harness;
   const model = modelFor({
     agent,
     configured: config.extractAgent,
@@ -657,7 +653,10 @@ export function extractEntry(entry, deps) {
     model,
     rootDir: deps.rootDir,
   });
-  const result = callAgent(deps, command, prompt);
+  const result = callAgent(deps, command, prompt, {
+    cancel: () => Boolean(savingOff(readConfig(dir), session)),
+  });
+  if (result.cancelled) return settle(offRun, chunk.end);
   const rawOps = parseOps(answerOf(result));
   // Saving may have been turned off while the agent ran.
   if (savingOff(readConfig(dir), session)) return settle(offRun, chunk.end);

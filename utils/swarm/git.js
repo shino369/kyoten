@@ -9,7 +9,11 @@
 import fs from 'fs';
 import path from 'path';
 import { tasksRoot, writeActive } from '../task/store.js';
-import { gitText, worktreePath } from '../loop/worktree.js';
+import {
+  assertCleanWorktree,
+  gitText,
+  worktreePath,
+} from '../loop/worktree.js';
 
 /**
  * @typedef {import('../loop/worktree.js').Spawn} Spawn
@@ -123,6 +127,7 @@ export function copyTask({ rootDir, dir, task }) {
     });
   }
   writeActive(dir, task);
+  assertCleanWorktree(dir);
 }
 
 /**

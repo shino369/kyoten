@@ -64,6 +64,10 @@ describe('normalizeConfig', () => {
     [{ extractModel: 7 }, 'Invalid model name'],
     [{ extractAgent: 'gemini' }, 'claude, codex, dsh, agy'],
     [{ extractAgent: 7 }, 'Invalid agent 7'],
+    [
+      { extractAgent: 'dsh', extractModel: 'deepseek-v4' },
+      'DSH selects its model in its profile',
+    ],
     [{ budget: 1.5 }, 'The budget must be a whole number'],
     [{ budget: BUDGET_RANGE.min - 1 }, 'The budget must be a whole number'],
     [{ budget: BUDGET_RANGE.max + 1 }, 'The budget must be a whole number'],
@@ -133,6 +137,20 @@ describe('readConfig / writeConfig', () => {
     fs.writeFileSync(path.join(dir, CONFIG_FILE), '{"budget": 3}');
 
     expect(() => readConfig(dir)).toThrow(MemoryError);
+  });
+
+  test('should drop a legacy dsh extractModel on read so recovery commands still work', () => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, CONFIG_FILE),
+      JSON.stringify({ extractAgent: 'dsh', extractModel: 'deepseek-v4' })
+    );
+
+    expect(readConfig(dir)).toEqual({
+      ...DEFAULT_CONFIG,
+      extractAgent: 'dsh',
+      extractModel: null,
+    });
   });
 });
 

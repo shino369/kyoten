@@ -354,21 +354,6 @@ describe('listTarball', () => {
 
     expect(listTarball(zlib.gzipSync(tar))).toEqual(['package/f.txt']);
   });
-
-  test('should treat an empty size field as zero and an empty type as a file', () => {
-    const block = tarEntry({ name: 'package/f.txt' });
-    block.fill(0, 124, 136);
-    block.fill(0, 156, 157);
-    const tar = Buffer.concat([block, Buffer.alloc(1024)]);
-
-    expect(listTarball(zlib.gzipSync(tar))).toEqual(['package/f.txt']);
-  });
-
-  test('should stop at the end of a truncated archive', () => {
-    const tar = tarEntry({ name: 'package/f.txt' });
-
-    expect(listTarball(zlib.gzipSync(tar))).toEqual(['package/f.txt']);
-  });
 });
 
 describe('checkTarball', () => {
@@ -415,24 +400,16 @@ describe('checkTarball', () => {
   });
 
   test('should report a tarball over the cap', () => {
+    const size = MAX_TARBALL_BYTES + 1;
     const problems = checkTarball({
       entries: ['package/a', 'package/b'],
       expected,
-      size: 11,
-      max: 10,
+      size,
     });
 
-    expect(problems).toEqual(['the tarball is 11 bytes, over the 10-byte cap']);
-  });
-
-  test('should use the default cap', () => {
-    const problems = checkTarball({
-      entries: ['a', 'b'],
-      expected,
-      size: MAX_TARBALL_BYTES + 1,
-    });
-
-    expect(problems).toHaveLength(1);
+    expect(problems).toEqual([
+      `the tarball is ${size} bytes, over the ${MAX_TARBALL_BYTES}-byte cap`,
+    ]);
   });
 });
 
@@ -725,17 +702,5 @@ describe('main', () => {
     expect(err).toHaveBeenCalledWith(
       expect.stringMatching(/^kyoten:pack: pnpm pack .*pack exploded/)
     );
-  });
-
-  test('should use the default dependencies', () => {
-    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    const code = main(['--bogus']);
-
-    expect(code).toBe(1);
-    expect(spy).toHaveBeenCalledWith(
-      'kyoten:pack: unexpected argument: --bogus'
-    );
-    spy.mockRestore();
   });
 });

@@ -169,6 +169,16 @@ describe('copyTask', () => {
     expect(fs.existsSync(path.join(dir, 'AGENTS.local.md'))).toBe(false);
   });
 
+  test('should refuse a reused worktree that still holds personal memory files', () => {
+    const dir = path.join(base, 'wt');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'CLAUDE.local.md'), '@AGENTS.local.md\n');
+
+    expect(() => copyTask({ rootDir: repo, dir, task: TASK })).toThrow(
+      /still holds personal memory files \(CLAUDE\.local\.md\).*Fix: remove/s
+    );
+  });
+
   test('should keep an existing copy', () => {
     const dir = path.join(base, 'wt');
     const target = path.join(dir, 'tasks', TASK);

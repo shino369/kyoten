@@ -75,7 +75,7 @@ export const RUBRIC = /** @type {const} */ ([
 /**
  * @typedef {import('./personalize.js').Personalization} Personalization
  * @typedef {import('./agent-call.js').CallDeps & { rootDir: string }} CompactDeps
- * @typedef {{ persona: string, settings: Personalization, agent: string, deps: CompactDeps }} Job
+ * @typedef {{ persona: string, settings: Personalization, agent: string, model?: string | null, deps: CompactDeps }} Job
  * @typedef {typeof RUBRIC[number]['severity']} Severity
  * @typedef {{ category: string, text: string }} Removal
  * @typedef {{ severity: Severity, category: string, quote: string, why: string }} Finding
@@ -267,10 +267,10 @@ function refuseSecrets(text) {
 }
 
 /** @param {Job} job */
-export function auditPersona({ persona, settings, agent, deps }) {
+export function auditPersona({ persona, settings, agent, model = null, deps }) {
   const text = checkedText(persona);
   const language = settings.language;
-  const command = headlessCommand({ agent, rootDir: deps.rootDir });
+  const command = headlessCommand({ agent, model, rootDir: deps.rootDir });
   if (language) refuseSecrets(language);
   const answer = callAgent(
     deps,
@@ -298,7 +298,13 @@ export function auditPersona({ persona, settings, agent, deps }) {
 }
 
 /** @param {Job} job @returns {Compaction} */
-export function compactPersona({ persona, settings, agent, deps }) {
+export function compactPersona({
+  persona,
+  settings,
+  agent,
+  model = null,
+  deps,
+}) {
   const text = checkedText(persona);
   const { room, target } = personaRoom(settings);
   if (room < MIN_PERSONA_ROOM) {
@@ -307,7 +313,7 @@ export function compactPersona({ persona, settings, agent, deps }) {
       `The other settings leave room for only ${room} characters of persona; compacting needs at least ${MIN_PERSONA_ROOM}. Shorten them first (pnpm memory personalize).`
     );
   }
-  const command = headlessCommand({ agent, rootDir: deps.rootDir });
+  const command = headlessCommand({ agent, model, rootDir: deps.rootDir });
   const language = settings.language;
   if (language) refuseSecrets(language);
   /** @param {number} [overshoot] */
@@ -353,6 +359,7 @@ export function compactPersona({ persona, settings, agent, deps }) {
     persona: result.persona,
     settings,
     agent,
+    model,
     deps,
   });
   return {

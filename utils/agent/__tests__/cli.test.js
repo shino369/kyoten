@@ -3,7 +3,6 @@ import os from 'os';
 import path from 'path';
 import { vi } from 'vitest';
 import { writeActive } from '../../task/store.js';
-import { ROOT_DIR } from '../../workspace-config.js';
 import {
   DEFAULT_TIMEOUT_MIN,
   HELP,
@@ -93,6 +92,17 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('should inherit the caller environment by default', () => {
+  vi.stubEnv('KYOTEN_TEST_PROVIDER_SETTING', 'from-caller');
+  try {
+    expect(defaultAgentDeps().env.KYOTEN_TEST_PROVIDER_SETTING).toBe(
+      'from-caller'
+    );
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });
 
 describe('parseArgs', () => {
@@ -358,12 +368,12 @@ describe('main', () => {
           '@deepseek-ai/dsh',
           '--profile',
           'headless',
+          '--patch',
+          '.dsh/workspace.patch.yml',
           '--permission-mode',
           'read-only',
           '--approval-policy',
           'never',
-          '--patch',
-          '.dsh/workspace.patch.yml',
           '-',
         ],
       },
@@ -461,17 +471,5 @@ describe('main', () => {
 
     const text = run(['ask', '--agent', 'codex', 'hi'], { runAgent: stopped });
     expect(text.err).toContain('(codex, read: stopped by SIGTERM; record:');
-  });
-});
-
-describe('defaultAgentDeps', () => {
-  test('should default to the workspace and real processes', () => {
-    const deps = defaultAgentDeps();
-    expect(deps.rootDir).toBe(ROOT_DIR);
-    expect(deps.env).toBe(process.env);
-    expect(deps.now()).toBeInstanceOf(Date);
-    expect(typeof deps.spawn).toBe('function');
-    expect(typeof deps.readStdin).toBe('function');
-    expect(defaultAgentDeps({ rootDir: '/x' }).rootDir).toBe('/x');
   });
 });

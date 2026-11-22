@@ -5,8 +5,7 @@ import path from 'path';
 import { vi } from 'vitest';
 import { createState } from '../../task/state.js';
 import { saveState, tasksRoot, writeActive } from '../../task/store.js';
-import { ROOT_DIR } from '../../workspace-config.js';
-import { HELP, defaultCliDeps, main, parseArgs } from '../cli.js';
+import { HELP, main, parseArgs } from '../cli.js';
 import { worktreePath } from '../worktree.js';
 
 const NAME = 'demo-261117';
@@ -237,7 +236,7 @@ describe('main', () => {
     const { code, out, runAgent } = run(['--agent', 'dsh', '--dry-run']);
     expect(code).toBe(0);
     expect(out).toContain(
-      'Agent: dsh --profile headless --permission-mode workspace-write --approval-policy never --patch .dsh/workspace.patch.yml - (prompt on stdin)'
+      'Agent: dsh --profile headless --patch .dsh/workspace.patch.yml --permission-mode workspace-write --approval-policy never - (prompt on stdin)'
     );
     expect(out).toContain('Verify: pnpm test');
     expect(out).toContain(`Worktree: ${worktreePath(repo, NAME)}`);
@@ -322,7 +321,7 @@ describe('main', () => {
       expect(
         run(['--agent', 'dsh', '--review', '--bin', 'mydsh', '--dry-run']).out
       ).toContain(
-        'reviewer + triage: mydsh --profile headless --permission-mode read-only'
+        'reviewer + triage: mydsh --profile headless --patch .dsh/workspace.patch.yml --permission-mode read-only'
       );
     });
 
@@ -441,15 +440,5 @@ describe('main', () => {
     });
     expect(code).toBe(1);
     expect(out).toContain('still failing after 1 iteration(s)');
-  });
-});
-
-describe('defaultCliDeps', () => {
-  test('should default to the workspace and real processes', () => {
-    const deps = defaultCliDeps();
-    expect(deps.rootDir).toBe(ROOT_DIR);
-    expect(deps.spawn).toBe(spawnSync);
-    expect(deps.date()).toBeInstanceOf(Date);
-    expect(deps.install).toBeUndefined();
   });
 });

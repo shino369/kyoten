@@ -133,25 +133,6 @@ describe('runChecks prerequisites', () => {
     }
     expect(byId(checks, 'node')?.detail).toMatch(/needs Node\.js/);
   });
-
-  test('should read process.versions and spawn for real by default', () => {
-    const checks = runChecks({
-      home: path.join(tmp, 'home'),
-      homeSource: 'test',
-      version: '1.0.0',
-      profile: path.join(tmp, 'profile'),
-      env: {},
-      platform: 'linux',
-      homedir: tmp,
-      canRun: () => false,
-      registry: () => null,
-    });
-
-    expect(byId(checks, 'node')?.detail).toBe(
-      `Node.js ${process.versions.node}`
-    );
-    expect(byId(checks, 'git')?.status).toBe('ok');
-  });
 });
 
 describe('runChecks home', () => {

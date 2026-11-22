@@ -6,7 +6,7 @@ import os from 'os';
 import path from 'path';
 import { vi } from 'vitest';
 import { INNER_LOOP_ENV } from '../../task/loop.js';
-import { writeConfig, DEFAULT_CONFIG } from '../config.js';
+import { CONFIG_FILE, writeConfig, DEFAULT_CONFIG } from '../config.js';
 import {
   EXTRACT_TIMEOUT_MS,
   MAX_OPS,
@@ -1224,7 +1224,32 @@ describe('extractEntry', () => {
 
       expect(() =>
         extractEntry(queued({ harness: 'codex' }), deps({ runAgent }))
-      ).toThrow(/Fix: pnpm memory set --extract-agent claude\|dsh\|agy$/);
+      ).toThrow(
+        /Fix: pnpm memory set --extract-agent claude\nFix: pnpm memory set --extract-agent dsh\nFix: pnpm memory set --extract-agent agy$/
+      );
+    });
+
+    test('should stop before sending the transcript when saving is turned off during the Codex probe', () => {
+      writeCodexSession();
+      const runAgent = vi.fn(() => {
+        writeConfig(dir, { ...DEFAULT_CONFIG, off: true });
+        return {
+          code: 0,
+          signal: null,
+          output: '',
+          stdout:
+            'No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.\n',
+          durationMs: 5,
+        };
+      });
+
+      const run = extractEntry(
+        queued({ harness: 'codex' }),
+        deps({ runAgent })
+      );
+
+      expect(run.status).toBe('off');
+      expect(runAgent).toHaveBeenCalledTimes(1);
     });
 
     test('should name a replacement agent when the Codex check fails', () => {
@@ -1234,7 +1259,7 @@ describe('extractEntry', () => {
       expect(() =>
         extractEntry(queued({ harness: 'codex' }), deps({ runAgent }))
       ).toThrow(
-        /Cannot verify Codex persona isolation[\s\S]*Fix: pnpm memory set --extract-agent claude\|dsh\|agy$/
+        /Cannot verify Codex persona isolation[\s\S]*Fix: pnpm memory set --extract-agent claude\nFix: pnpm memory set --extract-agent dsh\nFix: pnpm memory set --extract-agent agy$/
       );
     });
 
@@ -1509,6 +1534,36 @@ describe('provider sides', () => {
     expect(run.status).toBe('applied');
   });
 
+  test('should dispatch with the agent checked for provider isolation when config changes', () => {
+    richSession();
+    const entry = queued();
+    const runAgent = agentReturning({ ops: [] });
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });
+    const configPath = path.join(dir, CONFIG_FILE);
+    const readFile = fs.readFileSync;
+    const spy = vi
+      .spyOn(fs, 'readFileSync')
+      .mockImplementation(
+        (/** @type {any} */ file, /** @type {any} */ options) => {
+          const content = readFile(file, options);
+          if (file === configPath) {
+            spy.mockRestore();
+            writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'claude' });
+          }
+          return content;
+        }
+      );
+
+    try {
+      expect(extractEntry(entry, deps({ env: DSCC, runAgent }))).toMatchObject({
+        status: 'applied',
+        agent: 'agy',
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   test('should defer on the extract agent, not the session harness', () => {
     richSession();
     writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'claude' });
@@ -1638,16 +1693,8 @@ describe('runWorker', () => {
   });
 });
 
-describe('defaultExtractDeps', () => {
-  test('should use the real agent, clock, and temporary folder', () => {
-    const d = defaultExtractDeps({ env: { X: '1' } });
-
-    expect(d.env).toEqual({ X: '1' });
-    expect(d.tmpdir()).toBe(os.tmpdir());
-    expect(d.now()).toBeInstanceOf(Date);
-    expect(typeof d.runAgent).toBe('function');
-    expect(fs.existsSync(d.rootDir)).toBe(true);
-  });
+test('should use the system temporary directory for extraction jobs', () => {
+  expect(defaultExtractDeps().tmpdir()).toBe(os.tmpdir());
 });
 
 describe('announcement', () => {

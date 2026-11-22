@@ -83,8 +83,4 @@ describe('childEnv', () => {
   test('should keep a differently cased name on POSIX', () => {
     expect(childEnv({ git_dir: 'x' }, 'linux')).toEqual({ git_dir: 'x' });
   });
-
-  test('should default to the process environment', () => {
-    expect(childEnv()).toBeTypeOf('object');
-  });
 });

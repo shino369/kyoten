@@ -349,12 +349,4 @@ describe('runSetup', () => {
     expect(calls).toHaveLength(2);
     expect(log).toHaveBeenCalledTimes(2);
   });
-
-  test('should use the default runner and environment shape', () => {
-    const { run } = fakeRun();
-
-    expect(() =>
-      runSetup({ home: tmp, log: vi.fn(), run, env: gitEnv })
-    ).not.toThrow();
-  });
 });

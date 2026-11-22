@@ -91,7 +91,12 @@ const CODEX_EMPTY_MCP_LIST =
 export function headlessCommand({ agent, model = null, rootDir }) {
   if (!CALL_AGENTS.includes(/** @type {CallAgent} */ (agent))) {
     throw new Error(
-      `Memory jobs run on ${CALL_AGENTS.join(', ')} (got ${agent}).\nFix: use --agent ${CALL_AGENTS.join('|')}`
+      `Memory jobs run on ${CALL_AGENTS.join(', ')} (got ${agent}).\n${CALL_AGENTS.map((name) => `Fix: use --agent ${name}`).join('\n')}`
+    );
+  }
+  if (model && agent === 'dsh') {
+    throw new Error(
+      'DSH selects its model in its profile, not with --model.\nFix: drop --extract-model, or choose another memory agent'
     );
   }
   const command = buildCommand({
@@ -154,45 +159,50 @@ export function headlessCommand({ agent, model = null, rootDir }) {
  * @returns {string}
  */
 function switchFix(job, agent) {
-  const others = CALL_AGENTS.filter((name) => name !== agent).join('|');
+  const others = CALL_AGENTS.filter((name) => name !== agent);
   return job.startsWith('persona')
-    ? `use --agent ${others}`
-    : `pnpm memory set --extract-agent ${others}`;
+    ? others.map((name) => `Fix: use --agent ${name}`).join('\n')
+    : others
+        .map((name) => `Fix: pnpm memory set --extract-agent ${name}`)
+        .join('\n');
 }
 
 /**
  * Claude takes `--settings <file-or-json>`: pass the JSON as a file in the
- * job's folder, so the command line holds no double quote (Windows .cmd
- * shims refuse one).
+ * job's folder using its relative name, so the command line holds neither a
+ * double quote nor temp-path characters (`!`, `%`) that Windows .cmd shims
+ * refuse.
  *
  * @param {import('../loop/adapters.js').AgentCommand} command
  * @param {string} cwd
  * @returns {import('../loop/adapters.js').AgentCommand}
  */
 function settingsAsFile(command, cwd) {
-  const at = command.args.indexOf('--settings');
+  const at = command.args.lastIndexOf('--settings');
   if (command.agent !== 'claude' || at === -1) return command;
-  const file = path.join(cwd, CLAUDE_SETTINGS_FILE);
-  fs.writeFileSync(file, command.args[at + 1]);
+  fs.writeFileSync(path.join(cwd, CLAUDE_SETTINGS_FILE), command.args[at + 1]);
   const args = [...command.args];
-  args[at + 1] = file;
+  args[at + 1] = CLAUDE_SETTINGS_FILE;
   return { ...command, args };
 }
 
 /**
  * One call in an empty folder, removed afterwards. Throws when the agent
  * fails, naming the job ("the extraction agent exited with code 1: …").
+ * When `cancel` returns true right before dispatching the prompt (after any
+ * pre-flight probe), no prompt is sent and `{ cancelled: true }` is returned.
  *
  * @param {CallDeps} deps
  * @param {import('../loop/adapters.js').AgentCommand} command
  * @param {string} prompt
- * @param {{ job?: string, timeoutMs?: number }} [options]
+ * @param {{ job?: string, timeoutMs?: number, cancel?: () => boolean }} [options]
+ * @returns {import('../loop/adapters.js').AgentResult & { cancelled?: boolean }}
  */
 export function callAgent(
   deps,
   command,
   prompt,
-  { job = 'extraction', timeoutMs = AGENT_CALL_TIMEOUT_MS } = {}
+  { job = 'extraction', timeoutMs = AGENT_CALL_TIMEOUT_MS, cancel } = {}
 ) {
   const cwd = fs.mkdtempSync(path.join(deps.tmpdir(), `memory-${job}-`));
   const env = { ...deps.env, [EXTRACT_ENV]: '1', [INNER_LOOP_ENV]: 'off' };
@@ -214,9 +224,19 @@ export function callAgent(
       });
       if (probe.code !== 0 || probe.stdout.trim() !== CODEX_EMPTY_MCP_LIST) {
         throw new Error(
-          `Cannot verify Codex persona isolation. The MCP check must report zero configured servers.\nFix: ${switchFix(job, 'codex')}`
+          `Cannot verify Codex persona isolation. The MCP check must report zero configured servers.\n${switchFix(job, 'codex')}`
         );
       }
+    }
+    if (cancel?.()) {
+      return {
+        code: 0,
+        signal: null,
+        output: '',
+        stdout: '',
+        durationMs: 0,
+        cancelled: true,
+      };
     }
     result = deps.runAgent({
       command: settingsAsFile(command, cwd),
@@ -231,7 +251,7 @@ export function callAgent(
       error instanceof Error &&
       /was not found \(agent /.test(error.message)
     ) {
-      error.message += `\nFix: ${switchFix(job, command.agent)}`;
+      error.message += `\n${switchFix(job, command.agent)}`;
     }
     // agy takes its isolation settings as JSON, which a .cmd shim cannot carry.
     if (
@@ -239,7 +259,7 @@ export function callAgent(
       command.agent === 'agy' &&
       /cannot be passed safely to a Windows/.test(error.message)
     ) {
-      error.message += `\nFix: ${switchFix(job, 'agy')} (agy runs only through a native agy.exe, not a .cmd shim)`;
+      error.message += `\n${switchFix(job, 'agy')}\n(agy runs only through a native agy.exe, not a .cmd shim)`;
     }
     throw error;
   } finally {

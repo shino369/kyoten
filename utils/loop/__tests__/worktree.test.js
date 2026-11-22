@@ -177,6 +177,29 @@ describe('prepareWorktree', () => {
     expect(fs.existsSync(path.join(dir, 'CLAUDE.local.md'))).toBe(false);
   });
 
+  test('should refuse to reuse a worktree that still holds old personal memory files', () => {
+    const first = prepareWorktree({ rootDir: repo, task: TASK, spawn });
+    fs.mkdirSync(path.join(first.dir, 'node_modules'));
+    fs.writeFileSync(path.join(first.dir, 'AGENTS.local.md'), 'old core\n');
+    fs.writeFileSync(
+      path.join(first.dir, 'CLAUDE.local.md'),
+      '@AGENTS.local.md\n'
+    );
+
+    expect(() => prepareWorktree({ rootDir: repo, task: TASK, spawn })).toThrow(
+      /still holds personal memory files \(AGENTS\.local\.md, CLAUDE\.local\.md\).*Fix: remove/s
+    );
+  });
+
+  test('should refuse an in-place linked worktree that still holds personal memory files', () => {
+    const first = prepareWorktree({ rootDir: repo, task: TASK, spawn });
+    fs.writeFileSync(path.join(first.dir, 'AGENTS.local.md'), 'old core\n');
+
+    expect(() =>
+      prepareWorktree({ rootDir: first.dir, task: TASK, spawn })
+    ).toThrow(/still holds personal memory files \(AGENTS\.local\.md\)/);
+  });
+
   test('should check out an existing loop branch', () => {
     git(repo, ['branch', `loop/${TASK}`]);
     const { dir } = prepareWorktree({ rootDir: repo, task: TASK, spawn });

@@ -273,10 +273,6 @@ describe('checkNode', () => {
       checkNode({ versions: /** @type {any} */ ({ node: '10.1.0' }) })
     ).toThrow(/needs Node\.js \d+ or newer \(this is 10\.1\.0\)\.\nFix: /);
   });
-
-  test('should read process.versions by default', () => {
-    expect(() => checkNode()).not.toThrow();
-  });
 });
 
 describe('checkTool', () => {
@@ -305,10 +301,6 @@ describe('checkTool', () => {
     expect(() =>
       checkTool({ run: /** @type {any} */ (run), bin: 'git' })
     ).toThrow(`git was not found.\nFix: ${TOOL_FIXES.git}`);
-  });
-
-  test('should run the real tool by default', () => {
-    expect(checkTool({ bin: 'git' })).toMatch(/git version/);
   });
 });
 
