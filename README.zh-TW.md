@@ -15,12 +15,12 @@
 
 ## ✨ 為什麼選擇 Kyoten？
 
-- **🤝 單一據點，四大代理環境**——透過 `pnpm harness sync` 同步標準指令（`AGENTS.md`）、共用 Hook（`utils/harness/hooks.js`）與角色提示詞，全面支援 Claude Code、Codex、Antigravity CLI（`agy`）與 DeepSeek Harness（`dsh`）。
-- **📝 任務延續與乾淨上下文審查（`pnpm task`）**——各工作階段獨立追蹤使用中任務（`plan.md`、`state.json`、`NOTES.md`），支援步驟相依性、驗證關卡，以及獨立的 2 輪審查與分流覆核循環。
+- **🤝 單一據點，四大代理環境**——提供標準指令（`AGENTS.md`）、共用 Hooks（`utils/harness/hooks.js`）與角色提示詞，並透過 `pnpm harness sync` 在 Claude Code、Codex、Antigravity CLI（`agy`）與 DeepSeek Harness（`dsh`）之間保持同步。
+- **📝 任務延續與乾淨脈絡審查（`pnpm task`）**——各工作階段獨立追蹤使用中任務（`plan.md`、`state.json`、`NOTES.md`），支援步驟相依性、驗證關卡，以及獨立的 2 輪審查與分流覆核循環。
 - **🧠 本機個人記憶與個人化設定（`pnpm memory`）**——僅存於本機且由 Git 忽略的記憶系統，支援核心區塊注入、提示詞／失敗喚回、多代理背景擷取與彙整，以及可自訂的代理語氣（`pnpm memory personalize`）。
-- **🚀 多代理協作（`pnpm agent`、`pnpm loop`、`pnpm swarm`）**——以非互動模式向其他代理徵詢第二意見、在 Git worktree 中執行全自動修正與審查循環，或在多個 worktree 中以乾淨上下文平行處理就緒步驟。
+- **🚀 多代理協作（`pnpm agent`、`pnpm loop`、`pnpm swarm`）**——以非互動模式向其他代理徵詢第二意見、在 Git worktree 中執行全自動修正與審查循環，或在多個 worktree 中以乾淨脈絡平行處理已就緒的步驟。
 - **🧩 模組化技能生態系（`skills-lock.json`）**——整合受追蹤的工作區自建技能與鎖定版本的外部技能（包含來自 [`shino369/kyoten-skills`](https://github.com/shino369/kyoten-skills) 的可攜式技能），透過 `pnpm skills:install`、`pnpm skills:check` 與 `pnpm skills:link` 俐落管理。
-- **🛡️ 內建安全護欄與 100% 品質把關（`pnpm check`）**——涵蓋機密防護、可復原刪除（`pnpm task rm`）、供應鏈安全強化、跨代理環境 Git Hooks、TypeScript 型別檢查、ESLint、Prettier，以及 100% 測試涵蓋率門檻的 Vitest。
+- **🛡️ 內建安全護欄與 100% 品質把關（`pnpm check`）**——涵蓋機密防護、可復原刪除（`pnpm task rm`）、供應鏈安全強化、跨代理環境 Git Hooks、TypeScript 型別檢查、ESLint、Prettier，以及套用 100% 測試涵蓋率門檻的 Vitest。
 
 > 📖 想查詢所有指令與參數旗標？請參閱自動產生的 [CLI 參考手冊](docs/cli.md)，以及 [docs/harness.md](docs/harness.md) 中的完整架構說明。
 
@@ -42,7 +42,7 @@ pnpm workspace:setup   # install deps + pinned skills, link skills, enable git h
 pnpm workspace:check   # verify setup; every failure prints a Fix command
 ```
 
-選用的安裝參數：
+選用的設定參數：
 
 - `--with-browsers`——安裝 `agent-browser` 與 Playwright Chromium
 - `--skip-skills`——離線時略過外部技能下載
@@ -94,12 +94,12 @@ pnpm check
 
 ## 🤖 支援的代理環境與多代理協作
 
-| 代理環境（Harness）          | 指令設定                                                     | 技能與整合                                                                            |
-| ---------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
-| **Claude Code**              | `CLAUDE.md` → `@AGENTS.md`                                   | `.claude/skills/` 連結、`.claude/settings.json`、Hooks、子代理                        |
-| **Codex**                    | `AGENTS.md`                                                  | `.agents/skills/`（原生支援）、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/` |
-| **Antigravity CLI (`agy`)**  | `AGENTS.md`（≤ 24,000 位元組）                               | `.agents/skills/`（原生支援）、`.agents/hooks.json`（6 種事件）、`.agents/agents/`    |
-| **DeepSeek Harness (`dsh`)** | `AGENTS.md`（啟動時加上 `--patch .dsh/workspace.patch.yml`） | `.agents/skills/`、`.dsh/hooks.json`、Claude Hooks 橋接（_部分測試_）                 |
+| 代理環境（Harness）           | 指令設定                                                     | 技能與整合                                                                            |
+| ----------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| **Claude Code**               | `CLAUDE.md` → `@AGENTS.md`                                   | `.claude/skills/` 連結、`.claude/settings.json`、Hooks、子代理                        |
+| **Codex**                     | `AGENTS.md`                                                  | `.agents/skills/`（原生支援）、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/` |
+| **Antigravity CLI（`agy`）**  | `AGENTS.md`（≤ 24,000 位元組）                               | `.agents/skills/`（原生支援）、`.agents/hooks.json`（6 種事件）、`.agents/agents/`    |
+| **DeepSeek Harness（`dsh`）** | `AGENTS.md`（啟動時加上 `--patch .dsh/workspace.patch.yml`） | `.agents/skills/`、`.dsh/hooks.json`、Claude Hooks 橋接（_僅部分測試_）               |
 
 執行 `pnpm harness sync` 可從標準來源重新產生各代理環境設定檔，執行 `pnpm harness check` 則可驗證設定是否一致。`.githooks/` 中的 Git Hooks 會為所有代理環境強制執行格式化、Lint 與 Conventional Commits 規範，而 `pnpm task status` 輸出的續接摘要也與 `SessionStart` 自動注入的內容完全相同。
 
@@ -116,7 +116,7 @@ pnpm loop my-task --agent codex --review --reviewer claude   # + independent rev
 pnpm swarm my-task --agent claude --workers 2           # parallel workers, one worktree per step
 ```
 
-每個非互動子處理程序在執行時都會設定 `MEMORY_EXTRACT=1`（使記憶 Hooks 保持靜默，且工作階段不會進入擷取佇列），而 `pnpm loop` 與 `pnpm swarm` 的 worktree 會排除 `AGENTS.local.md` 與 `CLAUDE.local.md`，確保審查與修正一律從乾淨上下文開始。
+每個非互動子處理程序在執行時都會設定 `MEMORY_EXTRACT=1`（使記憶 Hooks 不主動輸出，且工作階段不會進入擷取佇列），而 `pnpm loop` 與 `pnpm swarm` 的 worktree 會排除 `AGENTS.local.md` 與 `CLAUDE.local.md`，確保審查與修正一律從乾淨脈絡開始。
 
 ## 📝 任務管理與審查循環
 
@@ -140,11 +140,11 @@ tasks/some-task-260101/
 └── scripts/ docs/ translated/ tmp/
 ```
 
-每個工作階段都會綁定各自的使用中任務（新工作階段預設採用 `tasks/.active`）。`SessionStart` 會在支援的代理環境中自動注入續接摘要，程式碼任務則依循結構化的品質循環：**規劃 → 測試優先實作 → 乾淨上下文審查（`pnpm task review`）→ 獨立分流覆核 → 修正**（最多 2 輪）。完整說明請參閱 `AGENTS.md` §4 與 [docs/harness.md](docs/harness.md)。`tasks/` 與 `logs/` 皆由 Git 忽略——任務內容僅保留於各自電腦的本機環境中。
+每個工作階段都會綁定各自的使用中任務（新工作階段預設採用 `tasks/.active`）。`SessionStart` 會在支援的代理環境中自動注入續接摘要，程式碼任務則依循結構化的品質循環：**規劃 → 測試優先實作 → 乾淨脈絡審查（`pnpm task review`）→ 獨立分流覆核 → 修正**（最多 2 輪）。完整說明請參閱 `AGENTS.md` §4 與 [docs/harness.md](docs/harness.md)。`tasks/` 與 `logs/` 皆由 Git 忽略——任務內容僅保留於各自電腦的本機環境中。
 
 ## 🧠 本機個人記憶與個人化設定
 
-讓代理跨工作階段與代理環境記住長期偏好、本機變通做法與儲存庫事實——完全僅存於你的本機（`memory/`、`AGENTS.local.md` 與 `CLAUDE.local.md` 皆由 Git 忽略，絕不會推送出去）：
+讓代理跨工作階段與代理環境記住長期偏好、本機變通做法與儲存庫事實——僅存於你的本機（`memory/`、`AGENTS.local.md` 與 `CLAUDE.local.md` 皆由 Git 忽略，絕不會推送出去）：
 
 ```bash
 pnpm memory init                    # once (pnpm workspace:setup runs it)
@@ -161,9 +161,9 @@ pnpm memory off --session           # incognito session (no saving)
 pnpm memory export                  # checksummed .tar.gz backup; restore via import <file> --dry-run
 ```
 
-- **多代理背景作業：**擷取、每週彙整，以及角色設定精簡／稽核作業預設會使用**該工作階段所屬的代理 CLI**（`claude`、`codex`、`dsh` 或 `agy`）執行——也可透過 `pnpm memory set --extract-agent <agent>` 指定固定使用的 CLI。
-- **零工具隔離：**記憶作業會在停用工具的空白暫存資料夾中執行。Codex 在未設定任何 MCP 伺服器時可直接使用（若你有設定 Codex MCP 伺服器，系統會基於安全考量直接中止並顯示 `Fix:` 指令，引導你切換 `--extract-agent`）；Claude 與 Codex 的隔離參數均避免使用雙引號，確保 Windows `.cmd` shim 運作正常。
-- **暫停儲存：**執行 `pnpm memory off` 會同時暫停擷取與每週彙整（手動執行 `pnpm memory consolidate` 時除非加上 `--force`，否則會拒絕執行；`--dry-run` 則隨時可用）。
+- **多代理背景作業**：擷取、每週彙整，以及角色設定精簡／稽核作業預設會使用**該工作階段所屬的代理 CLI**（`claude`、`codex`、`dsh` 或 `agy`）執行——也可透過 `pnpm memory set --extract-agent <agent>` 指定固定使用的 CLI。
+- **零工具隔離**：記憶作業會在停用工具的空白暫存資料夾中執行。Codex 在未設定任何 MCP 伺服器時可直接使用（若你有設定 Codex MCP 伺服器，系統會基於安全考量直接中止並顯示 `Fix:` 指令，引導你切換 `--extract-agent`）；Claude 與 Codex 的隔離參數均避免使用雙引號，確保 Windows `.cmd` shim 運作正常。
+- **暫停儲存**：執行 `pnpm memory off` 會同時暫停擷取與每週彙整（手動執行 `pnpm memory consolidate` 時除非加上 `--force`，否則會拒絕執行；`--dry-run` 則隨時可用）。
 
 完整的記憶生命週期說明請參閱 `AGENTS.md` §13 與 [docs/harness.md](docs/harness.md)。
 
@@ -174,7 +174,7 @@ pnpm memory export                  # checksummed .tar.gz backup; restore via im
 | 技能              | 功能說明                                                      |
 | ----------------- | ------------------------------------------------------------- |
 | `workspace-setup` | 初始化或修復本工作區（相依套件、技能、連結、Hooks、記憶）。   |
-| `context-manager` | 搭配上下文監控器，預防並復原上下文品質退化。                  |
+| `context-manager` | 搭配脈絡監控器，預防脈絡品質退化並協助恢復。                  |
 | `web-browsing`    | 網頁互動、真實瀏覽器工作階段與 e2e 測試的工具選擇與工作流程。 |
 
 ### 📦 外部技能（`skills-lock.json`）
@@ -185,10 +185,10 @@ pnpm memory export                  # checksummed .tar.gz backup; restore via im
 
 | 技能                     | 功能說明                                                                 |
 | ------------------------ | ------------------------------------------------------------------------ |
-| `dependency-update`      | 搭配 `analyze_deps.mjs` 進行類 Dependabot 風格的 pnpm 相依套件更新。     |
+| `dependency-update`      | 搭配 `analyze_deps.mjs` 進行仿 Dependabot 風格的 pnpm 相依套件更新。     |
 | `security-update`        | 結合發布天數檢查進行 CVE 與稽核漏洞修補。                                |
 | `transparent-background` | 將純色背景圖片轉為邊緣乾淨的透明 PNG，並支援清理殘留雜點與局部換色。     |
-| `translation-expertise`  | EN ↔ JA ↔ zh-TW 譯文風格規範、1:1 結構對齊，以及台灣／日語術語陷阱防護。 |
+| `translation-expertise`  | EN ↔ JA ↔ zh-TW 譯文風格規範、1:1 結構對齊，以及台灣／日文術語陷阱防護。 |
 
 #### 🌐 瀏覽器與網頁
 
@@ -202,11 +202,11 @@ pnpm memory export                  # checksummed .tar.gz backup; restore via im
 
 #### 🛠️ 工程開發流程
 
-| 技能              | 功能說明                                                 | 來源                                                      | 作者／團隊  |
-| ----------------- | -------------------------------------------------------- | --------------------------------------------------------- | ----------- |
-| `code-review`     | 透過平行子代理進行雙軸審查（儲存庫標準＋原始規格）。     | [mattpocock/skills](https://github.com/mattpocock/skills) | Matt Pocock |
-| `diagnosing-bugs` | 針對棘手錯誤與效能退化的結構化診斷循環。                 | [mattpocock/skills](https://github.com/mattpocock/skills) | Matt Pocock |
-| `tdd`             | 採用紅燈—綠燈—重構（red-green-refactor）的測試驅動開發。 | [mattpocock/skills](https://github.com/mattpocock/skills) | Matt Pocock |
+| 技能              | 功能說明                                                     | 來源                                                      | 作者／團隊  |
+| ----------------- | ------------------------------------------------------------ | --------------------------------------------------------- | ----------- |
+| `code-review`     | 透過平行子代理進行雙軸審查（儲存庫標準＋原始規格）。         | [mattpocock/skills](https://github.com/mattpocock/skills) | Matt Pocock |
+| `diagnosing-bugs` | 針對棘手錯誤與效能退化的結構化診斷循環。                     | [mattpocock/skills](https://github.com/mattpocock/skills) | Matt Pocock |
+| `tdd`             | 採用紅燈 → 綠燈 → 重構（red-green-refactor）的測試驅動開發。 | [mattpocock/skills](https://github.com/mattpocock/skills) | Matt Pocock |
 
 #### 🎨 輔助與開發工具
 
@@ -265,14 +265,14 @@ pnpm skills:link                         # (re)link .agents/skills into .claude/
 
 標準角色提示詞存放於 `.claude/agents/*.md`，並透過 `pnpm harness sync` 同步至 `.codex/agents/*.toml` 與 `.agents/agents/*.md`：
 
-| 代理                    | 用途                                                          |
-| ----------------------- | ------------------------------------------------------------- |
-| `planner`               | 將目標拆解為細小、可驗證且具相依順序的步驟（`pnpm task`）。   |
-| `verifier`              | 獨立判定 PASS/FAIL：執行驗證、檢查驗收條件與測試。            |
-| `reviewer`              | 僅依審查簡報進行乾淨上下文審查，產出發現以供分流覆核。        |
-| `security-reviewer`     | 專注於安全性的審查：驗證、注入攻擊、XSS、機密資訊與相依套件。 |
-| `test-runner`           | 執行測試並回報失敗項目與涵蓋率。                              |
-| `trilingual-translator` | 擔任初譯、校對與潤飾角色，執行 EN／JA／zh-TW 三語翻譯。       |
+| 代理                    | 用途                                                              |
+| ----------------------- | ----------------------------------------------------------------- |
+| `planner`               | 將目標拆解為細小、可驗證且具相依順序的步驟（`pnpm task`）。       |
+| `verifier`              | 獨立判定 PASS/FAIL：執行驗證、檢查驗收條件與測試。                |
+| `reviewer`              | 僅依審查簡報進行乾淨脈絡審查，整理審查發現以供分流覆核。          |
+| `security-reviewer`     | 專注於安全性的審查：身分驗證、注入攻擊、XSS、機密資訊與相依套件。 |
+| `test-runner`           | 執行測試並回報失敗項目與涵蓋率。                                  |
+| `trilingual-translator` | 擔任初譯、校對與潤飾角色，執行 EN／JA／zh-TW 三語翻譯。           |
 
 ### 路徑範圍規則（`.claude/rules/`）
 
@@ -289,20 +289,20 @@ pnpm skills:link                         # (re)link .agents/skills into .claude/
 
 | Hook                   | 事件                                                                                 | 用途                                                 |
 | ---------------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------- |
-| `session_start.js`     | `SessionStart`                                                                       | 注入使用中任務的續接摘要與可用工具清單。             |
+| `session_start.js`     | `SessionStart`                                                                       | 注入使用中任務的續接摘要與可用工具摘要。             |
 | `pre_compact.js`       | `PreCompact`                                                                         | 在任務的 `NOTES.md` 中附加檢查點紀錄。               |
-| `task_loop.js`         | `Stop`, `UserPromptSubmit`                                                           | 內部循環：執行驗證，接著引導進入乾淨上下文審查循環。 |
-| `context_monitor.js`   | `UserPromptSubmit`                                                                   | 當上下文視窗使用量達到 20%／40%／60% 時發出警告。    |
+| `task_loop.js`         | `Stop`, `UserPromptSubmit`                                                           | 內部循環：執行驗證，接著引導進入乾淨脈絡審查循環。   |
+| `context_monitor.js`   | `UserPromptSubmit`                                                                   | 當脈絡視窗使用量達到 20%／40%／60% 時發出警告。      |
 | `audit_logger.js`      | `PostToolUse` (`*`)                                                                  | 將工具使用紀錄寫入 `logs/<YYYYMMDD>/logging.jsonl`。 |
 | `auto_format.js`       | `PostToolUse` (`Edit\|Write`)                                                        | 對編輯過的檔案自動執行 Prettier。                    |
 | `guard.js`             | `PreToolUse`                                                                         | 封鎖機密檔案存取、`rm`、`npm` 與破壞性 Git 指令。    |
 | `utils/memory/hook.js` | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUseFailure`, `SessionEnd` | 記憶核心區塊、提示詞／失敗喚回、通知公告與記憶擷取。 |
 
-上下文監控器預設採用 1M 視窗上限；可設定 `CLAUDE_CONTEXT_WINDOW` 覆寫此設定。
+脈絡監控器預設採用 1M 視窗上限；可設定 `CLAUDE_CONTEXT_WINDOW` 覆寫此設定。
 
 ## 🌍 翻譯
 
-直接請代理翻譯，或呼叫 `trilingual-translator` 子代理。`translation-expertise` 技能提供譯文風格規範、1:1 結構對齊原則，以及日語／繁體中文術語陷阱防護：
+直接請代理翻譯，或呼叫 `trilingual-translator` 子代理。`translation-expertise` 技能提供譯文風格規範、1:1 結構對齊原則，以及日文／繁體中文術語陷阱防護：
 
 - 英文 ↔ 日文（`日本語`）↔ 繁體中文（`繁體中文`，預設採台灣用語）
 - 選用的三階段**初譯 → 校對 → 潤飾**工作流程，將草稿寫入任務的 `translated/` 資料夾
@@ -346,11 +346,11 @@ pnpm add -D some-package --save-catalog-name=dev
 
 ### 🔐 權限與安全護欄
 
-工作區權限設定於 `.claude/settings.json`，並由 `utils/harness/hooks.js` 同步鏡像至各代理環境：
+工作區權限設定於 `.claude/settings.json`，並由 `utils/harness/hooks.js` 同步套用至各代理環境：
 
-- **允許的操作：**`pnpm` 指令（含可復原的 `pnpm task rm`）、本機 Git 指令（`status`、`diff`、`log`、`add`、`commit`、`switch -c`、`checkout -b`、`rev-parse`、`show`）、僅限執行儲存庫腳本的 `node`（`utils/`、`.claude/hooks/`、`.agents/skills/`），以及基本目錄檢視（`ls`、`dir`、`cd`、`pwd`、`echo`、`type`、`mkdir`）。未預先核准任意執行 `python`、`node`、`cat` 與 `curl`。
-- **需經確認：**`git push`、`rebase`、`merge`、`cherry-pick`，以及強制終止訊號（`kill -9`、`pkill`、`killall`）。
-- **禁止的操作：**存取機密檔案（`.env*`、`secrets/`、`*.pem`、`*.key`、`credentials.json`、`~/.ssh/`、`~/.aws/`）、`rm`（請改用 `pnpm task rm`——會將檔案移至 `tasks/.trash/` 保留 7 天）、`npm`、`sudo`／系統管理員指令、破壞性 Git 操作（`force push`、`reset --hard`、`clean -fd`、`branch -D`、`tag -d`）以及 `pnpm publish`。
+- **允許的操作**：`pnpm` 指令（含可復原的 `pnpm task rm`）、本機 Git 指令（`status`、`diff`、`log`、`add`、`commit`、`switch -c`、`checkout -b`、`rev-parse`、`show`）、僅限執行儲存庫腳本的 `node`（`utils/`、`.claude/hooks/`、`.agents/skills/`），以及基本目錄檢視（`ls`、`dir`、`cd`、`pwd`、`echo`、`type`、`mkdir`）。未預先核准任意執行 `python`、`node`、`cat` 與 `curl`。
+- **需經確認**：`git push`、`rebase`、`merge`、`cherry-pick`，以及強制終止訊號（`kill -9`、`pkill`、`killall`）。
+- **禁止的操作**：存取機密檔案（`.env*`、`secrets/`、`*.pem`、`*.key`、`credentials.json`、`~/.ssh/`、`~/.aws/`）、`rm`（請改用 `pnpm task rm`——會將檔案移至 `tasks/.trash/` 保留 7 天）、`npm`、`sudo`／系統管理員指令、破壞性 Git 操作（`force push`、`reset --hard`、`clean -fd`、`branch -D`、`tag -d`）以及 `pnpm publish`。
 
 本機覆寫設定請置於 `.claude/settings.local.json`（由 Git 忽略）。
 
@@ -366,8 +366,8 @@ pnpm add -D some-package --save-catalog-name=dev
 
 ## 💖 致謝
 
-- **外部技能：**[skills.sh](https://skills.sh) 生態系，透過 [vercel-labs/skills](https://github.com/vercel-labs/skills) 安裝。各技能作者均已列於上方表格致謝。
-- **支援的代理環境：**[Claude Code](https://claude.com/claude-code)、[Codex](https://openai.com/codex/)、[Antigravity CLI](https://antigravity.google/docs/cli/reference) 與 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)。
+- **外部技能**：[skills.sh](https://skills.sh) 生態系，透過 [vercel-labs/skills](https://github.com/vercel-labs/skills) 安裝。各技能作者均已列於上方表格致謝。
+- **支援的代理環境**：[Claude Code](https://claude.com/claude-code)、[Codex](https://openai.com/codex/)、[Antigravity CLI](https://antigravity.google/docs/cli/reference) 與 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)。
 
 ## 📄 授權條款
 

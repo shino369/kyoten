@@ -1,6 +1,6 @@
 # 🏠 Kyoten（拠点）
 
-> **AI コーディングエージェントのための個人用ホームベース** —— プログラミング、ドキュメント作成、リサーチ、翻訳、生成 AI 作業を 1 つの共有ワークスペースに集約します。✨
+> **AI コーディングエージェントのための個人用ホームベース** — プログラミング、ドキュメント作成、リサーチ、翻訳、生成 AI 作業を 1 つの共有ワークスペースに集約します。✨
 
 [![Test CI](https://github.com/shino369/kyoten/actions/workflows/test.yml/badge.svg)](https://github.com/shino369/kyoten/actions/workflows/test.yml)
 [![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](./LICENSE)
@@ -9,18 +9,18 @@
 
 ---
 
-**Kyoten（拠点）** は、AI エージェントの活動拠点となる設定をすべて 1 つのクリーンでポータブルなリポジトリにまとめるワークスペースです。ツールごとにルール、フック、スキル、メモリを重複設定する必要はありません。この拠点を一度セットアップするだけで、**Claude Code**、**Codex**、**Antigravity CLI (`agy`)**、**DeepSeek Harness (`dsh`)** をシームレスに使い分けられます。
+**Kyoten（拠点）** は、AI エージェント関連の設定をすべて 1 つのクリーンでポータブルなリポジトリにまとめるワークスペースです。ツールごとにルール、フック、スキル、メモリを重複設定する必要はありません。この拠点を一度セットアップするだけで、**Claude Code**、**Codex**、**Antigravity CLI (`agy`)**、**DeepSeek Harness (`dsh`)** をシームレスに使い分けられます。
 
-あえて軽量な構成に徹しています。モノレポもビルドステップもフレームワークへのロックインもありません。リポジトリをクローンして初回セットアップを実行したら、あとはお好みのコーディングエージェントをこのワークスペース内で起動するだけです。🌿
+あえて軽量な構成に徹しています。モノレポやビルドステップ、特定のフレームワークへの依存はありません。リポジトリをクローンして初回セットアップを実行したら、あとはお好みのコーディングエージェントをこのワークスペース内で起動するだけです。🌿
 
 ## ✨ なぜ Kyoten なのか？
 
 - **🤝 1 つの拠点、4 つのハーネス** — 正規の指示書 (`AGENTS.md`)、共通フック (`utils/harness/hooks.js`)、同期されたロールプロンプトを Claude Code、Codex、Antigravity CLI (`agy`)、DeepSeek Harness (`dsh`) 間で共有し、`pnpm harness sync` で常に同期します。
 - **📝 タスクの継続性とクリーンコンテキスト・レビュー (`pnpm task`)** — セッションごとのアクティブタスク管理 (`plan.md`, `state.json`, `NOTES.md`)、ステップ間の依存関係、検証ゲート、独立した 2 ラウンドのレビュー＋トリアージループを備えています。
 - **🧠 ローカルの個人メモリとパーソナライゼーション (`pnpm memory`)** — マシンローカルかつ git 管理外のメモリ機能です。コアブロック注入、プロンプト／失敗時の想起、マルチエージェントによるバックグラウンド抽出・統合、エージェントの口調カスタマイズ (`pnpm memory personalize`) に対応しています。
-- **🚀 マルチエージェント・オーケストレーション (`pnpm agent`, `pnpm loop`, `pnpm swarm`)** — 別のエージェントにヘッドレスでセカンドオピニオンを求めたり、git worktree 内で無人の修正・レビューループを回したり、実行可能なステップをクリーンなコンテキストで複数 worktree に並列展開したりできます。
-- **🧩 モジュラーなスキルエコシステム (`skills-lock.json`)** — リポジトリ管理下のワークスペーススキルに加え、バージョン固定された外部スキル（[`shino369/kyoten-skills`](https://github.com/shino369/kyoten-skills) のポータブルスキルを含む）を `pnpm skills:install`、`pnpm skills:check`、`pnpm skills:link` でスマートに管理します。
-- **🛡️ 組み込みガードレールと 100% 品質ゲート (`pnpm check`)** — シークレット保護、取り消し可能な削除 (`pnpm task rm`)、サプライチェーン強化、全ハーネス共通の git フック、TypeScript の型チェック、ESLint、Prettier、カバレッジ 100% 閾値の Vitest を統合しています。
+- **🚀 マルチエージェント・オーケストレーション (`pnpm agent`, `pnpm loop`, `pnpm swarm`)** — 別のエージェントにヘッドレスでセカンドオピニオンを求めたり、git worktree 内で無人実行の修正・レビューループを回したり、実行可能なステップをクリーンなコンテキストで複数 worktree に並列展開したりできます。
+- **🧩 モジュラーなスキルエコシステム (`skills-lock.json`)** — リポジトリ管理下のワークスペーススキルに加え、ロックファイルで固定された外部スキル（[`shino369/kyoten-skills`](https://github.com/shino369/kyoten-skills) のポータブルスキルを含む）を `pnpm skills:install`、`pnpm skills:check`、`pnpm skills:link` でスマートに管理します。
+- **🛡️ 組み込みガードレールと 100% 品質ゲート (`pnpm check`)** — シークレット保護、取り消し可能な削除 (`pnpm task rm`)、サプライチェーン強化、全ハーネス共通の git フック、TypeScript の型チェック、ESLint、Prettier、カバレッジ 100% を閾値とする Vitest を統合しています。
 
 > 📖 すべてのコマンドとフラグを確認したい場合は、自動生成された [CLI リファレンス](docs/cli.md) およびアーキテクチャ全体を解説した [docs/harness.md](docs/harness.md) をご覧ください。
 
@@ -29,7 +29,7 @@
 - **Node.js 24 以降**（`.nvmrc` で 24 を指定。`agent-browser` は 24 以上が必須です）
 - **pnpm 12.14.0**（Corepack 経由で `package.json` に固定）— `corepack enable` を実行するか、コマンドの先頭に `corepack pnpm` を付けて実行してください
 - **Chrome / Chromium** _（任意）_ — Playwright の E2E テストおよびブラウザ操作スキルで使用します
-- **`uv`** _（任意）_ — `browser-use` ランタイムおよび Python 3.12 製スキルスクリプト (`skill-creator`, `transparent-background`) で使用します
+- **`uv`** _（任意）_ — `browser-use` ランタイムおよび Python 3.12 のスキルスクリプト (`skill-creator`, `transparent-background`) で使用します
 - **`gh` CLI** _（任意）_ — GitHub ワークフローおよび PR レビューで使用します
 
 ## 🚀 はじめに
@@ -50,7 +50,7 @@ pnpm workspace:check   # verify setup; every failure prints a Fix command
 
 トラブルシューティングについては `.agents/skills/workspace-setup/SKILL.md` を参照してください。
 
-全品質ゲート（型チェック、リント、フォーマットチェック、カバレッジ 100% のテスト）を実行します：
+品質ゲート全体（型チェック、リント、フォーマットチェック、カバレッジ 100% のテスト）を実行します：
 
 ```bash
 pnpm check
@@ -90,7 +90,7 @@ pnpm check
 └── ...
 ```
 
-外部スキルは git にコミットされません。`pnpm skills:install` を実行すると、`skills-lock.json` で推奨されているセットが `.agents/skills/`（git 管理外）にインストールされるため、自分のマシンに何を導入するかを手元で管理できます。
+外部スキルは git にコミットされません。`pnpm skills:install` を実行すると、`skills-lock.json` の推奨セットが `.agents/skills/`（git 管理外）にインストールされるため、自分のマシンに何を導入するかを手元で管理できます。
 
 ## 🤖 対応ハーネスとオーケストレーション
 
@@ -101,7 +101,7 @@ pnpm check
 | **Antigravity CLI (`agy`)**  | `AGENTS.md`（24,000 バイト以下）                         | `.agents/skills/`（ネイティブ対応）、`.agents/hooks.json`（6 イベント）、`.agents/agents/`  |
 | **DeepSeek Harness (`dsh`)** | `AGENTS.md`（`--patch .dsh/workspace.patch.yml` で起動） | `.agents/skills/`、`.dsh/hooks.json`、Claude フックブリッジ _（一部検証済み）_              |
 
-正規のソースファイルから各ハーネス設定を再生成するには `pnpm harness sync` を、同期状態が一致しているか確認するには `pnpm harness check` を実行します。`.githooks/` 内の git フックはすべてのハーネスに対してフォーマット、リント、Conventional Commits を強制し、`pnpm task status` は `SessionStart` が注入するものと同じ再開ブリーフを出力します。
+正規のソースファイルから各ハーネス設定を再生成するには `pnpm harness sync` を、設定が一致しているか確認するには `pnpm harness check` を実行します。`.githooks/` 内の git フックはすべてのハーネスに対してフォーマット、リント、Conventional Commits を強制し、`pnpm task status` は `SessionStart` が注入するものと同じ再開ブリーフを出力します。
 
 ### 🛠️ ツール管理と他エージェントの呼び出し
 
@@ -120,7 +120,7 @@ pnpm swarm my-task --agent claude --workers 2           # parallel workers, one 
 
 ## 📝 タスク管理とレビューループ
 
-作業中に生成されるファイルは `tasks/<task-name-yymmdd>/` に保存され、`pnpm task` で管理します。これにより、どのエージェントでも（もちろんあなた自身でも）文脈を失わずに作業を中断、引き継ぎ、再開できます：
+作業中に生成されるファイルは `tasks/<task-name-yymmdd>/` に保存され、`pnpm task` で管理します。これにより、どのエージェントでも（もちろんご自身でも）文脈を失わずに作業を中断、引き継ぎ、再開できます：
 
 ```bash
 pnpm task new some-task --goal "Translate the X post" --step "Draft" --step "Proofread" --verify "pnpm check"
@@ -161,8 +161,8 @@ pnpm memory off --session           # incognito session (no saving)
 pnpm memory export                  # checksummed .tar.gz backup; restore via import <file> --dry-run
 ```
 
-- **マルチエージェントによるバックグラウンドジョブ**：記憶の抽出、週次の統合、ペルソナの圧縮・監査は、デフォルトで**そのセッション自身のエージェント CLI** (`claude`, `codex`, `dsh`, `agy`) で実行されます。`pnpm memory set --extract-agent <agent>` で任意の CLI を指定することも可能です。
-- **ツール無効化の分離環境**：メモリジョブはツールを無効化した空の一時フォルダ内で実行されます。Codex は MCP サーバーが未設定であればそのまま動作します（Codex の MCP サーバーを設定している場合は安全側で停止（フェイルクローズ）し、`--extract-agent` を切り替えるための `Fix:` コマンドを表示します）。また、Claude および Codex の分離フラグではダブルクォートを避けることで、Windows の `.cmd` シムでも問題なく動作するようにしています。
+- **マルチエージェントによるバックグラウンドジョブ**：メモリの抽出、週次の統合、ペルソナの圧縮・監査は、デフォルトで**そのセッション自身のエージェント CLI** (`claude`, `codex`, `dsh`, `agy`) で実行されます。`pnpm memory set --extract-agent <agent>` で任意の CLI を指定することも可能です。
+- **ツール無効化の分離環境**：メモリジョブはツールを無効化した空の一時フォルダ内で実行されます。Codex は MCP サーバーが未設定であればそのまま動作します（Codex の MCP サーバーを設定している場合はフェイルクローズで安全に停止し、`--extract-agent` を切り替えるための `Fix:` コマンドを表示します）。また、Claude および Codex の分離フラグではダブルクォートを避けることで、Windows の `.cmd` シムでも問題なく動作するようにしています。
 - **保存の一時停止**：`pnpm memory off` を実行すると、自動抽出と週次統合の両方が一時停止します（手動での `pnpm memory consolidate` は `--force` を指定しない限り拒否されますが、`--dry-run` は常に実行できます）。
 
 メモリライフサイクルの詳細は `AGENTS.md` §13 および [docs/harness.md](docs/harness.md) を参照してください。
@@ -205,10 +205,10 @@ pnpm memory export                  # checksummed .tar.gz backup; restore via im
 | スキル            | 概要                                                                  | 取得元                                                    | クレジット  |
 | ----------------- | --------------------------------------------------------------------- | --------------------------------------------------------- | ----------- |
 | `code-review`     | 並列サブエージェントによる 2 軸レビュー（リポジトリ規約＋元の仕様）。 | [mattpocock/skills](https://github.com/mattpocock/skills) | Matt Pocock |
-| `diagnosing-bugs` | 難解なバグやパフォーマンス回帰のための体系的な診断ループ。            | [mattpocock/skills](https://github.com/mattpocock/skills) | Matt Pocock |
+| `diagnosing-bugs` | 難解なバグやパフォーマンス劣化のための体系的な診断ループ。            | [mattpocock/skills](https://github.com/mattpocock/skills) | Matt Pocock |
 | `tdd`             | レッド・グリーン・リファクタによるテスト駆動開発。                    | [mattpocock/skills](https://github.com/mattpocock/skills) | Matt Pocock |
 
-#### 🎨 メタ・ツーリング
+#### 🎨 メタ・ツール
 
 | スキル          | 概要                                                   | 取得元                                                    | クレジット |
 | --------------- | ------------------------------------------------------ | --------------------------------------------------------- | ---------- |
@@ -233,7 +233,7 @@ pnpm skills:check                        # verify lock entries are installed
 pnpm skills:link                         # (re)link .agents/skills into .claude/skills
 ```
 
-インストールには skills.sh のデフォルトレイアウト (`--agent claude-code codex`) を使用します。実ファイルは `.agents/skills/<name>/`（Codex と Antigravity がネイティブに参照）に配置され、`.claude/skills/<name>` にはそこへの相対シンボリックリンクが作成されます。`skills:link` はプロジェクト固有スキルにも同様のリンクを作成し、旧来のコピー方式からの移行、不要リンクの削除を行い、Windows ではディレクトリジャンクションへフォールバックします。外部スキルは git 追跡対象外のまま保ち、`skills-lock.json` が変更された場合のみコミットしてください。`skills:check` は、ロック内のすべてのエントリがフロントマター名と一致する形でインストールされているかを検証します。
+インストールには skills.sh のデフォルトレイアウト (`--agent claude-code codex`) を使用します。実ファイルは `.agents/skills/<name>/`（Codex と Antigravity がネイティブに参照）に配置され、`.claude/skills/<name>` にはそこへの相対シンボリックリンクが作成されます。`skills:link` はプロジェクト固有スキルにも同様のリンクを作成し、旧来のコピー方式からの移行、不要リンクの削除を行い、Windows ではディレクトリジャンクションへフォールバックします。外部スキルは git の追跡対象外のままにし、`skills-lock.json` に変更があった場合は同ファイルをコミットしてください。`skills:check` は、ロック内のすべてのエントリがインストールされており、それぞれのフロントマター名と一致しているかを検証します。
 
 ロックファイル内のハッシュは取得元スナップショットのハッシュであり、インストール済みコピーからは再現できないため、内容の変更は `git diff` で確認してください。Windows では、アップストリームのクラッシュにより `skills:update` が更新成功後に終了コード 127 で終了する場合があります。失敗と判断する前にファイルが更新されているか確認してください。
 
@@ -255,7 +255,7 @@ pnpm skills:link                         # (re)link .agents/skills into .claude/
 
 このワークスペースでは `npm` コマンドがブロックされています。単発の CLI には `pnpm dlx`、プロジェクトローカルのバイナリには `pnpm add -D` と `pnpm exec`、Python CLI には `uv tool` または `uvx` を使用してください。グローバルインストールはワークスペースのロックファイルとサプライチェーン設定をバイパスしてしまうため、`pnpm add -g` は使用しないでください。
 
-`browser-use` スキルは [browser-use/browser-use](https://github.com/browser-use/browser-use) に由来し、その `browser-use` CLI（固定バージョンの依存関係として `browser-harness` を導入）が必要です。`agent-browser` スキルはグローバルシムをインストールしないため、`pnpm exec agent-browser ...` 経由で呼び出します。
+`browser-use` スキルは [browser-use/browser-use](https://github.com/browser-use/browser-use) から提供されており、対応する `browser-use` CLI（固定バージョンの依存関係として `browser-harness` を導入）が必要です。`agent-browser` スキルはグローバルシムがインストールされないため、`pnpm exec agent-browser ...` 経由で呼び出します。
 
 ローカルの Chrome にアタッチするブラウザスキルには CDP エンドポイントが必要です。`chrome://inspect/#remote-debugging` を有効にするか、`--remote-debugging-port=9222 --user-data-dir=<profile>` を付けて分離プロファイルで Chrome を起動し、`browser-use` 用に `BU_CDP_URL=http://127.0.0.1:9222` を設定してください。
 
@@ -302,11 +302,11 @@ pnpm skills:link                         # (re)link .agents/skills into .claude/
 
 ## 🌍 翻訳
 
-エージェントに翻訳を依頼するか、`trilingual-translator` サブエージェントを呼び出してください。`translation-expertise` スキルにより、ハウススタイル、1:1 の構造一致ルール、日本語・台湾華語（zh-TW）の用語トラップ対策が適用されます：
+エージェントに翻訳を依頼するか、`trilingual-translator` サブエージェントを呼び出してください。`translation-expertise` スキルにより、ハウススタイル、1:1 の構造一致ルール、日本語・台湾華語 (zh-TW) の用語トラップ対策が適用されます：
 
-- 英語 ↔ 日本語 (`日本語`) ↔ 繁体字中国語（`繁體中文`、台湾標準がデフォルト）
+- 英語 ↔ 日本語（`日本語`）↔ 繁体字中国語（`繁體中文`、台湾標準がデフォルト）
 - 任意の 3 段階ワークフロー（**初訳 → 校正 → 仕上げ**）に対応し、下書きはタスク内の `translated/` フォルダへ出力
-- ファイルおよび URL ソースに対応：静的ページにはフェッチツール、JS 依存の重いページには `agent-browser` または `browser-use` を使用（Playwright は E2E テスト専用）
+- ファイルおよび URL ソースに対応：静的ページにはフェッチツール、JS を多用するページには `agent-browser` または `browser-use` を使用（Playwright は E2E テスト専用）
 
 ## 🧪 テスト
 
