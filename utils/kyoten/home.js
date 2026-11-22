@@ -239,19 +239,26 @@ export function resolveHome({
 }
 
 /**
- * Whether two paths name the same folder, links resolved.
+ * Whether two paths name the same folder, links resolved. On Windows and macOS
+ * path comparison is case-insensitive (`fs.realpathSync.native` normalizes
+ * drive and folder casing for existing paths; lowercasing covers missing paths
+ * and mixed-case inputs).
  *
  * @param {string} a
  * @param {string} b
+ * @param {NodeJS.Platform} [platform]
  */
-export function samePath(a, b) {
+export function samePath(a, b, platform = process.platform) {
+  const fold = platform === 'win32' || platform === 'darwin';
   /** @param {string} p */
   const real = (p) => {
+    let resolved;
     try {
-      return fs.realpathSync(p);
+      resolved = fs.realpathSync.native(p);
     } catch {
-      return path.resolve(p);
+      resolved = path.resolve(p);
     }
+    return fold ? resolved.toLowerCase() : resolved;
   };
   return real(a) === real(b);
 }

@@ -13,13 +13,12 @@
  *
  * Fails open: any error means no output and exit 0.
  */
-import fs from 'fs';
-import path from 'path';
 import {
   agyInjectOutput,
   normalizeHookInput,
   parseHarness,
 } from '#utils/harness/input.js';
+import { samePath } from '#utils/kyoten/home.js';
 import { handleHook as handleMemoryHook } from '#utils/memory/hook.js';
 import { findGitDirs } from '#utils/memory/repo.js';
 import { runIfMain } from '#utils/module-runner.js';
@@ -147,15 +146,6 @@ export function registryLine(rootDir) {
   }
 }
 
-/** @param {string} dir */
-const realOrResolved = (dir) => {
-  try {
-    return fs.realpathSync(dir);
-  } catch {
-    return path.resolve(dir);
-  }
-};
-
 /**
  * The kyoten hint: kyoten starts every agent in the workspace and passes the
  * directory it was started from as KYOTEN_CALLER_DIR. When that directory is
@@ -171,10 +161,10 @@ export function callerLine(rootDir, env = process.env) {
   if (!dir) return null;
   try {
     const repo = findGitDirs(dir)?.top;
-    if (!repo || path.resolve(repo) === path.resolve(rootDir)) return null;
+    if (!repo || samePath(repo, rootDir)) return null;
     const task = `pnpm task new <name> --goal "…" --repo "${repo}" (or pnpm task set --repo for the current task)`;
     const added = env.KYOTEN_ADD_DIR;
-    if (added && realOrResolved(added) === realOrResolved(repo)) {
+    if (added && samePath(added, repo)) {
       return `[kyoten] Started from ${repo}, a git repository outside this workspace. kyoten added it to this session (--add-dir), so its files are readable and writable here. For multi-step work on it, still use a task: ${task}.`;
     }
     return `[kyoten] Started from ${repo}, a git repository outside this workspace. If the user's request is about it, work on it through a task: ${task}.`;
@@ -195,15 +185,7 @@ export function callerLine(rootDir, env = process.env) {
  */
 export function workspaceLine(rootDir, harness, cwd) {
   if (harness !== 'dsh' || typeof cwd !== 'string' || !cwd) return null;
-  /** @param {string} dir */
-  const real = (dir) => {
-    try {
-      return fs.realpathSync(dir);
-    } catch {
-      return path.resolve(dir);
-    }
-  };
-  if (real(cwd) === real(rootDir)) return null;
+  if (samePath(cwd, rootDir)) return null;
   return `[Workspace] This DSH session's workspace is ${cwd}, not ${rootDir}: the hooks, tasks, and memory act on ${rootDir}, while AGENTS.md and skills come from ${cwd}. Tell the user before acting: to use this workspace's rules, choose ${rootDir} in the DSH Web UI (Choose workspace).`;
 }
 

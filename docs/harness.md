@@ -122,7 +122,7 @@ Notes:
 `kyoten [claude|codex|dsh|dscc|agy]` (`pnpm kyoten …` in a clone, `npx kyoten …` without one)
 starts the agent with the workspace root as its working directory and adds what each harness
 needs: dsh gets its profile and `--patch .dsh/workspace.patch.yml`, `dscc` runs Claude Code on the
-DeepSeek API from a profile kept outside the workspace, and claude, dscc, and codex get
+DeepSeek API from a profile kept outside the workspace, and claude, dscc, codex, and agy get
 `--add-dir=<repo>` when kyoten was started inside another git repository. It sets
 `KYOTEN_AGENT`, `KYOTEN_HOME`, and `KYOTEN_CALLER_DIR` (and `KYOTEN_ADD_DIR`) for the hooks, and
 never adds permission flags. `kyoten run <script>` runs a workspace script from any folder. Without a
@@ -462,10 +462,8 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   allowed). Consolidation reuses the last run's model only from a run on the same provider side
   (dscc or not) as the worker.
   Memory jobs build their isolation arguments without a double quote, so they start through
-  Windows `.cmd` shims (which refuse `"`): Codex gets bare or single-quoted TOML values, Claude gets
-  a relative path to its settings file in the job's temporary folder. Antigravity takes its settings as JSON on
-  the command line, so it needs a native `agy.exe`; behind a `.cmd` shim the job fails with a Fix
-  line naming another `--extract-agent`.
+  Windows `.cmd` shims (which refuse `"`): Codex gets bare or single-quoted TOML values, and Claude
+  and Antigravity each get a relative path to their settings file in the job's temporary folder.
 - **Safety:** every write path refuses text matching `utils/redact.js`; notes are framed as facts;
   `pnpm workspace:check` fails if a memory file is tracked.
 - **Worktrees:** `pnpm loop` and `pnpm swarm` do not copy `AGENTS.local.md` or `CLAUDE.local.md`

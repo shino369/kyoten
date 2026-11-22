@@ -89,9 +89,9 @@ permission-bypass flag. Full guide: [docs/kyoten.md](docs/kyoten.md).
 | `kyoten dscc --set-key` · `--show`               | Save the DeepSeek API key outside every workspace · print the profile with the key masked                |
 
 - **Projects outside the home.** Started inside another git repository, `kyoten`, `kyoten codex`,
-  and `kyoten dscc` add `--add-dir=<repository>` so the agent can edit it while its hooks, tasks,
-  and memory stay in the home (`--no-add-dir` or `"addDir": false` turns it off; a repository at or
-  above your user folder `~` is never added). For multi-step work there:
+  `kyoten dscc`, and `kyoten agy` add `--add-dir=<repository>` so the agent can edit it while its
+  hooks, tasks, and memory stay in the home (`--no-add-dir` or `"addDir": false` turns it off; a
+  repository at or above your user folder `~` is never added). For multi-step work there:
   `pnpm task new … --repo <path>`.
 - **DSH:** in the Web UI, click **Choose workspace** and select the home (`kyoten dsh` prints it); a
   session in another workspace is told so at its start.
@@ -206,7 +206,7 @@ pnpm memory export                  # checksummed .tar.gz backup; restore via im
 ```
 
 - **Multi-agent background jobs:** Extraction, weekly consolidation, and persona compact/audit run on the **session's own agent CLI** (`claude`, `codex`, `dsh`, or `agy`) by default — or on a chosen CLI via `pnpm memory set --extract-agent <agent>`.
-- **Zero-tool isolation:** Memory jobs run in an empty temp folder with tools disabled. Codex runs out of the box when zero MCP servers are configured (if you configure Codex MCP servers, it fails closed and prints a `Fix:` command to switch `--extract-agent`); Claude and Codex isolation flags avoid double quotes so Windows `.cmd` shims work cleanly.
+- **Zero-tool isolation:** Memory jobs run in an empty temp folder with tools disabled. Codex runs out of the box when zero MCP servers are configured (if you configure Codex MCP servers, it fails closed and prints a `Fix:` command to switch `--extract-agent`); Claude, Codex, and Antigravity isolation flags avoid double quotes so Windows `.cmd` shims work cleanly.
 - **Pausing saves:** Running `pnpm memory off` pauses both extraction and weekly consolidation (manual `pnpm memory consolidate` refuses unless `--force` is passed; `--dry-run` is always allowed).
 - **Managed homes:** A new home starts with automatic saving off unless you opt in at setup. Enable it later with `kyoten run memory on`.
 - **Per-agent personas:** Set one with `pnpm memory personalize --for <claude|codex|ds|agy> --persona-file persona.md`. The launcher's hooks apply the selected persona per session. The `ds` persona serves both DSH and dscc.

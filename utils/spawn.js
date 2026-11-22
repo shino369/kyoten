@@ -64,8 +64,12 @@ export function which(name, { env, platform, isExecutable: canRun }) {
 
 /** Characters cmd.exe interprets even inside double quotes. */
 const CMD_UNSAFE = /["%!\r\n]/;
-/** Arguments that need no quotes on a cmd.exe command line. */
-const CMD_PLAIN = /^[\w\-.:\\/=@+,]+$/;
+/**
+ * Arguments that need no quotes on a cmd.exe command line.
+ * `=` and `,` are batch argument delimiters in cmd.exe (along with `;`, space,
+ * and tab), so arguments containing them must be quoted.
+ */
+const CMD_PLAIN = /^[\w\-.:\\/@+]+$/;
 
 /**
  * Quote one argument for a `cmd.exe /s /c "…"` command line. Refuses what

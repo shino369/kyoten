@@ -10,6 +10,7 @@ import {
   BIN_SOURCE,
   checkTarball,
   denied,
+  isBundleExcluded,
   isRuntimeFile,
   listTarball,
   main,
@@ -296,6 +297,17 @@ describe('isRuntimeFile', () => {
   });
 });
 
+describe('isBundleExcluded', () => {
+  test.each([
+    ['docs/images/kyoten-logo.png', true],
+    ['DOCS/Images/sub/pic.png', true],
+    ['docs/kyoten.md', false],
+    ['other/docs/images/pic.png', false],
+  ])('should classify %s as %s', (file, expected) => {
+    expect(isBundleExcluded(file)).toBe(expected);
+  });
+});
+
 describe('listTarball', () => {
   test('should list plain regular files', () => {
     const tgz = makeTgz([
@@ -481,13 +493,23 @@ describe('stage', () => {
     expect(marker).toEqual({ version: '0.3.0', commit: 'abcdef1234' });
   });
 
-  test('should bundle every file but leave tests out of runtime', () => {
-    stage({ files: filesOf(BASE), commit: 'abcdef1234', staging });
+  test('should bundle every file except docs/images and leave tests out of runtime', () => {
+    const withImages = {
+      ...BASE,
+      'docs/images/logo.png': 'PNGDATA',
+      'docs/images/sub/shot.png': 'PNGDATA2',
+    };
+    const result = stage({
+      files: filesOf(withImages),
+      commit: 'abcdef1234',
+      staging,
+    });
 
     const bundle = decodeBundle(
       fs.readFileSync(path.join(staging, BUNDLE_FILE))
     );
     expect(bundle.map((f) => f.path).sort()).toEqual(Object.keys(BASE).sort());
+    expect(result.bundled).toBe(Object.keys(BASE).length);
     expect(
       fs.existsSync(path.join(staging, 'runtime', 'utils', 'x', '__tests__'))
     ).toBe(false);

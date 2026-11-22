@@ -64,7 +64,7 @@ permission flags.
 | `codex`  | `codex`                                                                                                                                   |
 | `dsh`    | `dsh <profile> --patch .dsh/workspace.patch.yml`; the profile is the first argument if it is not an option, else `web` (`kyoten dsh tui`) |
 | `dscc`   | `claude` with the DeepSeek profile (below)                                                                                                |
-| `agy`    | `agy` (Antigravity CLI), no added arguments                                                                                               |
+| `agy`    | `agy` (Antigravity CLI)                                                                                                                   |
 
 `--codex` is the same as `codex`. To give Claude a word that is also a kyoten command, name the
 agent: `kyoten claude update`.
@@ -116,9 +116,9 @@ mentions it when it is a git repository.
 ### Projects outside the home
 
 Started inside a git repository that is not the home (found by walking up for `.git`), `kyoten`,
-`kyoten codex`, and `kyoten dscc` start the agent with `--add-dir=<repository>` first, so it can
-read and edit that repository while its hooks, tasks, and memory stay in the home. The launch line
-says so (`kyoten: claude in <home> (default); --add-dir=<repository>`). `dsh` and `agy` have no
+`kyoten codex`, `kyoten dscc`, and `kyoten agy` start the agent with `--add-dir=<repository>` first,
+so it can read and edit that repository while its hooks, tasks, and memory stay in the home. The
+launch line says so (`kyoten: claude in <home> (default); --add-dir=<repository>`). `dsh` has no
 verified flag for this; the session brief still mentions the repository. For multi-step work on it,
 start a task: `pnpm task new <name> --repo <path>`.
 
@@ -231,11 +231,11 @@ the same lines (resolve them, `git commit`, then run `update` again). Nothing is
 When the home was made by another kyoten version, each launch prints a one-line hint.
 
 **What the snapshot holds.** The tracked files of one kyoten commit: `AGENTS.md`, `CLAUDE.md`, the
-harness folders (`.claude/`, `.codex/`, `.agents/`, `.dsh/`), `utils/`, `docs/`, `templates/`,
-`tools/catalog.json`, the project's own skills, and `package.json` with its lockfile. Third-party
-skills are not in it: `pnpm workspace:setup` installs them from `skills-lock.json`. Your personal
-state (`tasks/`, `memory/`, `AGENTS.local.md`, `CLAUDE.local.md`, `logs/`, `tools/local.json`) is
-ignored by git, so neither the snapshot nor an update touches it.
+harness folders (`.claude/`, `.codex/`, `.agents/`, `.dsh/`), `utils/`, `docs/` (excluding
+`docs/images/`), `templates/`, `tools/catalog.json`, the project's own skills, and `package.json`
+with its lockfile. Third-party skills are not in it: `pnpm workspace:setup` installs them from
+`skills-lock.json`. Your personal state (`tasks/`, `memory/`, `AGENTS.local.md`, `CLAUDE.local.md`,
+`logs/`, `tools/local.json`) is ignored by git, so neither the snapshot nor an update touches it.
 
 **Customizing.** Edit the home and commit on `main` (a rule in `AGENTS.md`, a skill, a hook
 setting). An update merges the new snapshot with your commits like any git merge.

@@ -6,7 +6,7 @@
  *   package.json, README.md (docs/kyoten.md), LICENSE
  *   bin/kyoten.js           runs runtime/utils/kyoten/cli.js
  *   runtime/                HEAD's package.json and utils/, plus the marker
- *   snapshot.kyoten.gz      every HEAD file, bundled (see snapshot.js)
+ *   snapshot.kyoten.gz      HEAD files (minus docs/images/), bundled (see snapshot.js)
  *
  * The tarball must hold exactly those files (npm's own rules drop files
  * silently), nothing on the deny list, and stay under the size cap.
@@ -37,6 +37,14 @@ export const MAX_TARBALL_BYTES = 2 * 1024 * 1024;
 export const isRuntimeFile = (file) =>
   file === 'package.json' ||
   (file.startsWith('utils/') && !file.includes('/__tests__/'));
+
+/**
+ * Tracked files omitted from the npm snapshot bundle: README artwork is only
+ * needed on GitHub and would otherwise take ~43% of the tarball budget.
+ *
+ * @param {string} file  POSIX path
+ */
+export const isBundleExcluded = (file) => /^docs\/images\//i.test(file);
 
 /**
  * Paths that must never be packed. They are git-ignored, so a snapshot of a
@@ -189,7 +197,7 @@ process.exit(await main(process.argv.slice(2)));
  * Lay out the package in `staging` from HEAD's files.
  *
  * @param {{ files: SnapshotFile[], commit: string, staging: string }} input
- * @returns {{ version: string, expected: string[] }}
+ * @returns {{ version: string, expected: string[], bundled: number }}
  */
 export function stage({ files, commit, staging }) {
   /** @param {string} name */
@@ -210,6 +218,7 @@ export function stage({ files, commit, staging }) {
   const pkg = JSON.parse(get('package.json').toString('utf-8'));
   const version = String(pkg.version);
   const runtime = files.filter((f) => isRuntimeFile(f.path));
+  const bundleFiles = files.filter((f) => !isBundleExcluded(f.path));
   const marker = Buffer.from(
     `${JSON.stringify({ version, commit }, null, 2)}\n`
   );
@@ -222,14 +231,14 @@ export function stage({ files, commit, staging }) {
     { path: 'README.md', mode: '100644', data: get('docs/kyoten.md') },
     { path: 'LICENSE', mode: '100644', data: get('LICENSE') },
     { path: 'bin/kyoten.js', mode: '100755', data: Buffer.from(BIN_SOURCE) },
-    { path: BUNDLE_FILE, mode: '100644', data: encodeBundle(files) },
+    { path: BUNDLE_FILE, mode: '100644', data: encodeBundle(bundleFiles) },
   ];
   const runtimeFiles = [
     ...runtime.map((f) => ({ ...f, path: `runtime/${f.path}` })),
     { path: `runtime/${SNAPSHOT_FILE}`, mode: '100644', data: marker },
   ];
   const written = writeFiles([...top, ...runtimeFiles], staging);
-  return { version, expected: written };
+  return { version, expected: written, bundled: bundleFiles.length };
 }
 
 /**
@@ -253,7 +262,7 @@ export function pack({ root = ROOT_DIR, out, run = crossSpawn(), log }) {
   fs.mkdirSync(out, { recursive: true });
   const staging = fs.mkdtempSync(path.join(out, '.kyoten-pack-'));
   try {
-    const { version, expected } = stage({ files, commit, staging });
+    const { version, expected, bundled } = stage({ files, commit, staging });
     capture(run, 'pnpm', ['pack', '--pack-destination', out], { cwd: staging });
     const tarball = path.join(out, `kyoten-${version}.tgz`);
     const tgz = fs.readFileSync(tarball);
@@ -267,7 +276,7 @@ export function pack({ root = ROOT_DIR, out, run = crossSpawn(), log }) {
         `${tarball} is not right:\n  - ${problems.join('\n  - ')}\nFix: see the problems above; the tarball must not be published`
       );
     }
-    return { tarball, version, commit, files: files.length, size: tgz.length };
+    return { tarball, version, commit, files: bundled, size: tgz.length };
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
   }

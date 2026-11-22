@@ -392,6 +392,25 @@ describe('session_start callerLine', () => {
     expect(callerLine(home, { KYOTEN_CALLER_DIR: home })).toBeNull();
   });
 
+  test.runIf(process.platform === 'win32' || process.platform === 'darwin')(
+    'should match workspace and KYOTEN_ADD_DIR case-insensitively on Windows and macOS',
+    () => {
+      const home = gitRepo(path.join(root, 'MyHome'));
+      expect(
+        callerLine(home.toLowerCase(), {
+          KYOTEN_CALLER_DIR: home.toUpperCase(),
+        })
+      ).toBeNull();
+
+      const repo = gitRepo(path.join(root, 'MyProject'));
+      const line = callerLine(home, {
+        KYOTEN_CALLER_DIR: repo.toLowerCase(),
+        KYOTEN_ADD_DIR: repo.toUpperCase(),
+      });
+      expect(line).toContain('readable and writable');
+    }
+  );
+
   test('should stay quiet when the lookup fails', () => {
     vi.spyOn(fs, 'statSync').mockImplementation(() => {
       throw new Error('EACCES');
@@ -443,6 +462,15 @@ describe('session_start workspaceLine', () => {
       fs.unlinkSync(link);
     }
   });
+
+  test.runIf(process.platform === 'win32' || process.platform === 'darwin')(
+    'should compare workspace paths case-insensitively on Windows and macOS',
+    () => {
+      expect(
+        workspaceLine(root.toLowerCase(), 'dsh', root.toUpperCase())
+      ).toBeNull();
+    }
+  );
 
   test('should compare a folder that does not exist by its path', () => {
     expect(workspaceLine(root, 'dsh', path.join(root, 'gone'))).toContain(

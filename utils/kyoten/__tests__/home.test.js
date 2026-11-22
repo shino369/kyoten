@@ -398,6 +398,44 @@ describe('samePath', () => {
     ).toBe(true);
     expect(samePath(path.join(tmp, 'a'), path.join(tmp, 'b'))).toBe(false);
   });
+
+  test.each(['win32', 'darwin'])(
+    'should compare paths case-insensitively on %s',
+    (platform) => {
+      const dir = fs.realpathSync.native(tmp);
+      expect(
+        samePath(
+          path.join(dir, 'Missing'),
+          path.join(dir, 'missing'),
+          /** @type {NodeJS.Platform} */ (platform)
+        )
+      ).toBe(true);
+      expect(
+        samePath(
+          dir.toLowerCase(),
+          dir.toUpperCase(),
+          /** @type {NodeJS.Platform} */ (platform)
+        )
+      ).toBe(true);
+    }
+  );
+
+  test('should compare paths case-sensitively on linux', () => {
+    const dir = fs.realpathSync.native(tmp);
+    expect(
+      samePath(path.join(dir, 'Missing'), path.join(dir, 'missing'), 'linux')
+    ).toBe(false);
+  });
+
+  test.runIf(process.platform === 'win32' || process.platform === 'darwin')(
+    'should match an existing folder with different drive or folder casing on case-insensitive OSes',
+    () => {
+      const sub = path.join(tmp, 'MixedCase');
+      fs.mkdirSync(sub);
+      expect(samePath(sub, sub.toLowerCase())).toBe(true);
+      expect(samePath(sub, sub.toUpperCase())).toBe(true);
+    }
+  );
 });
 
 describe('validateConfig addDir', () => {

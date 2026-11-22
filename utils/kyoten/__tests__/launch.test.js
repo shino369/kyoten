@@ -601,7 +601,7 @@ describe('outsideRepo', () => {
   let dir;
 
   beforeEach(() => {
-    dir = fs.realpathSync(
+    dir = fs.realpathSync.native(
       fs.mkdtempSync(path.join(os.tmpdir(), 'kyoten-out-'))
     );
   });
@@ -652,7 +652,27 @@ describe('outsideRepo', () => {
     expect(
       outsideRepo({ agent: 'claude', cwd: path.join(top, 'src'), home })
     ).toBe(top);
+    expect(
+      outsideRepo({ agent: 'agy', cwd: path.join(top, 'src'), home })
+    ).toBe(top);
   });
+
+  test.runIf(process.platform === 'win32' || process.platform === 'darwin')(
+    'should return the canonical native path when cwd casing differs',
+    () => {
+      const top = repo('MixedProj');
+      const home = path.join(dir, 'home');
+      fs.mkdirSync(home);
+
+      expect(
+        outsideRepo({
+          agent: 'agy',
+          cwd: path.join(top, 'src').toLowerCase(),
+          home: home.toUpperCase(),
+        })
+      ).toBe(top);
+    }
+  );
 
   test('should accept a worktree, whose .git is a file', () => {
     const top = path.join(dir, 'wt');
@@ -693,7 +713,6 @@ describe('outsideRepo', () => {
     fs.mkdirSync(plain);
 
     expect(outsideRepo({ agent: 'dsh', cwd: top, home })).toBeNull();
-    expect(outsideRepo({ agent: 'agy', cwd: top, home })).toBeNull();
     expect(
       outsideRepo({ agent: 'claude', cwd: top, home, enabled: false })
     ).toBeNull();

@@ -71,8 +71,8 @@ Agents (the first word, default claude; --<agent> works too)
   agy       Antigravity CLI
 
 Everything after the agent goes to it unchanged; kyoten adds no permission
-flags. Started inside a git repository outside the home, claude, dscc, and
-codex also get --add-dir=<repository>, so they can edit it (--no-add-dir, or
+flags. Started inside a git repository outside the home, claude, dscc, codex,
+and agy also get --add-dir=<repository>, so they can edit it (--no-add-dir, or
 "addDir": false in the config, turns that off). To give Claude a word that
 is a kyoten command: kyoten claude <word>
 
