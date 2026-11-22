@@ -1,4 +1,6 @@
-# 🏠 Kyoten (拠点)
+# Kyoten
+
+![Kyoten](./docs/images/kyoten-logo.png)
 
 > **Your personal home base for AI coding agents** — one shared workspace for programming, documentation, research, translation, and generative-AI work. ✨
 

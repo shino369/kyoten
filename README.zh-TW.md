@@ -1,4 +1,6 @@
-# 🏠 Kyoten (拠点)
+# Kyoten
+
+![Kyoten](./docs/images/kyoten-logo.png)
 
 > **專屬於你的 AI 程式開發代理據點**——涵蓋程式設計、文件撰寫、研究、翻譯與生成式 AI 工作的共用工作區。✨
 
