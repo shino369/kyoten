@@ -456,8 +456,9 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   Other agents are not affected.
 - **Safety:** every write path refuses text matching `utils/redact.js`; notes are framed as facts;
   `pnpm workspace:check` fails if a memory file is tracked.
-- **Worktrees:** `pnpm loop` and `pnpm swarm` copy `AGENTS.local.md` and `CLAUDE.local.md` into
-  their worktrees; the store stays in the main checkout.
+- **Worktrees:** `pnpm loop` and `pnpm swarm` do not copy `AGENTS.local.md` or `CLAUDE.local.md`
+  into their worktrees, so headless agents there start with a clean context; the store stays in
+  the main checkout.
 - **Export and import** (`pnpm memory export` / `import`): one `.tar.gz` with a checksummed
   manifest, validated (paths, entry types, checksums) before anything is written; imports merge
   and take a snapshot first.
