@@ -5,7 +5,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { vi } from 'vitest';
-import { MIN_CHANGES } from '../consolidate.js';
+import { MIN_CHANGES, consolidationDue } from '../consolidate.js';
 import { tryLock } from '../queue.js';
 import { initLocal } from '../render.js';
 import { addNote, memoryDir } from '../store.js';
@@ -69,4 +69,25 @@ test('should return null while another worker runs', () => {
   tryLock(memoryDir(root), { pid: 999, isAlive: () => true });
 
   expect(work(deps())).toBeNull();
+});
+
+test('should leave the consolidation due when a dscc worker defers it', () => {
+  for (let i = 0; i < MIN_CHANGES; i++) {
+    addNote(
+      memoryDir(root),
+      {
+        scope: 'user',
+        type: 'preference',
+        text: `Preference ${i}: likes item${i}.`,
+      },
+      { now: NOW }
+    );
+  }
+
+  const runs = work(deps({ env: { KYOTEN_AGENT: 'dscc' } }));
+
+  expect(runs).toEqual([
+    expect.objectContaining({ job: 'consolidation', status: 'deferred' }),
+  ]);
+  expect(consolidationDue(root, { now: NOW })).toBe('weekly');
 });

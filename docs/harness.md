@@ -443,6 +443,12 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   last run's agent). Codex needs zero configured MCP servers; a missing CLI or failed check says
   which `--extract-agent` to switch to. Secrets are refused, instruction-like ops
   wait in `memory/inbox.jsonl`, and the next session announces the saves.
+  The queue records each session's `KYOTEN_AGENT`. The `claude` CLI sends a transcript to the
+  provider its environment names, so a dscc session (Claude Code on DeepSeek) is extracted only by a
+  worker started from a dscc session, and any other session only by a worker that is not; a
+  mismatching entry is deferred (left queued, no attempt, no journal line) for a later matching
+  worker, and `pnpm memory extract` says so. Consolidation on claude is skipped by a dscc worker.
+  Other agents are not affected.
 - **Safety:** every write path refuses text matching `utils/redact.js`; notes are framed as facts;
   `pnpm workspace:check` fails if a memory file is tracked.
 - **Worktrees:** `pnpm loop` and `pnpm swarm` copy `AGENTS.local.md` and `CLAUDE.local.md` into

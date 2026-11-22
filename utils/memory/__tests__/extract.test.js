@@ -1440,6 +1440,124 @@ describe('extractEntry', () => {
   );
 });
 
+describe('provider sides', () => {
+  const DSCC = { PATH: '/bin', KYOTEN_AGENT: 'dscc' };
+
+  test('should defer a normal entry for a dscc worker, untouched', () => {
+    richSession();
+    const entry = queued();
+    const runAgent = agentReturning({ ops: [] });
+
+    const run = extractEntry(entry, deps({ env: DSCC, runAgent }));
+
+    expect(run).toMatchObject({ status: 'deferred', side: 'normal' });
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(readQueue(dir)).toEqual([entry]);
+    expect(readOffsets(dir)).toEqual({});
+    expect(readJournal(dir)).toEqual([]);
+  });
+
+  test('should defer a dscc entry for a normal worker', () => {
+    richSession();
+    const entry = queued({ kyotenAgent: 'dscc' });
+    const runAgent = agentReturning({ ops: [] });
+
+    const run = extractEntry(entry, deps({ runAgent }));
+
+    expect(run).toMatchObject({ status: 'deferred', side: 'dscc' });
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(readQueue(dir)).toEqual([entry]);
+  });
+
+  test('should extract matching sides', () => {
+    richSession();
+    const runAgent = agentReturning({ ops: [] });
+
+    expect(
+      extractEntry(
+        queued({ kyotenAgent: 'dscc' }),
+        deps({ env: DSCC, runAgent })
+      ).status
+    ).toBe('applied');
+    expect(runAgent).toHaveBeenCalledTimes(1);
+  });
+
+  test('should extract an old entry without a side on a normal worker', () => {
+    richSession();
+    const entry = { ...queued() };
+    delete (/** @type {any} */ (entry).kyotenAgent);
+
+    expect(extractEntry(entry, deps()).status).toBe('applied');
+  });
+
+  test('should not apply the rule to other extraction agents', () => {
+    richSession();
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });
+    const runAgent = agentReturning({ ops: [] });
+
+    const run = extractEntry(queued(), deps({ env: DSCC, runAgent }));
+
+    expect(run.status).toBe('applied');
+  });
+
+  test('should defer on the extract agent, not the session harness', () => {
+    richSession();
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'claude' });
+
+    const run = extractEntry(
+      queued({ harness: 'claude', kyotenAgent: 'codex' }),
+      deps({ env: DSCC })
+    );
+
+    expect(run.status).toBe('deferred');
+  });
+
+  test('should explain a deferral in both directions', () => {
+    expect(
+      formatRun({ status: 'deferred', session: 's', side: 'dscc' })
+    ).toEqual(['Deferred s: it ran on dscc; run this from a dscc session.']);
+    expect(
+      formatRun({ status: 'deferred', session: 's', side: 'normal' })
+    ).toEqual([
+      'Deferred s: it did not run on dscc; run this from a session that is not dscc.',
+    ]);
+    expect(
+      formatRun({
+        status: 'deferred',
+        job: 'consolidation',
+        session: 'consolidation',
+      })[0]
+    ).toMatch(/^Deferred the consolidation: .*not dscc\.$/);
+  });
+
+  test('worker should skip deferred entries, finish the others, and end', () => {
+    richSession();
+    queued({ session: 'old', at: '2026-11-20T10:00:00.000Z' });
+    const mine = path.join(root, 'mine.jsonl');
+    fs.copyFileSync(transcript, mine);
+    enqueue(dir, {
+      session: 'mine',
+      harness: 'claude',
+      transcript: mine,
+      cwd: null,
+      at: '2026-11-20T11:00:00.000Z',
+      kyotenAgent: 'dscc',
+    });
+    const runAgent = agentReturning({ ops: [] });
+
+    const runs = runWorker(deps({ env: DSCC, runAgent }));
+
+    expect(runs?.map((r) => [r.session, r.status])).toEqual([
+      ['old', 'deferred'],
+      ['mine', 'applied'],
+    ]);
+    expect(readQueue(dir).map((e) => [e.session, e.attempts])).toEqual([
+      ['old', 0],
+    ]);
+    expect(readJournal(dir).map((r) => r.session)).toEqual(['mine']);
+  });
+});
+
 describe('runWorker', () => {
   test('should extract every queued session once, and release the lock', () => {
     richSession();

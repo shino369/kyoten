@@ -340,6 +340,33 @@ describe('extract', () => {
     expect(read(AGENTS_LOCAL_FILE)).toBeDefined();
   });
 
+  test('should say why a session was deferred, and keep it queued', () => {
+    enqueue(dir, { ...entry(), kyotenAgent: 'dscc' });
+    const runAgent = agent({ ops: [] });
+
+    const { code, out } = run(['extract'], { runAgent });
+
+    expect(code).toBe(0);
+    expect(out).toBe(
+      'Deferred sess-9: it ran on dscc; run this from a dscc session.'
+    );
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(readQueue(dir)).toHaveLength(1);
+  });
+
+  test('should defer a normal session from a dscc shell, in JSON too', () => {
+    enqueue(dir, entry());
+
+    const { out } = run(['extract', 'sess-9', '--json'], {
+      env: { ...ENV, KYOTEN_AGENT: 'dscc' },
+      runAgent: agent({ ops: [] }),
+    });
+
+    expect(JSON.parse(out).runs).toEqual([
+      expect.objectContaining({ status: 'deferred', side: 'normal' }),
+    ]);
+  });
+
   test('should say when the queue is empty', () => {
     expect(run(['extract'], { runAgent: agent({ ops: [] }) }).out).toBe(
       'Nothing to extract: the queue is empty.'

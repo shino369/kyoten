@@ -21,7 +21,13 @@ import { callAgent } from './agent-call.js';
 import { readConfig } from './config.js';
 import { looksLikeInstruction } from './instructions.js';
 import { kindLabel, refreshAfterWrite, shorten } from './context.js';
-import { applyOps, extractCommand, modelFor, validateOps } from './extract.js';
+import {
+  applyOps,
+  deferredRun,
+  extractCommand,
+  modelFor,
+  validateOps,
+} from './extract.js';
 import {
   EXTRACT_DIR,
   appendInbox,
@@ -310,6 +316,10 @@ export function consolidate(deps) {
     extractModel: config.extractModel,
     ownModel: last?.agent === agent ? last.model : null,
   });
+  // A dscc worker must not send the notes to Anthropic, nor another worker
+  // to DeepSeek: the claude call waits for a normal session (still due).
+  const deferred = deferredRun(agent, null, deps.env, base);
+  if (deferred) return deferred;
   if (deps.dryRun) return { ...base, status: 'dry-run', agent, model, prompt };
 
   const command = extractCommand({

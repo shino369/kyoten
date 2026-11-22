@@ -184,6 +184,10 @@ The key goes only where the profile says:
 - `ANTHROPIC_BASE_URL` must be an `https` URL, or dscc refuses to start. A host other than
   `api.deepseek.com` starts with a warning that the key is sent there.
 
+Memory extraction keeps the two providers apart: a dscc session is extracted only from a dscc
+session, and a normal one only from a normal one, so a transcript never goes to the other provider.
+Entries for the other side wait in the queue until a matching session starts the worker.
+
 `--set-key` reads one line from stdin when stdin is not a terminal (`kyoten dscc --set-key < key.txt`).
 In Git Bash's mintty, which is not a terminal to Windows programs, pipe the key or run
 `--set-key` from PowerShell or cmd.

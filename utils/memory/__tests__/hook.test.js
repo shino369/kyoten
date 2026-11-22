@@ -761,6 +761,23 @@ describe('extraction hooks', () => {
     expect(kick).not.toHaveBeenCalled();
   });
 
+  test('should record the KYOTEN_AGENT side on open and queued entries', () => {
+    lifecycle('SessionStart', {}, { env: { KYOTEN_AGENT: 'dscc' } });
+
+    expect(readOpen(dir)[0].kyotenAgent).toBe('dscc');
+
+    lifecycle('SessionEnd', {}, { env: { KYOTEN_AGENT: 'dscc' } });
+
+    expect(readQueue(dir)[0].kyotenAgent).toBe('dscc');
+  });
+
+  test('should record no side for a session without KYOTEN_AGENT', () => {
+    lifecycle('SessionStart');
+    lifecycle('SessionEnd');
+
+    expect(readQueue(dir)[0].kyotenAgent).toBeNull();
+  });
+
   test('should register and queue a Codex session with its rollout', () => {
     lifecycle('SessionStart', {}, { harness: 'codex' });
 

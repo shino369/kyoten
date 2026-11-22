@@ -56,6 +56,7 @@ export const WORKER_SCRIPT = path.join(
  * @property {string | null} cwd where the session ran
  * @property {string} at when it was registered or queued (ISO)
  * @property {number} attempts failed extractions so far
+ * @property {string | null} kyotenAgent KYOTEN_AGENT of the session (null: none, or an old entry)
  * @property {string} [error] the last failure
  *
  * @typedef {{ offset: number, at: string }} Offset
@@ -103,10 +104,27 @@ export function normalizeEntry(input) {
     transcript: input.transcript,
     cwd: typeof input.cwd === 'string' ? input.cwd : null,
     at: input.at,
+    kyotenAgent:
+      typeof input.kyotenAgent === 'string' ? input.kyotenAgent : null,
     attempts: Number.isInteger(input.attempts) ? input.attempts : 0,
     ...(typeof input.error === 'string' ? { error: input.error } : {}),
   };
 }
+
+/** The KYOTEN_AGENT value of a dscc session (Claude Code on DeepSeek). */
+export const DSCC_AGENT = 'dscc';
+
+/**
+ * Whether a `claude` call from this environment may handle `kyotenAgent`'s
+ * transcript: dscc sessions only with a dscc worker (DeepSeek URL and token),
+ * everything else only without. Otherwise a transcript would reach the
+ * other provider.
+ *
+ * @param {string | null | undefined} kyotenAgent the entry's side
+ * @param {NodeJS.ProcessEnv} env the worker's environment
+ */
+export const sameProviderSide = (kyotenAgent, env) =>
+  (kyotenAgent === DSCC_AGENT) === (env.KYOTEN_AGENT === DSCC_AGENT);
 
 /**
  * @param {string} file

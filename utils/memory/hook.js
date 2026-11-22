@@ -375,6 +375,7 @@ export function handleHook(
     transcript: normalized.transcript_path,
     cwd: normalized.cwd,
     at: now.toISOString(),
+    kyotenAgent: env[AGENT_ENV] ?? null,
   };
   const startWorker = (/** @type {boolean} */ orConsolidate) => {
     const work =

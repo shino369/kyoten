@@ -51,6 +51,7 @@ import {
   readOffsets,
   readQueue,
   retryEntry,
+  sameProviderSide,
   tryLock,
   writeAnnounced,
   writeOffset,
@@ -438,6 +439,40 @@ export function formatChange(change) {
 const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 /**
+ * Why a job was left for a worker on the other provider side.
+ *
+ * @param {Run} run
+ * @param {string} name
+ */
+function deferredMessage(run, name) {
+  if (run.job === 'consolidation') {
+    return 'Deferred the consolidation: this worker runs on dscc and it would use claude; run this from a session that is not dscc.';
+  }
+  return run.side === 'dscc'
+    ? `Deferred ${name}: it ran on dscc; run this from a dscc session.`
+    : `Deferred ${name}: it did not run on dscc; run this from a session that is not dscc.`;
+}
+
+/**
+ * The run for a job that the claude CLI would send to the wrong provider
+ * (nothing is changed or journaled), or null when it may go ahead.
+ *
+ * @param {string} agent the agent that would make the call
+ * @param {string | null} kyotenAgent the side of the transcript (null: not dscc)
+ * @param {NodeJS.ProcessEnv} env the worker's environment
+ * @param {Record<string, unknown>} base
+ * @returns {Run | null}
+ */
+export function deferredRun(agent, kyotenAgent, env, base) {
+  if (agent !== 'claude' || sameProviderSide(kyotenAgent, env)) return null;
+  return {
+    ...base,
+    status: 'deferred',
+    side: kyotenAgent === 'dscc' ? 'dscc' : 'normal',
+  };
+}
+
+/**
  * What a run did, for `pnpm memory extract`.
  *
  * @param {Run} run
@@ -504,6 +539,7 @@ export function formatRun(run) {
     empty: `Nothing new in ${session}.`,
     nothing: 'Nothing to consolidate yet.',
   };
+  if (run.status === 'deferred') return [deferredMessage(run, name)];
   return [skipped[run.status]];
 }
 
@@ -564,6 +600,17 @@ export function extractEntry(entry, deps) {
     if (run.status !== 'empty') appendJournal(dir, run);
     return run;
   };
+
+  // The claude CLI sends the transcript to whatever provider its environment
+  // names, so a dscc session and a normal one are never mixed. Deferred:
+  // the entry stays queued, untouched, for a worker of the matching side.
+  const deferred = deferredRun(
+    readConfig(dir).extractAgent ?? harness,
+    entry.kyotenAgent,
+    deps.env,
+    base
+  );
+  if (deferred) return deferred;
 
   const from = readOffsets(dir)[session]?.offset ?? 0;
   const chunk = readNewLines(transcript, from);

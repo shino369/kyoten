@@ -519,6 +519,29 @@ describe('consolidate', () => {
   });
 });
 
+describe('consolidation on dscc', () => {
+  test('should defer the claude call from a dscc worker, leaving it due', () => {
+    seed();
+    const runAgent = agentReturning({ profile: [], ops: [] });
+
+    const run = consolidate(deps({ runAgent, env: { KYOTEN_AGENT: 'dscc' } }));
+
+    expect(run).toMatchObject({ job: 'consolidation', status: 'deferred' });
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(readConsolidated(dir)).toBeNull();
+    expect(readJournal(dir)).toEqual([]);
+  });
+
+  test('should still run an agy consolidation on a dscc worker', () => {
+    seed();
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });
+
+    expect(consolidate(deps({ env: { KYOTEN_AGENT: 'dscc' } })).status).toBe(
+      'consolidated'
+    );
+  });
+});
+
 describe('consolidateLocked', () => {
   test('should run under the worker lock', () => {
     seed();
