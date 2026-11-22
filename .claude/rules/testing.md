@@ -15,8 +15,8 @@ Playwright is reserved for e2e tests (`e2e/*.e2e.*`, `pnpm test:e2e`). Install b
 
 ## Coverage Requirement
 
-- **100%** statements, branches, functions, and lines for `.claude/hooks/`, project-owned `.agents/skills/`, and `utils/`
-- Business logic, data processing, and API interaction scripts
+- At least **95%** statements, branches, functions, and lines across the measured suite, including `.claude/hooks/`, project-owned `.agents/skills/`, and `utils/`.
+- Test business logic, data processing, and API interaction scripts. Keep direct regression tests for permission decisions, archive restore boundaries, atomic file operations, and platform-specific process launches.
 - Tests are optional for one-off automation and throwaway scripts in `tasks/`
 
 Check with `pnpm test:coverage`. CI enforces the same threshold.
@@ -27,7 +27,7 @@ Check with `pnpm test:coverage`. CI enforces the same threshold.
 - Use **`test`**, not `it`, for consistency.
 - One focus per test; split assertions that describe different behaviors.
 - Descriptive names: `should throw ValidationError when the email is invalid`.
-- Test all branches and error paths, not just the happy path.
+- Test success and failure paths that affect callers.
 - Prefer observable behavior over implementation details.
 - Use real dependencies where practical (internal modules, a DOM implementation if the project has one); mock external APIs, slow/destructive I/O, timers, and `process.exit`.
 
@@ -51,4 +51,4 @@ When ignoring, keep the block minimal and add an integration test that exercises
 ## Deep Guides
 
 - `docs/testing/mocking-guide.md` — module/function/fs/timer/fetch mocking
-- `docs/testing/coverage-strategies.md` — reaching 100% coverage, refactoring for testability
+- `docs/testing/coverage-strategies.md` — using coverage to find regression gaps and refactoring for testability

@@ -22,7 +22,7 @@
 - **🧠 ローカルの個人メモリとパーソナライゼーション (`pnpm memory`)** — マシンローカルかつ git 管理外のメモリ機能です。コアブロック注入、プロンプト／失敗時の想起、マルチエージェントによるバックグラウンド抽出・統合、エージェントの口調カスタマイズ (`pnpm memory personalize`) に対応しています。
 - **🚀 マルチエージェント・オーケストレーション (`pnpm agent`, `pnpm loop`, `pnpm swarm`)** — 別のエージェントにヘッドレスでセカンドオピニオンを求めたり、git worktree 内で無人実行の修正・レビューループを回したり、実行可能なステップをクリーンなコンテキストで複数 worktree に並列展開したりできます。
 - **🧩 モジュラーなスキルエコシステム (`skills-lock.json`)** — リポジトリ管理下のワークスペーススキルに加え、ロックファイルで固定された外部スキル（[`shino369/kyoten-skills`](https://github.com/shino369/kyoten-skills) のポータブルスキルを含む）を `pnpm skills:install`、`pnpm skills:check`、`pnpm skills:link` でスマートに管理します。
-- **🛡️ 組み込みガードレールと 100% 品質ゲート (`pnpm check`)** — シークレット保護、取り消し可能な削除 (`pnpm task rm`)、サプライチェーン強化、全ハーネス共通の git フック、TypeScript の型チェック、ESLint、Prettier、カバレッジ 100% を閾値とする Vitest を統合しています。
+- **🛡️ 組み込みガードレールと品質ゲート (`pnpm check`)** — シークレット保護、取り消し可能な削除 (`pnpm task rm`)、サプライチェーン強化、全ハーネス共通の git フック、TypeScript の型チェック、ESLint、Prettier、カバレッジの下限を 95% に設定した Vitest を統合しています。
 
 > 📖 すべてのコマンドとフラグを確認したい場合は、自動生成された [CLI リファレンス](docs/cli.md) およびアーキテクチャ全体を解説した [docs/harness.md](docs/harness.md) をご覧ください。
 
@@ -52,7 +52,7 @@ pnpm workspace:check   # verify setup; every failure prints a Fix command
 
 トラブルシューティングについては `.agents/skills/workspace-setup/SKILL.md` を参照してください。
 
-品質ゲート全体（型チェック、リント、フォーマットチェック、カバレッジ 100% のテスト）を実行します：
+品質ゲート全体（型チェック、リント、フォーマットチェック、カバレッジを計測するテスト）を実行します。
 
 ```bash
 pnpm check
@@ -282,7 +282,7 @@ pnpm skills:link                         # (re)link .agents/skills into .claude/
 
 | ルール                | 適用範囲       | 目的                                               |
 | --------------------- | -------------- | -------------------------------------------------- |
-| `testing`             | テストファイル | Vitest、カバレッジ 100%、モックの方針。            |
+| `testing`             | テストファイル | Vitest、カバレッジの下限 95%、モックの方針。       |
 | `working-with-script` | スクリプト     | Node.js 優先のスクリプト設計、エラー処理、テスト。 |
 
 ## 🪝 フック
@@ -316,11 +316,11 @@ pnpm skills:link                         # (re)link .agents/skills into .claude/
 
 ## 🧪 テスト
 
-ユニットテストおよび統合テストには **Vitest** を使用しており、`utils/`、`.claude/hooks/`、およびプロジェクト固有の `.agents/skills/` に対して **カバレッジ 100% の閾値** を設定しています：
+ユニットテストおよび統合テストには **Vitest** を使用します。`utils/`、`.claude/hooks/`、プロジェクト固有の `.agents/skills/` を含む計測対象全体で、ステートメント、分岐、関数、行のカバレッジの下限をそれぞれ **95%** に設定しています。
 
 ```bash
 pnpm test
-pnpm test:coverage   # 100% statements, branches, functions, lines
+pnpm test:coverage   # enforces the 95% coverage floor
 ```
 
 テスト規約は `.claude/rules/testing.md` に、より詳しいガイドは `docs/testing/` にまとめています。

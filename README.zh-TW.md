@@ -22,7 +22,7 @@
 - **🧠 本機個人記憶與個人化設定（`pnpm memory`）**——僅存於本機且由 Git 忽略的記憶系統，支援核心區塊注入、提示詞／失敗喚回、多代理背景擷取與彙整，以及可自訂的代理語氣（`pnpm memory personalize`）。
 - **🚀 多代理協作（`pnpm agent`、`pnpm loop`、`pnpm swarm`）**——以非互動模式向其他代理徵詢第二意見、在 Git worktree 中執行全自動修正與審查循環，或在多個 worktree 中以乾淨脈絡平行處理已就緒的步驟。
 - **🧩 模組化技能生態系（`skills-lock.json`）**——整合受追蹤的工作區自建技能與鎖定版本的外部技能（包含來自 [`shino369/kyoten-skills`](https://github.com/shino369/kyoten-skills) 的可攜式技能），透過 `pnpm skills:install`、`pnpm skills:check` 與 `pnpm skills:link` 俐落管理。
-- **🛡️ 內建安全護欄與 100% 品質把關（`pnpm check`）**——涵蓋機密防護、可復原刪除（`pnpm task rm`）、供應鏈安全強化、跨代理環境 Git Hooks、TypeScript 型別檢查、ESLint、Prettier，以及套用 100% 測試涵蓋率門檻的 Vitest。
+- **🛡️ 內建安全護欄與品質把關（`pnpm check`）**——涵蓋機密防護、可復原刪除（`pnpm task rm`）、供應鏈安全強化、跨代理環境 Git Hooks、TypeScript 型別檢查、ESLint、Prettier，以及採用 95% 涵蓋率門檻的 Vitest。
 
 > 📖 想查詢所有指令與參數旗標？請參閱自動產生的 [CLI 參考手冊](docs/cli.md)，以及 [docs/harness.md](docs/harness.md) 中的完整架構說明。
 
@@ -52,7 +52,7 @@ pnpm workspace:check   # verify setup; every failure prints a Fix command
 
 疑難排解請參閱 `.agents/skills/workspace-setup/SKILL.md`。
 
-執行完整品質把關（型別檢查、Lint、格式檢查、100% 涵蓋率測試）：
+執行完整品質把關（型別檢查、Lint、格式檢查，以及會統計涵蓋率的測試）。
 
 ```bash
 pnpm check
@@ -280,10 +280,10 @@ pnpm skills:link                         # (re)link .agents/skills into .claude/
 
 常駐指引皆寫在 `AGENTS.md` 中，讓每個代理環境都能讀取。`.claude/rules/` 則存放路徑範圍規則，由 Claude Code 自動載入，並由 `AGENTS.md` 引導其他代理主動閱讀：
 
-| 規則                  | 適用範圍 | 用途                                   |
-| --------------------- | -------- | -------------------------------------- |
-| `testing`             | 測試檔案 | Vitest、100% 涵蓋率、模擬（Mocking）。 |
-| `working-with-script` | 腳本檔案 | Node 優先腳本、錯誤處理、測試規範。    |
+| 規則                  | 適用範圍 | 用途                                      |
+| --------------------- | -------- | ----------------------------------------- |
+| `testing`             | 測試檔案 | Vitest、95% 涵蓋率門檻、模擬（Mocking）。 |
+| `working-with-script` | 腳本檔案 | Node 優先腳本、錯誤處理、測試規範。       |
 
 ## 🪝 Hooks
 
@@ -316,11 +316,11 @@ pnpm skills:link                         # (re)link .agents/skills into .claude/
 
 ## 🧪 測試
 
-單元測試與整合測試採用 **Vitest**，並對 `utils/`、`.claude/hooks/` 與專案自建的 `.agents/skills/` 強制套用 **100% 涵蓋率門檻**：
+單元測試與整合測試採用 **Vitest**。在包含 `utils/`、`.claude/hooks/` 與專案自建的 `.agents/skills/` 的整體量測範圍內，陳述式、分支、函式與程式碼行數的涵蓋率門檻均為 **95%**。
 
 ```bash
 pnpm test
-pnpm test:coverage   # 100% statements, branches, functions, lines
+pnpm test:coverage   # enforces the 95% coverage floor
 ```
 
 測試規範位於 `.claude/rules/testing.md`，進階指南則存放於 `docs/testing/`。

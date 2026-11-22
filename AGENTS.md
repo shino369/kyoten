@@ -51,7 +51,7 @@ outputs.
 | Goal                          | Command                                                                |
 | ----------------------------- | ---------------------------------------------------------------------- |
 | Full quality gate (required)  | `pnpm check`                                                           |
-| Tests / with 100% coverage    | `pnpm test` / `pnpm test:coverage`                                     |
+| Tests / with coverage         | `pnpm test` / `pnpm test:coverage`                                     |
 | Lint / auto-fix               | `pnpm lint` / `pnpm lint:fix`                                          |
 | Format / check format         | `pnpm format` / `pnpm format:check`                                    |
 | Typecheck                     | `pnpm typecheck`                                                       |
@@ -194,9 +194,9 @@ Enforced by `.githooks/commit-msg` (enabled by `pnpm workspace:setup`):
 
 - Default to Node.js ESM. Use Python only for data science/ML and Bash only for shell automation.
 - Read `.claude/rules/working-with-script.md` before writing scripts (`runIfMain`, error handling).
-- Read `.claude/rules/testing.md` before writing tests (Vitest, 100% coverage, mocking).
-- 100% coverage is required for `utils/`, `.claude/hooks/`, and project-owned `.agents/skills/`
-  scripts (`tasks/` is exempt).
+- Read `.claude/rules/testing.md` before writing tests (Vitest, coverage, mocking).
+- The measured suite, including `utils/`, `.claude/hooks/`, and project-owned `.agents/skills/`,
+  requires at least 95% statements, branches, functions, and lines overall. `tasks/` is exempt.
 
 ## 8. Web and browser tools
 

@@ -6,6 +6,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
+import { vi } from 'vitest';
 import { linkDir } from './support/links.js';
 
 describe('module-runner', () => {
@@ -22,16 +23,12 @@ describe('module-runner', () => {
     });
 
     test('should not run function when paths do not match', () => {
-      let called = false;
-      const mockFn = () => {
-        called = true;
-      };
+      const main = vi.fn();
+      const differentScript = new URL('./different-script.js', import.meta.url);
 
-      // Call with a file: URL that won't match process.argv[1]
-      runIfMain('file:///some/other/path.js', mockFn);
+      runIfMain(differentScript.href, main);
 
-      // Function should not be called (different from process.argv[1])
-      expect(called).toBe(false);
+      expect(main).not.toHaveBeenCalled();
     });
 
     test('should run function when module is executed directly', () => {
@@ -165,15 +162,12 @@ describe('module-runner', () => {
     });
 
     test('should handle invalid file URLs gracefully', () => {
-      let called = false;
-      const mockFn = () => {
-        called = true;
-      };
+      const main = vi.fn();
 
-      // Invalid file URL that will cause fileURLToPath to throw
-      runIfMain('file:/invalid', mockFn);
+      // Node rejects an encoded path separator on both POSIX and Windows.
+      runIfMain('file:///C:/invalid%2Fpath', main);
 
-      expect(called).toBe(false);
+      expect(main).not.toHaveBeenCalled();
     });
   });
 });

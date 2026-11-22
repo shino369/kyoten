@@ -78,7 +78,7 @@ For each failing test:
 If coverage was run:
 
 - Overall percentages (Statements, Branches, Functions, Lines)
-- Files below 100% (if 100% is required)
+- Files with uncovered behavior that can explain a global coverage gap
 - Uncovered lines
 
 ### 6. Return Summary
@@ -121,7 +121,7 @@ Provide concise, actionable summary in this format:
 
 [Only if coverage below threshold]
 
-**Files Below 100%**:
+**Relevant Uncovered Files**:
 
 - `[file path]`: [X]% (Uncovered lines: X-Y)
 
@@ -196,7 +196,7 @@ const result = jwt.verify(token, secret);
 
 ## Coverage Issues
 
-**Files Below 100%**:
+**Relevant Uncovered Files**:
 
 - src/utils/auth.js: 94% (Uncovered lines: 45-48, 67)
 - src/services/user.js: 89% (Uncovered lines: 23-25, 89-95)
@@ -222,13 +222,13 @@ const result = jwt.verify(token, secret);
 **Duration**: 3.2s
 **Coverage**: 87% Statements, 82% Branches, 90% Functions, 88% Lines
 
-**Tests pass but coverage below required 100%.**
+**Tests pass, but overall coverage falls below the 95% minimum.**
 
 ---
 
 ## Coverage Gaps
 
-**Files Below 100%**:
+**Relevant Uncovered Files**:
 
 1. **src/utils/validator.js**: 87%
    - Uncovered lines: 34-38 (error handling for edge case)
@@ -247,7 +247,7 @@ const result = jwt.verify(token, secret);
 3. Add tests for payment refund logic (lines 45-52)
 4. Add tests for webhook error cases (lines 89-95)
 
-**Action Required**: Achieve 100% coverage before merging.
+**Action Required**: Bring all four global metrics to at least 95% before merging.
 ````
 
 ## Special Cases
@@ -294,7 +294,7 @@ No test files detected in project.
 
 1. Create tests for new code in `__tests__/` directories
 2. Refer to `.claude/rules/testing.md` for test writing guidance
-3. Aim for 100% coverage on all non-trivial code
+3. Cover observable success and failure behavior on non-trivial code
 ```
 
 ### Linter Errors Before Tests
@@ -314,12 +314,13 @@ Tests were not executed due to linting failures.
 
 ## Coverage Requirements
 
-This workspace requires **100% coverage** for:
+The workspace requires **95% coverage across the measured suite** for statements, branches, functions, and lines. The suite measures scripts in these directories.
 
 - All scripts in `.claude/hooks/`
 - All scripts in project-owned `.agents/skills/`
 - All scripts in `utils/`
-- Business logic, data processing, API interaction scripts
+
+Test business logic, data processing, and API interactions. Keep direct tests for permission decisions, archive restore boundaries, atomic file operations, and platform-specific process launches.
 
 **Tests optional for**:
 

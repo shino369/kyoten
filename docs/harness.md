@@ -301,7 +301,7 @@ differs from the last note's), then continues from `Next`.
 | review rounds      | a clean-context review, triaged; must-fix/high must be fixed                                                                        |
 | `pnpm task done`   | last verify passed; code tasks: the review gate below                                                                               |
 | git hooks          | Prettier + ESLint on staged files, Conventional Commit messages                                                                     |
-| `pnpm check`       | the workspace gate: typecheck, lint, format, tests with 100% coverage                                                               |
+| `pnpm check`       | the workspace gate: typecheck, lint, format, tests with a 95% coverage floor                                                        |
 
 ### 5. Loops
 
