@@ -21,6 +21,7 @@ import {
   scaffoldTask,
   HARNESS_SESSION_VARS,
   sessionFromEnv,
+  sessionHarness,
   sessionTask,
   tasksRoot,
   touchSession,
@@ -239,6 +240,43 @@ describe('active task pointer', () => {
     expect(readActive(root)).toBeNull();
     fs.writeFileSync(path.join(tasksRoot(root), '.active'), '\n');
     expect(readActive(root)).toBeNull();
+  });
+});
+
+describe('sessionHarness', () => {
+  test.each([
+    [{ CODEX_THREAD_ID: 'a' }, 'codex'],
+    [{ CODEX_SESSION_ID: 'a' }, 'codex'],
+    [{ DSH_SESSION_ID: 'a' }, 'dsh'],
+    [{ ANTIGRAVITY_CONVERSATION_ID: 'a' }, 'agy'],
+    [{ CLAUDE_CODE_SESSION_ID: 'a' }, 'claude'],
+    [{ CLAUDECODE: '1' }, 'claude'],
+    [
+      {
+        CLAUDE_CODE_SESSION_ID: 'cc',
+        CLAUDECODE: '1',
+        ANTIGRAVITY_CONVERSATION_ID: 'a',
+      },
+      'agy',
+    ],
+    [{ CLAUDE_CODE_SESSION_ID: 'cc', DSH_SESSION_ID: 'd' }, 'dsh'],
+    [{ CLAUDE_CODE_SESSION_ID: 'cc', CODEX_THREAD_ID: 'c' }, 'codex'],
+  ])('should name the harness for %j', (env, harness) => {
+    expect(sessionHarness(env)).toBe(harness);
+  });
+
+  test('should return null when nothing is set or the values are empty', () => {
+    expect(sessionHarness({})).toBeNull();
+    expect(
+      sessionHarness({
+        CODEX_THREAD_ID: '',
+        CODEX_SESSION_ID: '',
+        DSH_SESSION_ID: '',
+        ANTIGRAVITY_CONVERSATION_ID: '',
+        CLAUDE_CODE_SESSION_ID: '',
+        CLAUDECODE: '0',
+      })
+    ).toBeNull();
   });
 });
 

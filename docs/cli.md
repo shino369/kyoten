@@ -211,13 +211,17 @@ Settings
                                 --dry-run writes only memory/persona.candidate.md
   personalize [--persona … | --persona-file <file.md>] --audit [--agent claude|codex|dsh|agy]
                                 Check the persona without changing it. Both commands default
-                                to Claude and use memory/persona.md or the stored persona
-                                when no source flag is given. --agent codex requires
-                                zero configured MCP servers
+                                to the memory agent (pnpm memory set --extract-agent), else
+                                the session's own CLI, else Claude, and use
+                                memory/persona.md or the stored persona when no source
+                                flag is given. --agent codex requires zero configured
+                                MCP servers
   personalize --off | --on      Pause or resume applying saved personalization across sessions.
                                 A new session loads the full settings after --on
-  set [--extract-model <model>|default] [--budget <characters>|default]
-                                Extraction model and core block budget
+  set [--extract-agent claude|codex|dsh|agy|default] [--extract-model <model>|default]
+      [--budget <characters>|default]
+                                Agent CLI and model for memory jobs (default: the session's
+                                own CLI and model), and core block budget
   off [--session] · on [--session]
                                 Pause automatic saving everywhere, or for this session
                                 (incognito); recall still works

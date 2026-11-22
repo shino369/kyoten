@@ -20,7 +20,12 @@ import {
   readArchive,
 } from './archive.js';
 import { runIfMain } from '../module-runner.js';
-import { SESSION_ID_RE, sessionFromEnv, withLock } from '../task/store.js';
+import {
+  SESSION_ID_RE,
+  sessionFromEnv,
+  sessionHarness,
+  withLock,
+} from '../task/store.js';
 import { ROOT_DIR } from '../workspace-config.js';
 import { readConfig, savingOff, setSaving, writeConfig } from './config.js';
 import {
@@ -177,13 +182,17 @@ Settings
                                 --dry-run writes only memory/persona.candidate.md
   personalize [--persona … | --persona-file <file.md>] --audit [--agent ${CALL_AGENTS.join('|')}]
                                 Check the persona without changing it. Both commands default
-                                to Claude and use memory/persona.md or the stored persona
-                                when no source flag is given. --agent codex requires
-                                zero configured MCP servers
+                                to the memory agent (pnpm memory set --extract-agent), else
+                                the session's own CLI, else Claude, and use
+                                memory/persona.md or the stored persona when no source
+                                flag is given. --agent codex requires zero configured
+                                MCP servers
   personalize --off | --on      Pause or resume applying saved personalization across sessions.
                                 A new session loads the full settings after --on
-  set [--extract-model <model>|default] [--budget <characters>|default]
-                                Extraction model and core block budget
+  set [--extract-agent ${CALL_AGENTS.join('|')}|default] [--extract-model <model>|default]
+      [--budget <characters>|default]
+                                Agent CLI and model for memory jobs (default: the session's
+                                own CLI and model), and core block budget
   off [--session] · on [--session]
                                 Pause automatic saving everywhere, or for this session
                                 (incognito); recall still works
@@ -214,6 +223,7 @@ const VALUE_FLAGS = {
   '--traits': 'traits',
   '--extra': 'extra',
   '--extract-model': 'extractModel',
+  '--extract-agent': 'extractAgent',
   '--budget': 'budget',
   '--include': 'include',
   '--tasks': 'tasks',
@@ -268,7 +278,7 @@ const FIRST_NOTE =
  *   scope?: string, repo?: string, type?: string, tags?: string, limit?: string,
  *   grep?: string, message?: string, preset?: string, callMe?: string,
  *   aboutMe?: string, language?: string, persona?: string, tone?: string,
- *   traits?: string, extra?: string, extractModel?: string, budget?: string,
+ *   traits?: string, extra?: string, extractModel?: string, extractAgent?: string, budget?: string,
  *   include?: string, tasks?: string, out?: string, personaFile?: string, agent?: string,
  *   triggers: string[],
  *   pin: boolean, force: boolean, failure: boolean, pinned: boolean,
@@ -493,6 +503,11 @@ function checkPersonaOptions(options) {
   }
 }
 
+/** @param {string | null} agent */
+function agentLine(agent) {
+  return `Memory agent: ${agent ?? "the session's own CLI"}`;
+}
+
 /** @param {Options} options @param {Deps} deps */
 function runPersonaJob(options, deps) {
   const dir = dirOf(deps);
@@ -502,7 +517,11 @@ function runPersonaJob(options, deps) {
   const persona =
     options.persona ??
     (personaFromMarkdown(markdown ?? '') || settings.persona || '');
-  const agent = options.agent ?? 'claude';
+  const agent =
+    options.agent ??
+    readConfig(dir).extractAgent ??
+    sessionHarness(deps.env) ??
+    'claude';
   const job = {
     persona,
     settings,
@@ -957,7 +976,7 @@ export const COMMANDS = {
           ? 'off for this session'
           : 'on';
     const fields = Object.keys(core.personalization);
-    const { extractModel, personalizationEnabled } = core.config;
+    const { extractModel, extractAgent, personalizationEnabled } = core.config;
     const personalizationState = personalizationEnabled ? 'on' : 'off';
     const hint = personalizationEnabled
       ? languageHint(core.personalization)
@@ -993,6 +1012,7 @@ export const COMMANDS = {
         personalizationEnabled,
         saving,
         extractModel,
+        extractAgent,
         extraction,
         consolidation,
         missing,
@@ -1008,6 +1028,7 @@ export const COMMANDS = {
           `Personalization: ${personalizationState} (${fields.length > 0 ? fields.join(', ') : 'no settings, see pnpm memory personalize --presets'})`,
           ...[hint].filter(Boolean),
           `Saving: ${saving}${off ? ' (pnpm memory on)' : ''}`,
+          agentLine(extractAgent),
           `Extraction model: ${extractModel ?? "the main session's model"}`,
           `Extraction: ${plural(extraction.queued, 'session')} queued; ${lastRun}`,
           `Consolidation: ${consolidation.last ? `last ${localTime(consolidation.last)}` : 'not yet'}${consolidation.due ? `; due (${consolidation.due})` : ''}`,
@@ -1456,6 +1477,12 @@ export const COMMANDS = {
       updates.extractModel =
         options.extractModel === 'default' ? null : options.extractModel;
     }
+    if (options.extractAgent !== undefined) {
+      updates.extractAgent =
+        options.extractAgent === 'default'
+          ? null
+          : /** @type {any} */ (options.extractAgent);
+    }
     if (options.budget !== undefined) {
       const { budget } = options;
       if (budget !== 'default' && !/^\d+$/.test(budget)) {
@@ -1474,6 +1501,7 @@ export const COMMANDS = {
       { config, warnings },
       withWarnings(
         [
+          agentLine(config.extractAgent),
           `Extraction model: ${config.extractModel ?? "the main session's model"}`,
           `Core budget: ${config.budget ?? CORE_BUDGET} characters${config.budget === null ? ' (default)' : ''}`,
         ].join('\n'),
