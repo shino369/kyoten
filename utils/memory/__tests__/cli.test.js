@@ -2951,6 +2951,32 @@ describe('personalize --for (per-agent personas)', () => {
     expect(fs.existsSync(agentFile('ds'))).toBe(false);
   });
 
+  test('should name a file with a Windows short-name ~ in the compact fix', () => {
+    fs.mkdirSync(path.join(tmp, 'RUNNER~1'));
+    fs.writeFileSync(path.join(tmp, 'RUNNER~1', 'long.md'), long);
+
+    expect(() =>
+      run(
+        ['personalize', '--for', 'ds', '--persona-file', 'RUNNER~1/long.md'],
+        {
+          cwd: tmp,
+        }
+      )
+    ).toThrow(
+      /Fix: pnpm memory personalize --for ds --persona-file RUNNER~1\/long\.md --compact/
+    );
+  });
+
+  test('should not name a file that starts with ~ (a shell expands it)', () => {
+    fs.writeFileSync(path.join(tmp, '~long.md'), long);
+
+    expect(() =>
+      run(['personalize', '--for', 'ds', '--persona-file', '~long.md'], {
+        cwd: tmp,
+      })
+    ).toThrow(/Fix: add --compact to the same command/);
+  });
+
   test('should count the other settings against the budget', () => {
     run(['personalize', '--extra', 'e'.repeat(1300)]);
 

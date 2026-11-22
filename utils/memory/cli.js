@@ -611,11 +611,17 @@ function runPersonaJob(options, deps, key) {
   return result.blocked ? 1 : 0;
 }
 
-/** @param {Options} options */
+/**
+ * The command to retry with --compact, when the file name is safe to paste
+ * unquoted. A `~` is safe only after the first character (Windows short
+ * names like `RUNNER~1`): a shell expands a leading one.
+ *
+ * @param {Options} options
+ */
 function compactFix(options) {
   const file = options.personaFile;
   const target = options.for === undefined ? '' : ` --for ${options.for}`;
-  if (file && /^[a-zA-Z0-9_./:\\-]+$/.test(file)) {
+  if (file && /^[a-zA-Z0-9_./:\\-][a-zA-Z0-9_./:\\~-]*$/.test(file)) {
     return `pnpm memory personalize${target} --persona-file ${file} --compact`;
   }
   return 'add --compact to the same command (with only the persona input)';
