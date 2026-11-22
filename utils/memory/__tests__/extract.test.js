@@ -1468,6 +1468,20 @@ describe('extractEntry', () => {
 describe('provider sides', () => {
   const DSCC = { PATH: '/bin', KYOTEN_AGENT: 'dscc' };
 
+  test('should settle an opted-out entry before considering provider deferral', () => {
+    richSession();
+    const entry = queued({ kyotenAgent: 'dscc' });
+    const runAgent = agentReturning({ ops: [] });
+    writeConfig(dir, { ...DEFAULT_CONFIG, off: true });
+
+    expect(extractEntry(entry, deps({ runAgent })).status).toBe('off');
+    expect(readQueue(dir)).toEqual([]);
+    expect(readOffsets(dir)[entry.session]?.offset).toBe(
+      fs.statSync(transcript).size
+    );
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
   test('should defer a normal entry for a dscc worker, untouched', () => {
     richSession();
     const entry = queued();

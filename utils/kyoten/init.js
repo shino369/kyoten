@@ -40,10 +40,10 @@ export function runSetup({ home, log, run = crossSpawn(), env = process.env }) {
 }
 
 /**
- * `afterCreate` runs once a new home is in place, before setup, so what it
- * writes holds even when setup fails.
+ * `beforePublish` prepares a new home after its baseline commit. A failed
+ * callback leaves the destination as it was.
  *
- * @param {{ home: string, source: SnapshotSource, log: (text: string) => void, setup?: boolean, run?: Spawn, env?: NodeJS.ProcessEnv, now?: () => Date, afterCreate?: (home: string) => void }} input
+ * @param {{ home: string, source: SnapshotSource, log: (text: string) => void, setup?: boolean, run?: Spawn, env?: NodeJS.ProcessEnv, now?: () => Date, beforePublish?: (staging: string) => void }} input
  * @returns {{ created: boolean }}
  */
 export function initHome({
@@ -51,7 +51,7 @@ export function initHome({
   source,
   log,
   setup = true,
-  afterCreate,
+  beforePublish,
   run = crossSpawn(),
   env = process.env,
   now = () => new Date(),
@@ -85,6 +85,7 @@ export function initHome({
         sourceCommit: source.commit,
         createdAt: now().toISOString(),
       });
+      beforePublish?.(temp);
       // An existing home can only be an empty folder here.
       if (fs.existsSync(home)) fs.rmdirSync(home);
       fs.renameSync(temp, home);
@@ -92,7 +93,6 @@ export function initHome({
       fs.rmSync(temp, { recursive: true, force: true });
       throw error;
     }
-    afterCreate?.(home);
   } else {
     log(`${home} is already a kyoten workspace`);
   }

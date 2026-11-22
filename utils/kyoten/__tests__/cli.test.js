@@ -457,6 +457,34 @@ describe('main: init and update', () => {
     expect(readMemory(home)).toEqual({ off: true });
   });
 
+  test('should leave no published home if writing the memory choice fails', async () => {
+    const home = path.join(tmp, 'k');
+    const rename = fs.renameSync;
+    const spy = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(to).endsWith(path.join('memory', 'config.json'))) {
+        throw new Error('cannot write memory choice');
+      }
+      rename(from, to);
+    });
+
+    try {
+      const { code, err } = await run([
+        '--home',
+        home,
+        'init',
+        '--no-setup',
+        '--memory',
+        'off',
+      ]);
+
+      expect(code).toBe(1);
+      expect(err.join('\n')).toContain('cannot write memory choice');
+      expect(fs.existsSync(home)).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   test('should explain an empty home folder outside a terminal', async () => {
     const home = path.join(tmp, 'empty-home');
     fs.mkdirSync(home);
@@ -918,6 +946,25 @@ describe('main: launch', () => {
     expect(spawn.mock.calls[0][2].cwd).toBe(home);
     expect(readMemory(home)).toEqual({ off: true });
   });
+
+  test.each(['claude', 'codex'])(
+    'should discard dscc provider variables when launching %s from dscc',
+    async (agent) => {
+      const home = makeHome();
+      const { spawn } = await run(['--home', home, agent], {
+        env: {
+          KYOTEN_AGENT: 'dscc',
+          ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic',
+          ANTHROPIC_AUTH_TOKEN: KEY,
+        },
+      });
+
+      const env = spawn.mock.calls[0][2].env;
+      expect(env.KYOTEN_AGENT).toBe(agent);
+      expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+      expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    }
+  );
 
   test('should start dscc with the profile instead of inherited keys', async () => {
     const home = makeHome();

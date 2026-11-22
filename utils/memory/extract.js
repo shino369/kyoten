@@ -608,14 +608,18 @@ export function extractEntry(entry, deps) {
   // the entry stays queued, untouched, for a worker of the matching side.
   const config = readConfig(dir);
   const agent = config.extractAgent ?? harness;
-  const deferred = deferredRun(agent, entry.kyotenAgent, deps.env, base);
-  if (deferred) return deferred;
+  const off = savingOff(config, session);
+  if (!off) {
+    const deferred = deferredRun(agent, entry.kyotenAgent, deps.env, base);
+    if (deferred) return deferred;
+  }
 
   const from = readOffsets(dir)[session]?.offset ?? 0;
   const chunk = readNewLines(transcript, from);
   if (!chunk) return settle({ ...base, status: 'missing' }, null);
   const offRun = { ...base, status: 'off', from: chunk.start, to: chunk.end };
-  if (savingOff(readConfig(dir), session)) return settle(offRun, chunk.end);
+  if (off || savingOff(readConfig(dir), session))
+    return settle(offRun, chunk.end);
   if (!chunk.text) return settle({ ...base, status: 'empty' }, null);
   const condensed = TRANSCRIPT_ADAPTERS[
     /** @type {keyof typeof TRANSCRIPT_ADAPTERS} */ (harness)

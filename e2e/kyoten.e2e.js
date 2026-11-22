@@ -20,6 +20,11 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WIN = process.platform === 'win32';
 const run = crossSpawn();
 const KEY = 'sk-e2e-token-1234567890';
+const callerEnv = Object.fromEntries(
+  Object.entries(process.env).filter(
+    ([name]) => !/^(ANTHROPIC_|CLAUDE_CODE_OAUTH_TOKEN$)/i.test(name)
+  )
+);
 
 test.describe.configure({ mode: 'serial', timeout: 240_000 });
 
@@ -126,7 +131,7 @@ function kyoten(args, { tgz = tarball, env = {}, input, cwd = tmp } = {}) {
       input: input ?? '',
       encoding: 'utf-8',
       env: {
-        ...process.env,
+        ...callerEnv,
         PATH: `${bin}${path.delimiter}${process.env.PATH}`,
         KYOTEN_HOME: home,
         XDG_CONFIG_HOME: path.join(tmp, 'cfg'),

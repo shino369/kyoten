@@ -17,6 +17,7 @@ import { runIfMain } from '../module-runner.js';
 import { crossSpawn } from '../spawn.js';
 import { ROOT_DIR } from '../workspace-config.js';
 import {
+  DSCC_DROP,
   dsccEnv,
   profilePath,
   readFirstLine,
@@ -340,8 +341,7 @@ export function parseFlags(command, args, { flags, dir }) {
  */
 async function createHome(ctx, dir, setup, memory) {
   const { deps, version } = ctx;
-  // Decided before anything is created, applied right after creation (before
-  // setup), so a failed install cannot leave a new home with saving on.
+  // Apply the choice before publishing a new home.
   const state = homeState(dir);
   const fresh = state === 'missing' || state === 'empty';
   const on =
@@ -361,14 +361,14 @@ async function createHome(ctx, dir, setup, memory) {
     setup,
     run: deps.run,
     env: deps.env,
-    afterCreate: (home) => {
+    beforePublish: (staging) => {
       if (on) {
         deps.err(
           'kyoten: memory saving is on; turn it off with: kyoten run memory off'
         );
         return;
       }
-      pauseSaving(home);
+      pauseSaving(staging);
       deps.err(
         'kyoten: memory saving is off (recall works; save a note by hand with: kyoten run memory add "…" --force); opt in with: kyoten run memory on'
       );
@@ -681,6 +681,8 @@ async function launch(ctx, agent, args, addDirFlag) {
   if (!(await ensureHome(ctx))) return 1;
   versionHint(ctx);
   const profile = agent === 'dscc' ? dsccEnv(profilePath(deps)) : null;
+  const providerDrop =
+    profile?.drop ?? (deps.env.KYOTEN_AGENT === 'dscc' ? DSCC_DROP : []);
   for (const warning of profile?.warnings ?? [])
     deps.err(`kyoten: dscc profile ${warning}`);
   const addDir = outsideRepo({
@@ -718,7 +720,7 @@ async function launch(ctx, agent, args, addDirFlag) {
       cwd: deps.cwd,
       platform: deps.platform,
       // An inherited KYOTEN_ADD_DIR (kyoten inside kyoten) is not this launch's.
-      drop: [...(profile?.drop ?? []), 'KYOTEN_ADD_DIR', 'KYOTEN_AGENT'],
+      drop: [...providerDrop, 'KYOTEN_ADD_DIR', 'KYOTEN_AGENT'],
       set: {
         ...profile?.set,
         ...(addDir ? { KYOTEN_ADD_DIR: addDir } : {}),
