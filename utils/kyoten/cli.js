@@ -36,6 +36,7 @@ import {
   writeConfig,
 } from './home.js';
 import { initHome } from './init.js';
+import { pauseSaving } from './memory.js';
 import {
   buildEnv,
   exitCode,
@@ -45,6 +46,10 @@ import {
 import { compareVersions } from './repo.js';
 import { snapshotSource } from './snapshot.js';
 import { updateHome } from './update.js';
+
+/** Asked once, when kyoten creates a new home in a terminal. */
+export const MEMORY_QUESTION =
+  'kyoten: save memory automatically? Each session end then runs one background agent call on your plan. [y/N] ';
 
 export const COMMANDS = /** @type {const} */ ([
   'init',
@@ -152,10 +157,12 @@ Everything after the agent goes to it unchanged; kyoten adds no permission
 flags. To give Claude a word that is a kyoten command: kyoten claude <word>
 
 Commands
-  init [<dir>] [--no-setup]
+  init [<dir>] [--no-setup] [--memory on|off]
             Create a home (default ~/.kyoten) and install it; with <dir>,
             also make it the default home (an existing kyoten workspace
-            is kept as it is). --no-setup: skip pnpm install and setup
+            is kept as it is). --no-setup: skip pnpm install and setup.
+            --memory: automatic memory saving in the new home (asked in a
+            terminal; default off)
   update [--no-setup]
             Merge a newer kyoten snapshot into a home kyoten created
   doctor    Check prerequisites, agents, and the home
@@ -207,18 +214,31 @@ async function dsccProfileCommand(flag, deps) {
  *
  * @param {CommandName} command
  * @param {string[]} args
- * @returns {{ dir?: string, setup: boolean }}
+ * @returns {{ dir?: string, setup: boolean, memory?: 'on' | 'off' }}
  */
 export function parseCommandArgs(command, args) {
   const usage =
     command === 'init'
-      ? 'kyoten init [<dir>] [--no-setup]'
+      ? 'kyoten init [<dir>] [--no-setup] [--memory on|off]'
       : `kyoten ${command}${command === 'update' ? ' [--no-setup]' : ''}`;
-  /** @type {{ dir?: string, setup: boolean }} */
+  /** @type {{ dir?: string, setup: boolean, memory?: 'on' | 'off' }} */
   const options = { setup: true };
-  for (const arg of args) {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
     if (arg === '--no-setup' && command !== 'doctor') {
       options.setup = false;
+    } else if (
+      command === 'init' &&
+      (arg === '--memory' || arg.startsWith('--memory='))
+    ) {
+      const value =
+        arg === '--memory' ? args[(i += 1)] : arg.slice('--memory='.length);
+      if (value !== 'on' && value !== 'off') {
+        throw new Error(
+          `--memory takes on or off (got ${value ?? 'nothing'})\nFix: ${usage}`
+        );
+      }
+      options.memory = value;
     } else if (
       command === 'init' &&
       !arg.startsWith('-') &&
@@ -239,13 +259,17 @@ export function parseCommandArgs(command, args) {
  */
 
 /**
+ * Create (or install) a home. A new one gets the memory choice: `memory`
+ * when given, else the answer in a terminal ([y/N]), else off.
+ *
  * @param {Context} ctx
  * @param {string} dir
  * @param {boolean} setup
+ * @param {'on' | 'off'} [memory]
  */
-function createHome(ctx, dir, setup) {
+async function createHome(ctx, dir, setup, memory) {
   const { deps, version } = ctx;
-  initHome({
+  const { created } = initHome({
     home: dir,
     source: snapshotSource({
       root: deps.root,
@@ -257,19 +281,34 @@ function createHome(ctx, dir, setup) {
     run: deps.run,
     env: deps.env,
   });
+  if (!created) return;
+  const on = memory
+    ? memory === 'on'
+    : deps.stdin.isTTY === true &&
+      /^(y|yes)$/i.test((await deps.ask(MEMORY_QUESTION)).trim());
+  if (on) {
+    deps.err(
+      'kyoten: memory saving is on; turn it off with: kyoten run memory off'
+    );
+    return;
+  }
+  pauseSaving(dir);
+  deps.err(
+    'kyoten: memory saving is off (recall and pnpm memory add still work); opt in with: kyoten run memory on'
+  );
 }
 
 /**
  * @param {Context} ctx
  * @param {string[]} args
  */
-function commandInit(ctx, args) {
+async function commandInit(ctx, args) {
   const { deps, configPath, config, home } = ctx;
-  const { dir, setup } = parseCommandArgs('init', args);
+  const { dir, setup, memory } = parseCommandArgs('init', args);
   const target = dir
     ? path.resolve(deps.cwd, expandHome(dir, deps.homedir))
     : home.dir;
-  createHome(ctx, target, setup);
+  await createHome(ctx, target, setup, memory);
   if (dir) {
     writeConfig(configPath, { ...config, home: target });
     deps.err(`kyoten: ${target} is now the default home (${configPath})`);
@@ -420,7 +459,7 @@ async function ensureHome(ctx) {
     deps.err('kyoten: nothing created; run kyoten init when you are ready');
     return false;
   }
-  createHome(ctx, home.dir, true);
+  await createHome(ctx, home.dir, true);
   return true;
 }
 

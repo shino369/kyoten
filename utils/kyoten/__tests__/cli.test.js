@@ -9,6 +9,7 @@ import { crossSpawn } from '../../spawn.js';
 import { ROOT_DIR } from '../../workspace-config.js';
 import {
   COMMANDS,
+  MEMORY_QUESTION,
   askLine,
   defaultDeps,
   helpText,
@@ -72,6 +73,18 @@ afterEach(() => {
 /** The path `which` finds for a fake agent in `bin` on this platform. */
 const agentPath = (/** @type {string} */ name) =>
   path.join(bin, process.platform === 'win32' ? `${name}.EXE` : name);
+
+/**
+ * The home's memory config as JSON, undefined without one.
+ *
+ * @param {string} home
+ */
+function readMemory(home) {
+  const file = path.join(home, 'memory', 'config.json');
+  return fs.existsSync(file)
+    ? JSON.parse(fs.readFileSync(file, 'utf-8'))
+    : undefined;
+}
 
 /** A minimal kyoten workspace. */
 function makeHome(dir = path.join(tmp, 'home')) {
@@ -214,6 +227,8 @@ describe('parseCommandArgs', () => {
   test.each([
     ['init', [], { setup: true }],
     ['init', ['d', '--no-setup'], { dir: 'd', setup: false }],
+    ['init', ['--memory', 'on'], { setup: true, memory: 'on' }],
+    ['init', ['--memory=off', 'd'], { dir: 'd', setup: true, memory: 'off' }],
     ['update', ['--no-setup'], { setup: false }],
     ['doctor', [], { setup: true }],
   ])('should parse %s %j', (command, args, expected) => {
@@ -223,8 +238,19 @@ describe('parseCommandArgs', () => {
   });
 
   test.each([
-    ['init', ['a', 'b'], 'kyoten init [<dir>] [--no-setup]'],
-    ['init', ['--yes'], 'kyoten init [<dir>] [--no-setup]'],
+    ['init', ['a', 'b'], 'kyoten init [<dir>] [--no-setup] [--memory on|off]'],
+    ['init', ['--yes'], 'kyoten init [<dir>] [--no-setup] [--memory on|off]'],
+    [
+      'init',
+      ['--memory'],
+      'kyoten init [<dir>] [--no-setup] [--memory on|off]',
+    ],
+    [
+      'init',
+      ['--memory', 'maybe'],
+      'kyoten init [<dir>] [--no-setup] [--memory on|off]',
+    ],
+    ['update', ['--memory', 'on'], 'kyoten update [--no-setup]'],
     ['update', ['dir'], 'kyoten update [--no-setup]'],
     ['doctor', ['--no-setup'], 'kyoten doctor'],
   ])('should refuse %s %j', (command, args, usage) => {
@@ -333,6 +359,71 @@ describe('main: init and update', () => {
       'install',
       'workspace:setup',
     ]);
+  });
+
+  test('should turn memory saving off in a new home outside a terminal', async () => {
+    const home = path.join(tmp, 'k');
+
+    const { err, questions } = await run(['init', '--no-setup'], {
+      env: { KYOTEN_HOME: home },
+    });
+
+    expect(readMemory(home)).toEqual({ off: true });
+    expect(questions).toEqual([]);
+    expect(err.join('\n')).toContain(
+      'memory saving is off (recall and pnpm memory add still work); opt in with: kyoten run memory on'
+    );
+  });
+
+  test.each([
+    ['y', undefined],
+    ['', { off: true }],
+    ['no', { off: true }],
+  ])(
+    'should ask about memory saving in a terminal (answer %j)',
+    async (answer, expected) => {
+      const home = path.join(tmp, 'k');
+
+      const { questions } = await run(['init', '--no-setup'], {
+        env: { KYOTEN_HOME: home },
+        stdin: { isTTY: true },
+        answer,
+      });
+
+      expect(questions).toEqual([MEMORY_QUESTION]);
+      expect(readMemory(home)).toEqual(expected);
+    }
+  );
+
+  test.each([
+    ['on', undefined],
+    ['off', { off: true }],
+  ])('should follow --memory %s without asking', async (value, expected) => {
+    const home = path.join(tmp, 'k');
+
+    const { questions, err } = await run(
+      ['init', '--no-setup', '--memory', value],
+      { env: { KYOTEN_HOME: home }, stdin: { isTTY: true } }
+    );
+
+    expect(questions).toEqual([]);
+    expect(readMemory(home)).toEqual(expected);
+    if (value === 'on') {
+      expect(err.join('\n')).toContain(
+        'memory saving is on; turn it off with: kyoten run memory off'
+      );
+    }
+  });
+
+  test('should leave memory alone in an existing workspace', async () => {
+    const home = makeHome();
+
+    const { questions } = await run(['init', home, '--no-setup'], {
+      stdin: { isTTY: true },
+    });
+
+    expect(questions).toEqual([]);
+    expect(readMemory(home)).toBeUndefined();
   });
 
   test('should update a home kyoten created', async () => {
@@ -494,6 +585,7 @@ describe('main: launch', () => {
       'workspace:setup',
     ]);
     expect(spawn.mock.calls[0][2].cwd).toBe(home);
+    expect(readMemory(home)).toEqual({ off: true });
   });
 
   test('should start dscc with the profile instead of inherited keys', async () => {

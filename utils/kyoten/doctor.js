@@ -15,6 +15,7 @@ import { crossSpawn } from '../spawn.js';
 import { readIfExists } from '../task/store.js';
 import { mask, parseProfile, tokenUnset, TOKEN_KEY } from './dscc.js';
 import { homeState, readHomeInfo } from './home.js';
+import { memoryCheck } from './memory.js';
 import { agentInstallHint, findAgentCommand } from './launch.js';
 import { checkNode, checkTool, compareVersions } from './repo.js';
 
@@ -129,6 +130,8 @@ export function runChecks({
               }
     );
   }
+
+  if (state === 'workspace') checks.push(memoryCheck(home));
 
   for (const agent of /** @type {const} */ (['claude', 'codex', 'dsh'])) {
     const command = findAgentCommand({

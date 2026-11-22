@@ -187,6 +187,13 @@ test('init creates a clean home from the snapshot', () => {
     git(home, 'branch', '--format=%(refname:short)').trim().split('\n').sort()
   ).toEqual(['kyoten/upstream', 'main']);
   expect(git(home, 'status', '--porcelain')).toBe('');
+  // No terminal: automatic memory saving starts off (opt-in).
+  expect(
+    JSON.parse(
+      fs.readFileSync(path.join(home, 'memory', 'config.json'), 'utf-8')
+    )
+  ).toEqual({ off: true });
+  expect(result.stderr).toContain('opt in with: kyoten run memory on');
 });
 
 test('claude starts in the home with the arguments and exit code passed through', () => {

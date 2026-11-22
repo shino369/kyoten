@@ -73,10 +73,12 @@ Everything after the agent goes to it unchanged; kyoten adds no permission
 flags. To give Claude a word that is a kyoten command: kyoten claude <word>
 
 Commands
-  init [<dir>] [--no-setup]
+  init [<dir>] [--no-setup] [--memory on|off]
             Create a home (default ~/.kyoten) and install it; with <dir>,
             also make it the default home (an existing kyoten workspace
-            is kept as it is). --no-setup: skip pnpm install and setup
+            is kept as it is). --no-setup: skip pnpm install and setup.
+            --memory: automatic memory saving in the new home (asked in a
+            terminal; default off)
   update [--no-setup]
             Merge a newer kyoten snapshot into a home kyoten created
   doctor    Check prerequisites, agents, and the home

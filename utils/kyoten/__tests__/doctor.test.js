@@ -218,6 +218,21 @@ describe('runChecks home', () => {
   });
 });
 
+describe('runChecks memory', () => {
+  test('should report memory saving for a workspace home', () => {
+    makeWorkspace(path.join(tmp, 'home'));
+
+    expect(byId(check(), 'memory')).toMatchObject({
+      status: 'ok',
+      detail: expect.stringContaining('automatic saving is on'),
+    });
+  });
+
+  test('should not report memory saving without a home', () => {
+    expect(byId(check(), 'memory')).toBeUndefined();
+  });
+});
+
 describe('runChecks agents', () => {
   test('should warn with an install hint for each missing agent', () => {
     const checks = check();
