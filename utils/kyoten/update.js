@@ -147,6 +147,7 @@ export function updateHome({
     advanced ||
     !contained ||
     info.version !== source.version ||
+    info.sourceCommit !== source.commit ||
     fs.existsSync(pending);
   if (!changed) {
     log(`${home} already has kyoten ${source.version}`);

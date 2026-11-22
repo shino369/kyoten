@@ -277,16 +277,17 @@ describe('updateHome', () => {
     ).toBe('');
   });
 
-  test('should fail and leave the conflict for the user to resolve', () => {
+  test('should retry setup after the user resolves a same-version update conflict', () => {
     const home = makeHome();
     fs.writeFileSync(path.join(home, 'a.txt'), 'mine\n');
     git(['commit', '-q', '-am', 'local change'], home);
-    const { run } = fakeRun();
+    const { run, calls } = fakeRun();
+    const source = sourceAt(second, '1.0.0');
 
     expect(() =>
       updateHome({
         home,
-        source: sourceAt(second, '2.0.0'),
+        source,
         log: vi.fn(),
         run,
         now: t2,
@@ -294,7 +295,17 @@ describe('updateHome', () => {
     ).toThrow(/did not finish.*resolve the conflicts/s);
     expect(readHomeInfo(home)?.version).toBe('1.0.0');
     expect(fs.existsSync(path.join(home, '.git', 'MERGE_HEAD'))).toBe(true);
-    git(['merge', '--abort'], home);
+    fs.writeFileSync(path.join(home, 'a.txt'), 'resolved\n');
+    git(['commit', '-q', '-am', 'resolve snapshot conflict'], home);
+
+    expect(updateHome({ home, source, log: vi.fn(), run })).toEqual({
+      changed: true,
+    });
+    expect(calls.map((call) => call.args)).toEqual([
+      PNPM_INSTALL,
+      ['workspace:setup'],
+    ]);
+    expect(readHomeInfo(home)?.sourceCommit).toBe(second);
   });
 
   test('should update the version when only the version changed', () => {

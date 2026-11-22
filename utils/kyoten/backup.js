@@ -113,48 +113,62 @@ export function backupHome({
     cwd,
     dir ? expandHome(dir, homedir) : `kyoten-backup-${stamp(date)}`
   );
-  const existed = fs.existsSync(target);
+  const existing = fs.lstatSync(target, { throwIfNoEntry: false });
   if (
-    existed &&
-    (!fs.statSync(target).isDirectory() || fs.readdirSync(target).length > 0)
+    existing &&
+    (!existing.isDirectory() || fs.readdirSync(target).length > 0)
   ) {
     throw new Error(
       `${target} already exists and is not empty.\nFix: kyoten backup <a new folder>`
     );
   }
-  fs.mkdirSync(target, { recursive: true, mode: 0o700 });
-  try {
-    fs.chmodSync(target, 0o700);
-  } catch {
-    // Windows has no POSIX modes; the profile folder is the user's own.
-  }
+  const parent = path.dirname(target);
+  fs.mkdirSync(parent, { recursive: true });
+  const staging = fs.mkdtempSync(path.join(parent, '.kyoten-backup-'));
   try {
     // The folder holds personal data (and maybe the key); made inside a
     // project, it must not end up in that project's commits.
-    writePrivate(path.join(target, '.gitignore'), '*\n');
-    return writeBackup({
+    writePrivate(path.join(staging, '.gitignore'), '*\n');
+    const files = writeBackup({
       home,
-      target,
+      target: staging,
       includeKey,
       configFile,
       profileFile,
       version,
       run,
       env,
-      out,
       err,
       date,
     });
-  } catch (error) {
-    // The folder is ours: nothing in it is worth keeping after a failure.
-    fs.rmSync(target, { recursive: true, force: true });
-    if (existed) fs.mkdirSync(target);
-    throw error;
+    try {
+      // Windows cannot replace an existing directory with rename. Remove only
+      // an empty destination, and let rename refuse any concurrent backup.
+      if (existing) fs.rmdirSync(target);
+      fs.renameSync(staging, target);
+    } catch (error) {
+      throw new Error(
+        `could not publish the backup at ${target}: ${/** @type {Error} */ (error).message}\nFix: kyoten backup <a new folder>`,
+        { cause: error }
+      );
+    }
+    out(target);
+    for (const file of files) {
+      err(`kyoten: wrote ${file.name} (${file.bytes} bytes)`);
+    }
+    err(`kyoten: wrote ${MANIFEST}`);
+    const key = files.some((file) => file.name === 'dscc.env');
+    err(
+      `kyoten: ${target} holds personal data (notes, settings${key ? ', your DeepSeek key' : ''}). Keep it private; restore it with: kyoten restore "${target}"`
+    );
+    return 0;
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true });
   }
 }
 
 /**
- * @param {{ home: string, target: string, includeKey: boolean, configFile: string, profileFile: string, version: string, run: Spawn, env: NodeJS.ProcessEnv, out: (text: string) => void, err: (text: string) => void, date: Date }} input
+ * @param {{ home: string, target: string, includeKey: boolean, configFile: string, profileFile: string, version: string, run: Spawn, env: NodeJS.ProcessEnv, err: (text: string) => void, date: Date }} input
  */
 function writeBackup({
   home,
@@ -165,7 +179,6 @@ function writeBackup({
   version,
   run,
   env,
-  out,
   err,
   date,
 }) {
@@ -242,11 +255,11 @@ function writeBackup({
     );
   }
 
-  const profile = readIfExists(profileFile);
-  if (includeKey && profile) put('dscc.env', profile);
+  const profile = includeKey ? readIfExists(profileFile) : null;
+  if (profile) put('dscc.env', profile);
   else if (includeKey)
     err(`kyoten: no dscc profile at ${profileFile}; not included`);
-  else if (profile)
+  else if (fs.existsSync(profileFile))
     err(
       'kyoten: the dscc profile (your key) is not included; add --include-key to include it'
     );
@@ -255,15 +268,7 @@ function writeBackup({
     path.join(target, MANIFEST),
     `${JSON.stringify({ kyotenVersion: version, createdAt: date.toISOString(), home, files }, null, 2)}\n`
   );
-  out(target);
-  for (const file of files) {
-    err(`kyoten: wrote ${file.name} (${file.bytes} bytes)`);
-  }
-  err(`kyoten: wrote ${MANIFEST}`);
-  err(
-    `kyoten: ${target} holds personal data (notes, settings${includeKey && profile ? ', your DeepSeek key' : ''}). Keep it private; restore it with: kyoten restore "${target}"`
-  );
-  return 0;
+  return files;
 }
 
 /**
@@ -481,8 +486,8 @@ async function restoreBundle({
     err('kyoten: your commits from the backup are already in main');
     return;
   }
-  /** @param {string[]} args */
-  const lines = (args) =>
+  /** @param {string[]} args @param {string} [separator] */
+  const lines = (args, separator = '\n') =>
     // Both refs exist after the fetch, so git prints a (maybe empty) list.
     String(
       run('git', ['-C', home, ...args], {
@@ -490,16 +495,14 @@ async function restoreBundle({
         env: gitEnv(env),
       }).stdout
     )
-      .split('\n')
+      .split(separator)
       .filter(Boolean);
   const range = `${RESTORED_UPSTREAM}..${RESTORED}`;
   const commits = lines(['log', '--no-merges', '--format=%h %s', range]);
-  const risky = lines([
-    'diff',
-    '--name-only',
-    RESTORED_UPSTREAM,
-    RESTORED,
-  ]).filter((file) =>
+  const risky = lines(
+    ['diff', '--name-only', '-z', RESTORED_UPSTREAM, RESTORED],
+    '\0'
+  ).filter((file) =>
     CODE_PATHS.some((p) => (p.endsWith('/') ? file.startsWith(p) : file === p))
   );
   for (const line of restoreSummary({ commits, risky })) err(line);
@@ -542,11 +545,21 @@ async function restoreBundle({
 /**
  * @param {Buffer} data
  * @param {string} source  for messages
- * @returns {import('./home.js').KyotenConfig}
+ * @param {string} home
  */
-function checkConfig(data, source) {
+function checkConfig(data, source, home) {
   try {
-    return validateConfig(JSON.parse(data.toString('utf-8')), source);
+    const raw = JSON.parse(data.toString('utf-8'));
+    const oldHome = raw?.home;
+    if (
+      typeof oldHome === 'string' &&
+      (path.posix.isAbsolute(oldHome) || path.win32.isAbsolute(oldHome)) &&
+      (!path.isAbsolute(oldHome) || !samePath(oldHome, home))
+    ) {
+      const { home: _dropped, ...rest } = raw;
+      return { config: validateConfig(rest, source), droppedHome: oldHome };
+    }
+    return { config: validateConfig(raw, source), droppedHome: null };
   } catch (error) {
     throw new Error(
       `the config in the backup cannot be used: ${/** @type {Error} */ (error).message}\nFix: restore the rest by hand and copy the config file yourself`
@@ -641,15 +654,14 @@ export async function restoreBackup({
     }
     let data = fs.readFileSync(source);
     if (name === 'config.json') {
-      const config = checkConfig(data, source);
+      const { config, droppedHome } = checkConfig(data, source, home);
       // A home path from another machine (or folder) would send every
       // later launch to a home that is not this one.
-      if (config.home && !samePath(config.home, home)) {
+      if (droppedHome) {
         err(
-          `kyoten: the backup's config named the home ${config.home}; restored without it (this home is ${home})`
+          `kyoten: the backup's config named the home ${droppedHome}; restored without it (this home is ${home})`
         );
-        const { home: _dropped, ...rest } = config;
-        data = Buffer.from(`${JSON.stringify(rest, null, 2)}\n`);
+        data = Buffer.from(`${JSON.stringify(config, null, 2)}\n`);
       }
     }
     fs.mkdirSync(path.dirname(dest), { recursive: true });

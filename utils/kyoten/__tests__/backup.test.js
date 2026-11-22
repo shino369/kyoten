@@ -290,6 +290,25 @@ describe('backupHome', () => {
     expect(fs.existsSync(path.join(tmp, 'empty', 'manifest.json'))).toBe(true);
   });
 
+  test('should preserve a file written to the destination during a backup', () => {
+    sourceHome();
+    const target = path.join(tmp, 'bk');
+    fs.mkdirSync(target);
+    const personal = path.join(target, 'personal.txt');
+    const real = makeRun();
+    /** @type {import('../../spawn.js').Spawn} */
+    const run = (bin, args, options) => {
+      if (bin === 'pnpm' && args[1] === 'export') {
+        fs.writeFileSync(personal, 'added during export');
+      }
+      return real(bin, args, options);
+    };
+
+    expect(() => backupHome(backupInput({ dir: target, run }))).toThrow();
+    expect(fs.readFileSync(personal, 'utf-8')).toBe('added during export');
+    expect(fs.readdirSync(target)).toEqual(['personal.txt']);
+  });
+
   test.each(['full', 'file'])('should refuse a %s existing target', (kind) => {
     sourceHome();
     const target = path.join(tmp, 'bk');
@@ -571,20 +590,27 @@ describe('restoreBackup', () => {
       );
   });
 
-  test('should drop a home from another place from the restored config', async () => {
-    makeBackup({ home: path.join(tmp, 'elsewhere'), addDir: true });
+  test.each(['local', 'windows'])(
+    'should drop a %s home from another place from the restored config',
+    async (kind) => {
+      const oldHome =
+        kind === 'local'
+          ? path.join(tmp, 'elsewhere')
+          : 'C:\\Users\\Old\\kyoten';
+      makeBackup({ home: oldHome, addDir: true });
 
-    await restoreBackup(restoreInput());
+      await restoreBackup(restoreInput());
 
-    expect(
-      JSON.parse(
-        fs.readFileSync(path.join(tmp, 'cfg2', 'config.json'), 'utf-8')
-      )
-    ).toEqual({ addDir: true });
-    expect(err).toContain(
-      `kyoten: the backup's config named the home ${path.join(tmp, 'elsewhere')}; restored without it (this home is ${path.join(tmp, 'new-home')})`
-    );
-  });
+      expect(
+        JSON.parse(
+          fs.readFileSync(path.join(tmp, 'cfg2', 'config.json'), 'utf-8')
+        )
+      ).toEqual({ addDir: true });
+      expect(err).toContain(
+        `kyoten: the backup's config named the home ${oldHome}; restored without it (this home is ${path.join(tmp, 'new-home')})`
+      );
+    }
+  );
 
   test.skipIf(!POSIX)(
     'should replace a dangling link at the config path, not write through it',
@@ -754,22 +780,24 @@ describe('restoreBackup', () => {
     expect(err.join('\n')).toContain('the backup has 2 commits of yours');
   });
 
-  test.each(['vitest.config.js', '.mcp.json', '.github/workflows/ci.yml'])(
-    'should warn when the backup commits change %s',
-    async (file) => {
-      const source = sourceHome();
-      fs.mkdirSync(path.dirname(path.join(source, file)), { recursive: true });
-      commitFile(source, file, 'x\n', 'chore: config');
-      backupHome(backupInput({ dir: 'bk' }));
-      err = [];
+  test.each([
+    'vitest.config.js',
+    '.mcp.json',
+    '.github/workflows/ci.yml',
+    'utils/計算.js',
+  ])('should warn when the backup commits change %s', async (file) => {
+    const source = sourceHome();
+    fs.mkdirSync(path.dirname(path.join(source, file)), { recursive: true });
+    commitFile(source, file, 'x\n', 'chore: config');
+    backupHome(backupInput({ dir: 'bk' }));
+    err = [];
 
-      await restoreBackup(restoreInput());
+    await restoreBackup(restoreInput());
 
-      expect(err.join('\n')).toContain(
-        `configure the agents: ${file}; restore only`
-      );
-    }
-  );
+    expect(err.join('\n')).toContain(
+      `configure the agents: ${file}; restore only`
+    );
+  });
 
   test('should skip the memory import when the answer is no', async () => {
     makeBackup();
