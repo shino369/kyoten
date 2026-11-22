@@ -545,6 +545,35 @@ describe('runSwarm', () => {
     );
   });
 
+  test('should refuse a reused integration worktree with stale personal memory files before starting workers', async () => {
+    newTask();
+    const dir = swarmDir(repo, TASK);
+    addWorktree({
+      rootDir: repo,
+      dir,
+      branch: swarmBranch(TASK),
+      base: git(repo, ['rev-parse', 'HEAD']),
+      spawn,
+    });
+    fs.writeFileSync(path.join(dir, 'AGENTS.local.md'), 'old core\n');
+    const startWorker = fakeWorker();
+
+    await expect(swarm({ deps: deps({ startWorker }) })).rejects.toThrow(
+      /still holds personal memory files \(AGENTS\.local\.md\)/
+    );
+    expect(startWorker).not.toHaveBeenCalled();
+    expect(state().steps.every((step) => step.status === 'todo')).toBe(true);
+    expect(fs.existsSync(path.join(taskDir(), LOCK_FILE))).toBe(false);
+
+    fs.rmSync(path.join(dir, 'AGENTS.local.md'));
+    const retried = await swarm({ deps: deps({ startWorker }) });
+    expect(retried).toMatchObject({
+      ok: true,
+      done: ['s1', 's2'],
+      finalVerify: expect.objectContaining({ ok: true }),
+    });
+  });
+
   test('should refuse a task that keeps code in its task folder', async () => {
     newTask();
     for (const file of ['a.js', 'b.js', 'c.js', 'd.js']) {

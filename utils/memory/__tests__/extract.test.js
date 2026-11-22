@@ -1225,8 +1225,31 @@ describe('extractEntry', () => {
       expect(() =>
         extractEntry(queued({ harness: 'codex' }), deps({ runAgent }))
       ).toThrow(
-        /Fix: pnpm memory set --extract-agent claude or pnpm memory set --extract-agent dsh or pnpm memory set --extract-agent agy$/
+        /Fix: pnpm memory set --extract-agent claude\nFix: pnpm memory set --extract-agent dsh\nFix: pnpm memory set --extract-agent agy$/
       );
+    });
+
+    test('should stop before sending the transcript when saving is turned off during the Codex probe', () => {
+      writeCodexSession();
+      const runAgent = vi.fn(() => {
+        writeConfig(dir, { ...DEFAULT_CONFIG, off: true });
+        return {
+          code: 0,
+          signal: null,
+          output: '',
+          stdout:
+            'No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.\n',
+          durationMs: 5,
+        };
+      });
+
+      const run = extractEntry(
+        queued({ harness: 'codex' }),
+        deps({ runAgent })
+      );
+
+      expect(run.status).toBe('off');
+      expect(runAgent).toHaveBeenCalledTimes(1);
     });
 
     test('should name a replacement agent when the Codex check fails', () => {
@@ -1236,7 +1259,7 @@ describe('extractEntry', () => {
       expect(() =>
         extractEntry(queued({ harness: 'codex' }), deps({ runAgent }))
       ).toThrow(
-        /Cannot verify Codex persona isolation[\s\S]*Fix: pnpm memory set --extract-agent claude or pnpm memory set --extract-agent dsh or pnpm memory set --extract-agent agy$/
+        /Cannot verify Codex persona isolation[\s\S]*Fix: pnpm memory set --extract-agent claude\nFix: pnpm memory set --extract-agent dsh\nFix: pnpm memory set --extract-agent agy$/
       );
     });
 

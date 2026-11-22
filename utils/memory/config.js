@@ -74,9 +74,10 @@ function normalizeSessions(value) {
  * Validate settings and fill in the defaults. Throws MemoryError('invalid').
  *
  * @param {unknown} input
+ * @param {{ allowLegacyDshModel?: boolean }} [options]
  * @returns {MemoryConfig}
  */
-export function normalizeConfig(input) {
+export function normalizeConfig(input, { allowLegacyDshModel = false } = {}) {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) {
     invalid('The memory config must be an object.');
   }
@@ -90,7 +91,7 @@ export function normalizeConfig(input) {
   if (typeof config.personalizationEnabled !== 'boolean') {
     invalid('personalizationEnabled must be true or false.');
   }
-  const extractModel = config.extractModel;
+  let extractModel = config.extractModel;
   if (
     extractModel !== null &&
     (typeof extractModel !== 'string' || !MODEL_RE.test(extractModel))
@@ -109,9 +110,13 @@ export function normalizeConfig(input) {
     );
   }
   if (extractAgent === 'dsh' && extractModel !== null) {
-    invalid(
-      'DSH selects its model in its profile, not with --extract-model.\nFix: drop --extract-model, or pick another --extract-agent'
-    );
+    if (allowLegacyDshModel) {
+      extractModel = null;
+    } else {
+      invalid(
+        'DSH selects its model in its profile, not with --extract-model.\nFix: drop --extract-model, or pick another --extract-agent'
+      );
+    }
   }
   const { budget } = config;
   if (
@@ -151,7 +156,7 @@ export function readConfig(dir) {
       `memory/${CONFIG_FILE} is not valid JSON (${/** @type {Error} */ (error).message}). Fix it, or delete it and run pnpm memory set again.`
     );
   }
-  return normalizeConfig(parsed);
+  return normalizeConfig(parsed, { allowLegacyDshModel: true });
 }
 
 /**

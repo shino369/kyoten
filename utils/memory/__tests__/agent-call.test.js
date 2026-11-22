@@ -137,7 +137,7 @@ describe('headlessCommand', () => {
 
   test('should refuse an agent memory jobs cannot call', () => {
     expect(() => headlessCommand({ agent: 'gemini', rootDir: root })).toThrow(
-      `Memory jobs run on claude, codex, dsh, agy (got gemini).\nFix: use ${CALL_AGENTS.map((name) => `--agent ${name}`).join(' or ')}`
+      `Memory jobs run on claude, codex, dsh, agy (got gemini).\n${CALL_AGENTS.map((name) => `Fix: use --agent ${name}`).join('\n')}`
     );
   });
 });
@@ -229,18 +229,45 @@ describe('callAgent', () => {
   );
 
   test.each([
-    ['persona-audit', 'use --agent claude or --agent dsh or --agent agy'],
+    [
+      'persona-audit',
+      'Fix: use --agent claude\nFix: use --agent dsh\nFix: use --agent agy',
+    ],
     [
       'extraction',
-      'pnpm memory set --extract-agent claude or pnpm memory set --extract-agent dsh or pnpm memory set --extract-agent agy',
+      'Fix: pnpm memory set --extract-agent claude\nFix: pnpm memory set --extract-agent dsh\nFix: pnpm memory set --extract-agent agy',
     ],
   ])('should point a failed Codex check of %s at another agent', (job, fix) => {
     const codex = headlessCommand({ agent: 'codex', rootDir: root });
     const runAgent = agentReturning({ code: 1, stdout: 'x' });
 
     expect(() => callAgent(deps(runAgent), codex, 'P', { job })).toThrow(
-      new RegExp(`Fix: ${fix}$`)
+      new RegExp(`${fix}$`)
     );
+  });
+
+  test('should stop before sending the prompt when cancel returns true after the Codex probe', () => {
+    const codex = headlessCommand({ agent: 'codex', rootDir: root });
+    let cancelled = false;
+    const runAgent = vi.fn(() => {
+      cancelled = true;
+      return {
+        code: 0,
+        signal: null,
+        stdout:
+          'No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.\n',
+        output: '',
+        durationMs: 0,
+      };
+    });
+
+    const result = callAgent(deps(runAgent), codex, 'Private note', {
+      cancel: () => cancelled,
+    });
+
+    expect(result.cancelled).toBe(true);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+    expect(fs.readdirSync(root)).toEqual([]);
   });
 
   test('should add a switch-agent Fix line to a missing CLI', () => {
@@ -249,7 +276,7 @@ describe('callAgent', () => {
     });
 
     expect(() => callAgent(deps(runAgent), command, 'P')).toThrow(
-      /Fix: install\nFix: pnpm memory set --extract-agent codex or pnpm memory set --extract-agent dsh or pnpm memory set --extract-agent agy$/
+      /Fix: install\nFix: pnpm memory set --extract-agent codex\nFix: pnpm memory set --extract-agent dsh\nFix: pnpm memory set --extract-agent agy$/
     );
   });
 
@@ -331,7 +358,7 @@ describe('callAgent', () => {
     const agy = headlessCommand({ agent: 'agy', rootDir: root });
 
     expect(() => callAgent(deps(runAgent), agy, 'P')).toThrow(
-      /Fix: pnpm memory set --extract-agent claude or pnpm memory set --extract-agent codex or pnpm memory set --extract-agent dsh \(agy runs only through a native agy.exe/
+      /Fix: pnpm memory set --extract-agent claude\nFix: pnpm memory set --extract-agent codex\nFix: pnpm memory set --extract-agent dsh\n\(agy runs only through a native agy\.exe/
     );
   });
 

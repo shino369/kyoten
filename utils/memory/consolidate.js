@@ -336,7 +336,15 @@ export function consolidate(deps) {
     model,
     rootDir: deps.rootDir,
   });
-  const result = callAgent(deps, command, prompt, { job: 'consolidation' });
+  const result = callAgent(deps, command, prompt, {
+    job: 'consolidation',
+    cancel: () => !deps.force && Boolean(savingOff(readConfig(dir), session)),
+  });
+  if (result.cancelled) {
+    const run = { ...base, status: 'off', agent, model };
+    appendJournal(dir, run);
+    return run;
+  }
   const answer = parseConsolidation(answerOf(result));
   // Saving may have been turned off while the agent ran.
   if (!deps.force && savingOff(readConfig(dir), session)) {

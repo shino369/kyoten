@@ -32,7 +32,7 @@ import {
   writeFileAtomic,
 } from '../task/store.js';
 import { summarize } from '../task/verify.js';
-import { gitText } from '../loop/worktree.js';
+import { assertCleanWorktree, gitText } from '../loop/worktree.js';
 import {
   addWorktree,
   copyTask,
@@ -250,6 +250,7 @@ export async function runSwarm({
       base: head,
       spawn: deps.spawn,
     });
+    assertCleanWorktree(dir);
     deps.log(
       `Integration: ${dir} on ${branch}${created ? ' (created)' : ' (reused)'}`
     );

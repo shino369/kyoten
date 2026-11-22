@@ -138,6 +138,20 @@ describe('readConfig / writeConfig', () => {
 
     expect(() => readConfig(dir)).toThrow(MemoryError);
   });
+
+  test('should drop a legacy dsh extractModel on read so recovery commands still work', () => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, CONFIG_FILE),
+      JSON.stringify({ extractAgent: 'dsh', extractModel: 'deepseek-v4' })
+    );
+
+    expect(readConfig(dir)).toEqual({
+      ...DEFAULT_CONFIG,
+      extractAgent: 'dsh',
+      extractModel: null,
+    });
+  });
 });
 
 describe('savingOff / setSaving', () => {

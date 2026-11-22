@@ -1045,7 +1045,7 @@ describe('personalize --compact and --audit', () => {
     run(['personalize', '--persona', 'Stored persona.']);
 
     expect(() => run(['personalize', '--audit'], { runAgent })).toThrow(
-      /Fix: use --agent codex or --agent dsh or --agent agy$/
+      /Fix: use --agent codex\nFix: use --agent dsh\nFix: use --agent agy$/
     );
   });
 
@@ -2734,6 +2734,24 @@ describe('set', () => {
     expect(() =>
       run(['set', '--extract-agent', 'dsh', '--extract-model', 'deepseek-v4'])
     ).toThrow(/DSH selects its model in its profile/);
+  });
+
+  test('should recover from a legacy config file with dsh and extractModel', () => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, CONFIG_FILE),
+      JSON.stringify({ extractAgent: 'dsh', extractModel: 'deepseek-v4' })
+    );
+
+    expect(run(['off']).code).toBe(0);
+    expect(readConfig(dir)).toMatchObject({
+      off: true,
+      extractAgent: 'dsh',
+      extractModel: null,
+    });
+    expect(run(['set', '--extract-model', 'default']).code).toBe(0);
+    expect(run(['set', '--extract-agent', 'codex']).code).toBe(0);
+    expect(readConfig(dir).extractAgent).toBe('codex');
   });
 
   test('should show the memory agent in status', () => {

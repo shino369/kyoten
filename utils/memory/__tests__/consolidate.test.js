@@ -590,6 +590,38 @@ describe('consolidate', () => {
     expect(readJournal(dir).at(-1)?.status).toBe('off');
   });
 
+  test('should stop before sending notes when saving is turned off during the Codex probe', () => {
+    seed();
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'codex' });
+    const runAgent = vi.fn(() => {
+      writeConfig(dir, {
+        ...DEFAULT_CONFIG,
+        extractAgent: 'codex',
+        off: true,
+      });
+      return {
+        code: 0,
+        signal: null,
+        output: '',
+        stdout:
+          'No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.\n',
+        durationMs: 5,
+      };
+    });
+
+    const run = consolidate(deps({ runAgent }));
+
+    expect(run).toMatchObject({
+      status: 'off',
+      job: 'consolidation',
+      agent: 'codex',
+    });
+    expect(runAgent).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(path.join(dir, PROFILE_FILE))).toBe(false);
+    expect(readConsolidated(dir)).toBeNull();
+    expect(readJournal(dir).at(-1)?.status).toBe('off');
+  });
+
   test('should not write when saving is turned off while the agent runs', () => {
     seed();
     const runAgent = vi.fn(() => {

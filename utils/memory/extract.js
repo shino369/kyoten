@@ -612,7 +612,10 @@ export function extractEntry(entry, deps) {
     model,
     rootDir: deps.rootDir,
   });
-  const result = callAgent(deps, command, prompt);
+  const result = callAgent(deps, command, prompt, {
+    cancel: () => Boolean(savingOff(readConfig(dir), session)),
+  });
+  if (result.cancelled) return settle(offRun, chunk.end);
   const rawOps = parseOps(answerOf(result));
   // Saving may have been turned off while the agent ran.
   if (savingOff(readConfig(dir), session)) return settle(offRun, chunk.end);
