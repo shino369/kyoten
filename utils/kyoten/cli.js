@@ -339,7 +339,17 @@ export function parseFlags(command, args, { flags, dir }) {
  */
 async function createHome(ctx, dir, setup, memory) {
   const { deps, version } = ctx;
-  const { created } = initHome({
+  // Decided before anything is created, applied right after creation (before
+  // setup), so a failed install cannot leave a new home with saving on.
+  const state = homeState(dir);
+  const fresh = state === 'missing' || state === 'empty';
+  const on =
+    fresh &&
+    (memory
+      ? memory === 'on'
+      : deps.stdin.isTTY === true &&
+        /^(y|yes)$/i.test((await deps.ask(MEMORY_QUESTION)).trim()));
+  initHome({
     home: dir,
     source: snapshotSource({
       root: deps.root,
@@ -350,22 +360,19 @@ async function createHome(ctx, dir, setup, memory) {
     setup,
     run: deps.run,
     env: deps.env,
+    afterCreate: (home) => {
+      if (on) {
+        deps.err(
+          'kyoten: memory saving is on; turn it off with: kyoten run memory off'
+        );
+        return;
+      }
+      pauseSaving(home);
+      deps.err(
+        'kyoten: memory saving is off (recall and pnpm memory add still work); opt in with: kyoten run memory on'
+      );
+    },
   });
-  if (!created) return;
-  const on = memory
-    ? memory === 'on'
-    : deps.stdin.isTTY === true &&
-      /^(y|yes)$/i.test((await deps.ask(MEMORY_QUESTION)).trim());
-  if (on) {
-    deps.err(
-      'kyoten: memory saving is on; turn it off with: kyoten run memory off'
-    );
-    return;
-  }
-  pauseSaving(dir);
-  deps.err(
-    'kyoten: memory saving is off (recall and pnpm memory add still work); opt in with: kyoten run memory on'
-  );
 }
 
 /**
@@ -560,7 +567,7 @@ async function commandDoctor(ctx, args) {
 function requireWorkspace(ctx) {
   const { home } = ctx;
   const state = homeState(home.dir);
-  if (state === 'missing') {
+  if (state === 'missing' || state === 'empty') {
     throw new Error(`no kyoten home at ${home.dir} yet.\nFix: kyoten init`);
   }
   if (state === 'other') {

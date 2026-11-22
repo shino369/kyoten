@@ -168,7 +168,9 @@ async function run(
       if (args[0] === 'memory' && args[1] === 'export') {
         fs.writeFileSync(args[args.indexOf('--out') + 1], 'TAR');
       }
-      return { status: pnpmStatus, stdout: '12.14.0\n' };
+      // pnpmStatus fails the work, never the version check.
+      if (args[0] === '--version') return { status: 0, stdout: '12.14.0\n' };
+      return { status: pnpmStatus, stdout: '' };
     }
     const opts = /** @type {{ env?: NodeJS.ProcessEnv }} */ (options);
     return realRun(file, args, {
@@ -435,6 +437,32 @@ describe('main: init and update', () => {
         'memory saving is on; turn it off with: kyoten run memory off'
       );
     }
+  });
+
+  test('should turn memory saving off even when setup fails', async () => {
+    const home = path.join(tmp, 'k');
+
+    const { code } = await run(['init'], {
+      env: { KYOTEN_HOME: home },
+      pnpmStatus: 1,
+    });
+
+    expect(code).toBe(1);
+    expect(readMemory(home)).toEqual({ off: true });
+  });
+
+  test('should explain an empty home folder outside a terminal', async () => {
+    const home = path.join(tmp, 'empty-home');
+    fs.mkdirSync(home);
+
+    const { code, err, questions, spawn } = await run([], {
+      env: { KYOTEN_HOME: home },
+    });
+
+    expect(code).toBe(1);
+    expect(questions).toEqual([]);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(err.join('\n')).toContain('Fix: kyoten init');
   });
 
   test('should leave memory alone in an existing workspace', async () => {

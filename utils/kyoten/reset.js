@@ -234,7 +234,24 @@ export async function resetHome({
     moves.push([configDir, removedPath(configDir, date)]);
   }
   const registered = !all && !!config.home && samePath(config.home, home);
-  for (const [from, to] of moves) rename(from, to);
+  /** @type {string[][]} */
+  const done = [];
+  for (const [from, to] of moves) {
+    try {
+      if (done.length === 0) rename(from, to);
+      else fs.renameSync(from, to);
+    } catch (error) {
+      if (done.length === 0) throw error;
+      // The home moved but the config folder did not: say where it went.
+      for (const [f, t] of done) err(`kyoten: ${f} moved to ${t}`);
+      err('kyoten: to undo that, run:');
+      for (const [f, t] of done) err(`  ${undoCommand(t, f, platform)}`);
+      throw new Error(
+        `could not rename ${from} to ${to}: ${/** @type {Error} */ (error).message}.\nFix: close programs that use ${from}, then move it aside yourself; ${done.map(([f, t]) => `${f} is already at ${t}`).join(', ')}`
+      );
+    }
+    done.push([from, to]);
+  }
   if (registered) {
     const rest = { ...config };
     delete rest.home;

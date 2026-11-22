@@ -29,6 +29,7 @@ import {
   expandHome,
   homeState,
   readHomeInfo,
+  samePath,
   validateConfig,
   HOME_INFO,
 } from './home.js';
@@ -434,10 +435,11 @@ function restoreBundle({ folder, home, run, env, bundle, err }) {
 /**
  * @param {Buffer} data
  * @param {string} source  for messages
+ * @returns {import('./home.js').KyotenConfig}
  */
 function checkConfig(data, source) {
   try {
-    validateConfig(JSON.parse(data.toString('utf-8')), source);
+    return validateConfig(JSON.parse(data.toString('utf-8')), source);
   } catch (error) {
     throw new Error(
       `the config in the backup cannot be used: ${/** @type {Error} */ (error).message}\nFix: restore the rest by hand and copy the config file yourself`
@@ -519,8 +521,19 @@ export async function restoreBackup({
       );
       continue;
     }
-    const data = fs.readFileSync(source);
-    if (name === 'config.json') checkConfig(data, source);
+    let data = fs.readFileSync(source);
+    if (name === 'config.json') {
+      const config = checkConfig(data, source);
+      // A home path from another machine (or folder) would send every
+      // later launch to a home that is not this one.
+      if (config.home && !samePath(config.home, home)) {
+        err(
+          `kyoten: the backup's config named the home ${config.home}; restored without it (this home is ${home})`
+        );
+        const { home: _dropped, ...rest } = config;
+        data = Buffer.from(`${JSON.stringify(rest, null, 2)}\n`);
+      }
+    }
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     if (priv) writePrivate(dest, data);
     else fs.writeFileSync(dest, data);

@@ -310,6 +310,37 @@ describe('resetHome', () => {
     spy.mockRestore();
   });
 
+  test('should say where the home went when the config folder cannot move', async () => {
+    makeHome();
+    fs.mkdirSync(path.join(tmp, 'cfg'));
+    const real = fs.renameSync;
+    const spy = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (String(from) === path.join(tmp, 'cfg')) throw new Error('EBUSY');
+      real(from, to);
+    });
+
+    const message = await resetHome(
+      input({ all: true, platform: 'linux' })
+    ).then(
+      () => '',
+      (error) => error.message
+    );
+
+    expect(message).toContain(`could not rename ${path.join(tmp, 'cfg')}`);
+    expect(message).toContain('EBUSY');
+    expect(message).toContain(
+      `\nFix: close programs that use ${path.join(tmp, 'cfg')}, then move it aside yourself; ${home} is already at ${home}.removed-20261122-090507`
+    );
+    spy.mockRestore();
+    expect(fs.existsSync(home)).toBe(false);
+    expect(err).toContain(
+      `kyoten: ${home} moved to ${home}.removed-20261122-090507`
+    );
+    expect(err.join('\n')).toContain(
+      `mv "${home}.removed-20261122-090507" "${home}"`
+    );
+  });
+
   test('should show unknown git details when git cannot be read', async () => {
     makeHome();
     fs.rmSync(path.join(home, '.git'), { recursive: true, force: true });

@@ -504,9 +504,19 @@ function restoreInput(over = {}) {
   };
 }
 
-/** Back up the source home into tmp/bk (with the key). */
-function makeBackup() {
+/**
+ * Back up the source home into tmp/bk (with the key).
+ *
+ * @param {object} [config]  the source config file's content
+ */
+function makeBackup(config) {
   sourceHome();
+  if (config) {
+    fs.writeFileSync(
+      path.join(tmp, 'cfg', 'config.json'),
+      JSON.stringify(config)
+    );
+  }
   backupHome(backupInput({ dir: 'bk', includeKey: true }));
   pnpm = [];
   err = [];
@@ -547,6 +557,33 @@ describe('restoreBackup', () => {
       expect(fs.statSync(path.join(tmp, 'cfg2', 'dscc.env')).mode & 0o777).toBe(
         0o600
       );
+  });
+
+  test('should drop a home from another place from the restored config', async () => {
+    makeBackup({ home: path.join(tmp, 'elsewhere'), addDir: true });
+
+    await restoreBackup(restoreInput());
+
+    expect(
+      JSON.parse(
+        fs.readFileSync(path.join(tmp, 'cfg2', 'config.json'), 'utf-8')
+      )
+    ).toEqual({ addDir: true });
+    expect(err).toContain(
+      `kyoten: the backup's config named the home ${path.join(tmp, 'elsewhere')}; restored without it (this home is ${path.join(tmp, 'new-home')})`
+    );
+  });
+
+  test('should keep a home in the restored config that names this home', async () => {
+    makeBackup({ home: path.join(tmp, 'new-home') });
+
+    await restoreBackup(restoreInput());
+
+    expect(
+      JSON.parse(
+        fs.readFileSync(path.join(tmp, 'cfg2', 'config.json'), 'utf-8')
+      )
+    ).toEqual({ home: path.join(tmp, 'new-home') });
   });
 
   test('should merge once when the home shares the old snapshot', async () => {

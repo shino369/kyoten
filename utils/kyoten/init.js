@@ -35,7 +35,10 @@ export function runSetup({ home, log, run = crossSpawn(), env = process.env }) {
 }
 
 /**
- * @param {{ home: string, source: SnapshotSource, log: (text: string) => void, setup?: boolean, run?: Spawn, env?: NodeJS.ProcessEnv, now?: () => Date }} input
+ * `afterCreate` runs once a new home is in place, before setup, so what it
+ * writes holds even when setup fails.
+ *
+ * @param {{ home: string, source: SnapshotSource, log: (text: string) => void, setup?: boolean, run?: Spawn, env?: NodeJS.ProcessEnv, now?: () => Date, afterCreate?: (home: string) => void }} input
  * @returns {{ created: boolean }}
  */
 export function initHome({
@@ -43,6 +46,7 @@ export function initHome({
   source,
   log,
   setup = true,
+  afterCreate,
   run = crossSpawn(),
   env = process.env,
   now = () => new Date(),
@@ -83,6 +87,7 @@ export function initHome({
       fs.rmSync(temp, { recursive: true, force: true });
       throw error;
     }
+    afterCreate?.(home);
   } else {
     log(`${home} is already a kyoten workspace`);
   }
