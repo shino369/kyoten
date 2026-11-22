@@ -54,15 +54,22 @@ const CODEX_DISABLED_FEATURES = [
   'skill_search',
   'view_image',
 ];
+// No double quote in any argument: Windows .cmd shims cannot pass one (spawn.js
+// quoteCmdArg). Codex parses a -c value as TOML and keeps it as a raw string
+// when that fails, so bare words work, and TOML literal strings use single
+// quotes. Checked against codex 0.170: a wrong value still fails to load.
 const CODEX_ISOLATION_ARGS = [
   '-c',
-  'default_permissions="memory-persona"',
+  'default_permissions=memory-persona',
   '-c',
-  'permissions.memory-persona.filesystem={":root"="deny"}',
+  "permissions.memory-persona.filesystem={':root'='deny'}",
   '-c',
-  'web_search="disabled"',
+  'web_search=disabled',
   ...CODEX_DISABLED_FEATURES.flatMap((feature) => ['--disable', feature]),
 ];
+const CLAUDE_ISOLATION_SETTINGS = JSON.stringify({ disableAllHooks: true });
+/** The settings file callAgent writes into the job's folder for claude. */
+export const CLAUDE_SETTINGS_FILE = 'memory-job-settings.json';
 const CODEX_EMPTY_MCP_LIST =
   'No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.';
 /**
@@ -99,7 +106,7 @@ export function headlessCommand({ agent, model = null, rootDir }) {
       args.push(
         '--strict-mcp-config',
         '--settings',
-        '{"disableAllHooks":true}',
+        CLAUDE_ISOLATION_SETTINGS,
         '--tools',
         ''
       );
@@ -154,6 +161,25 @@ function switchFix(job, agent) {
 }
 
 /**
+ * Claude takes `--settings <file-or-json>`: pass the JSON as a file in the
+ * job's folder, so the command line holds no double quote (Windows .cmd
+ * shims refuse one).
+ *
+ * @param {import('../loop/adapters.js').AgentCommand} command
+ * @param {string} cwd
+ * @returns {import('../loop/adapters.js').AgentCommand}
+ */
+function settingsAsFile(command, cwd) {
+  const at = command.args.indexOf('--settings');
+  if (command.agent !== 'claude' || at === -1) return command;
+  const file = path.join(cwd, CLAUDE_SETTINGS_FILE);
+  fs.writeFileSync(file, command.args[at + 1]);
+  const args = [...command.args];
+  args[at + 1] = file;
+  return { ...command, args };
+}
+
+/**
  * One call in an empty folder, removed afterwards. Throws when the agent
  * fails, naming the job ("the extraction agent exited with code 1: …").
  *
@@ -193,7 +219,7 @@ export function callAgent(
       }
     }
     result = deps.runAgent({
-      command,
+      command: settingsAsFile(command, cwd),
       cwd,
       prompt,
       timeoutMs,
@@ -206,6 +232,14 @@ export function callAgent(
       /was not found \(agent /.test(error.message)
     ) {
       error.message += `\nFix: ${switchFix(job, command.agent)}`;
+    }
+    // agy takes its isolation settings as JSON, which a .cmd shim cannot carry.
+    if (
+      error instanceof Error &&
+      command.agent === 'agy' &&
+      /cannot be passed safely to a Windows/.test(error.message)
+    ) {
+      error.message += `\nFix: ${switchFix(job, 'agy')} (agy runs only through a native agy.exe, not a .cmd shim)`;
     }
     throw error;
   } finally {

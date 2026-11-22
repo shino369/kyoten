@@ -457,6 +457,11 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   `pnpm memory consolidate` then refuses with a Fix line unless `--force` (a `--dry-run` is always
   allowed). Consolidation reuses the last run's model only from a run on the same provider side
   (dscc or not) as the worker.
+  Memory jobs build their isolation arguments without a double quote, so they start through
+  Windows `.cmd` shims (which refuse `"`): Codex gets bare or single-quoted TOML values, Claude gets
+  its settings as a file in the job's temporary folder. Antigravity takes its settings as JSON on
+  the command line, so it needs a native `agy.exe`; behind a `.cmd` shim the job fails with a Fix
+  line naming another `--extract-agent`. Not verified on a real Windows machine.
   Other agents are not affected.
 - **Safety:** every write path refuses text matching `utils/redact.js`; notes are framed as facts;
   `pnpm workspace:check` fails if a memory file is tracked.
