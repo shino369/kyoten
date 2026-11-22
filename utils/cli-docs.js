@@ -20,6 +20,7 @@ Options
 const HELP_COMMANDS = {
   agent: '--help',
   harness: 'help',
+  kyoten: '--help',
   loop: '--help',
   memory: '--help',
   'skills:install': '--help',

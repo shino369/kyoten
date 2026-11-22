@@ -8,6 +8,7 @@ Run `pnpm docs:cli` to refresh this reference from the workspace CLI help. Run `
 
 - [`pnpm agent`](#pnpm-agent)
 - [`pnpm harness`](#pnpm-harness)
+- [`pnpm kyoten`](#pnpm-kyoten)
 - [`pnpm loop`](#pnpm-loop)
 - [`pnpm memory`](#pnpm-memory)
 - [`pnpm skills:install`](#pnpm-skillsinstall)
@@ -51,6 +52,47 @@ Usage:
   pnpm harness sync    write the Codex/DSH/Antigravity files generated from utils/harness/hooks.js
   pnpm harness check   fail when a generated file or .claude/settings.json hooks differ from it
   pnpm harness help    show this help (the default)
+```
+
+## `pnpm kyoten`
+
+```text
+Usage: kyoten [--home <dir>] [<agent>] [agent args…]
+       kyoten [--home <dir>] <command> [options]
+
+kyoten 0.1.0 — start a coding agent in your kyoten workspace (the home)
+
+Agents (the first word, default claude; --<agent> works too)
+  claude    Claude Code
+  codex     OpenAI Codex CLI
+  dsh       DeepSeek harness: dsh <profile> --patch .dsh/workspace.patch.yml
+            (profile: the first argument if it is not an option; default web)
+  dscc      Claude Code on the DeepSeek API
+
+Everything after the agent goes to it unchanged; kyoten adds no permission
+flags. To give Claude a word that is a kyoten command: kyoten claude <word>
+
+Commands
+  init [<dir>] [--no-setup]
+            Create a home (default ~/.kyoten) and install it; with <dir>,
+            also make it the default home (an existing kyoten workspace
+            is kept as it is). --no-setup: skip pnpm install and setup
+  update [--no-setup]
+            Merge a newer kyoten snapshot into a home kyoten created
+  doctor    Check prerequisites, agents, and the home
+  where     Print the home (the rule that chose it goes to stderr)
+  help      This help
+  version   kyoten's version
+
+dscc profile (DeepSeek API key and model mapping)
+  kyoten dscc --set-key   Save the key (hidden prompt, or one line on stdin)
+  kyoten dscc --show      Print the profile, the key masked
+
+The home is the first of: --home, $KYOTEN_HOME, the clone kyoten runs from
+(pnpm kyoten inside it), "home" in the config, ~/.kyoten.
+Config: config.json in %APPDATA%\kyoten (Windows), else in
+$XDG_CONFIG_HOME/kyoten or ~/.config/kyoten:
+  {"home": "/abs/path", "args": {"dscc": ["--dangerously-skip-permissions"]}}
 ```
 
 ## `pnpm loop`
@@ -382,6 +424,7 @@ Options:
 - `pnpm docs:cli`
 - `pnpm format`
 - `pnpm format:check`
+- `pnpm kyoten:pack`
 - `pnpm lint`
 - `pnpm lint:fix`
 - `pnpm skills:check`

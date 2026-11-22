@@ -243,10 +243,11 @@ describe('packageVersion and helpText', () => {
   });
 
   test('should name the version, the config file, and every command', () => {
-    const help = helpText('1.2.3', '/cfg/config.json');
+    const help = helpText('1.2.3');
 
+    expect(help.startsWith('Usage: kyoten')).toBe(true);
     expect(help).toContain('kyoten 1.2.3');
-    expect(help).toContain('Config: /cfg/config.json');
+    expect(help).toContain('~/.config/kyoten');
     for (const command of COMMANDS) expect(help).toContain(`  ${command}`);
   });
 });
@@ -257,7 +258,7 @@ describe('main: help, version, where', () => {
 
     expect(code).toBe(0);
     expect(out[0]).toContain('kyoten 0.2.0');
-    expect(out[0]).toContain(path.join(tmp, 'cfg', 'kyoten', 'config.json'));
+    expect(out[0]).not.toContain(tmp);
   });
 
   test('should print the help for the help command', async () => {

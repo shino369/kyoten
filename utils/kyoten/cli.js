@@ -129,15 +129,16 @@ export function packageVersion(root = ROOT_DIR) {
 }
 
 /**
+ * The help. It names no machine path, so the generated CLI reference
+ * (pnpm docs:cli) is the same on every machine.
+ *
  * @param {string} version
- * @param {string} config  the config file's path
  */
-export function helpText(version, config) {
-  return `kyoten ${version} — start a coding agent in your kyoten workspace (the home)
+export function helpText(version) {
+  return `Usage: kyoten [--home <dir>] [<agent>] [agent args…]
+       kyoten [--home <dir>] <command> [options]
 
-Usage
-  kyoten [--home <dir>] [<agent>] [agent args…]
-  kyoten [--home <dir>] <command> [options]
+kyoten ${version} — start a coding agent in your kyoten workspace (the home)
 
 Agents (the first word, default claude; --<agent> works too)
   claude    Claude Code
@@ -167,7 +168,8 @@ dscc profile (DeepSeek API key and model mapping)
 
 The home is the first of: --home, $KYOTEN_HOME, the clone kyoten runs from
 (pnpm kyoten inside it), "home" in the config, ~/.kyoten.
-Config: ${config}
+Config: config.json in %APPDATA%\\kyoten (Windows), else in
+$XDG_CONFIG_HOME/kyoten or ~/.config/kyoten:
   {"home": "/abs/path", "args": {"dscc": ["--dangerously-skip-permissions"]}}`;
 }
 
@@ -431,9 +433,8 @@ async function launch(ctx, agent, args) {
  */
 async function run(parsed, deps) {
   const version = packageVersion(deps.root);
-  const configPath = configFile(deps);
   if (parsed.help || parsed.command === 'help') {
-    deps.out(helpText(version, configPath));
+    deps.out(helpText(version));
     return 0;
   }
   if (parsed.version || parsed.command === 'version') {
@@ -444,6 +445,7 @@ async function run(parsed, deps) {
   if (parsed.agent === 'dscc' && (flag === '--set-key' || flag === '--show')) {
     return dsccProfileCommand(flag, deps);
   }
+  const configPath = configFile(deps);
   const config = readConfig(configPath);
   const home = resolveHome({ ...deps, flag: parsed.home, config, configPath });
   /** @type {Context} */
