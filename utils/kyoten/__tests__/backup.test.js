@@ -339,7 +339,7 @@ describe('backupHome', () => {
         backupHome(
           backupInput({ dir: 'bk', run: makeRun({ exportStatus: 1 }) })
         )
-      ).toThrow(/no export[\s\S]*Fix:/);
+      ).toThrow(/no export[\s\S]*Fix:.*kyoten --home ".*" run memory export/);
 
       expect(fs.existsSync(target)).toBe(existed);
     }

@@ -216,7 +216,7 @@ function writeBackup({
       path.join(target, 'memory.tar.gz'),
     ],
     { cwd: home, env: childEnv(env) },
-    `fix what pnpm memory export reports in ${home} (run: pnpm memory export), then run kyoten backup again`
+    `fix what memory export reports in ${home} (run: kyoten --home "${home}" run memory export), then run kyoten backup again`
   );
   record('memory.tar.gz');
 
