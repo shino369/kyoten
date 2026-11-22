@@ -65,7 +65,7 @@ subagents — ask Claude directly.
 ## Getting Started
 
 Without a clone: `npx kyoten` creates a workspace in `~/.kyoten` and starts Claude Code there
-(`npx kyoten codex`, `dsh`, or `dscc` for the others). See [docs/kyoten.md](docs/kyoten.md).
+(`npx kyoten codex`, `dsh`, `dscc`, or `agy` for the others). See [docs/kyoten.md](docs/kyoten.md).
 
 In a clone:
 

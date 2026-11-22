@@ -25,6 +25,12 @@ every later run starts the agent there.
   not install them.
   `kyoten doctor` lists what is missing.
 
+- Network access on the first `kyoten init`: `pnpm install` downloads the home's dependencies and
+  `pnpm workspace:setup` installs the third-party skills from GitHub. Later launches work offline.
+- On Windows, pnpm comes from Corepack (`corepack enable` in an administrator shell, or the
+  `--install-directory` form above). kyoten needs `pnpm` itself on PATH: the agents call
+  `pnpm task`, so `corepack pnpm` alone is not enough.
+
 macOS, Linux, and Windows (PowerShell, cmd, Git Bash) are supported.
 
 ## Start
@@ -34,6 +40,9 @@ npx kyoten init       # create ~/.kyoten and install it (pnpm install, pnpm work
 npx kyoten doctor     # check Node, git, pnpm, each agent, and the home
 npx kyoten            # start Claude Code in the home
 ```
+
+A new home asks one question: whether to save memory automatically (`[y/N]`, see "What runs in a
+home"). `kyoten init --memory on|off` answers it ahead; without a terminal it is off.
 
 Install it globally if you prefer a plain `kyoten` command: `pnpm add -g kyoten` (or
 `npm i -g kyoten`). The examples below use `kyoten`.
@@ -60,18 +69,31 @@ permission flags.
 `--codex` is the same as `codex`. To give Claude a word that is also a kyoten command, name the
 agent: `kyoten claude update`.
 
-| Command                          | Does                                                                                                                                              |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `init [<dir>] [--no-setup]`      | Create a home and install it. With `<dir>`, also make it the default home. An existing kyoten workspace is kept as it is and only installed again |
-| `update [--no-setup]`            | Merge this kyoten's snapshot into a home kyoten created                                                                                           |
-| `doctor`                         | Check prerequisites, agents, Codex and Antigravity trust, memory saving, the dsh path, the dscc key, then `pnpm workspace:check`                  |
-| `where`                          | Print the home on stdout and the rule that chose it on stderr (`cd "$(kyoten where)"`)                                                            |
-| `run <script> [args…]`           | Run a workspace script in the home from any folder (`pnpm <script>` there): `kyoten run task status`                                              |
-| `config [get\|set\|unset\|path]` | Show or change the config file (below)                                                                                                            |
-| `reset [--yes] [--all]`          | Move a home kyoten created aside (below)                                                                                                          |
-| `backup [<dir>] [--include-key]` | Write a backup folder with your memory, config, and local commits (below)                                                                         |
-| `restore <dir> [--yes]`          | Bring a backup folder back into the home (below)                                                                                                  |
-| `help`, `version`                | Help and the version                                                                                                                              |
+| Command                                        | Does                                                                                                                                              |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `init [<dir>] [--no-setup] [--memory on\|off]` | Create a home and install it. With `<dir>`, also make it the default home. An existing kyoten workspace is kept as it is and only installed again |
+| `update [--no-setup]`                          | Merge this kyoten's snapshot into a home kyoten created                                                                                           |
+| `doctor`                                       | Check prerequisites, agents, Codex and Antigravity trust, memory saving, the dsh path, the dscc key, then `pnpm workspace:check`                  |
+| `where`                                        | Print the home on stdout and the rule that chose it on stderr (`cd "$(kyoten where)"`)                                                            |
+| `run <script> [args…]`                         | Run a workspace script in the home from any folder (`pnpm <script>` there): `kyoten run task status`                                              |
+| `config [get\|set\|unset\|path]`               | Show or change the config file (below)                                                                                                            |
+| `reset [--yes] [--all]`                        | Move a home kyoten created aside (below)                                                                                                          |
+| `backup [<dir>] [--include-key]`               | Write a backup folder with your memory, config, and local commits (below)                                                                         |
+| `restore <dir> [--yes]`                        | Bring a backup folder back into the home (below)                                                                                                  |
+| `help`, `version`                              | Help and the version                                                                                                                              |
+
+### Workspace commands from any folder
+
+The workspace's own commands (`pnpm task`, `pnpm memory`, `pnpm tools`, `pnpm check`, …) run in
+the home. `kyoten run <script> [args…]` runs `pnpm <script> [args…]` there from wherever you are,
+with your terminal and environment, and returns its exit code; `kyoten run` lists the scripts.
+Every Fix line kyoten prints uses this form, because `cd "$(kyoten where)"` does not work in cmd.
+
+```bash
+kyoten run task status
+kyoten run memory recall "deploy"
+kyoten run install          # pnpm install in the home
+```
 
 ## The home
 
@@ -163,6 +185,27 @@ The key goes only where the profile says:
 In Git Bash's mintty, which is not a terminal to Windows programs, pipe the key or run
 `--set-key` from PowerShell or cmd.
 
+## What runs in a home
+
+A home is the full workspace, so its hooks run in every agent session started there:
+
+| What                                     | When                                           | Cost                                                                 |
+| ---------------------------------------- | ---------------------------------------------- | -------------------------------------------------------------------- |
+| Audit log (`logs/<date>/logging.jsonl`)  | every tool call, secrets redacted              | local only                                                           |
+| Prettier on edited files                 | after edits (Codex: at its next tool or stop)  | local only                                                           |
+| Task brief, memory recall, guard         | session start, each prompt, before commands    | local only                                                           |
+| Stop loop (`pnpm task check` and verify) | each stop of a session working on a code task  | runs your tests; the agent fixes failures in the same session        |
+| Review rounds                            | `pnpm task review` (the Stop loop asks for it) | reviewer and verifier subagents on your plan                         |
+| Memory extraction                        | each session end, when saving is on            | one background, tool-less call of the session's own CLI on your plan |
+
+The Stop loop is per task: `kyoten run task set --loop off` turns it off for the current one.
+
+Memory saving starts off in a new home. `kyoten run memory on` turns it on, `kyoten run memory off`
+pauses it (recall and `pnpm memory add` keep working), and `kyoten doctor` shows the state. The
+extraction runs on the CLI the session used (Claude Code, Codex, or Antigravity CLI); `kyoten run
+memory set --extract-agent <claude|codex|dsh|agy>` picks one for every job, for example on a
+machine where Codex has MCP servers (Codex extraction needs none configured).
+
 ## Updating
 
 A home kyoten created is a git repository. Its `kyoten/upstream` branch holds the snapshots kyoten
@@ -179,6 +222,28 @@ the same lines (resolve them, `git commit`, then run `update` again). Nothing is
 `git pull`, not `kyoten update`.
 
 When the home was made by another kyoten version, each launch prints a one-line hint.
+
+**What the snapshot holds.** The tracked files of one kyoten commit: `AGENTS.md`, `CLAUDE.md`, the
+harness folders (`.claude/`, `.codex/`, `.agents/`, `.dsh/`), `utils/`, `docs/`, `templates/`,
+`tools/catalog.json`, the project's own skills, and `package.json` with its lockfile. Third-party
+skills are not in it: `pnpm workspace:setup` installs them from `skills-lock.json`. Your personal
+state (`tasks/`, `memory/`, `AGENTS.local.md`, `CLAUDE.local.md`, `logs/`, `tools/local.json`) is
+ignored by git, so neither the snapshot nor an update touches it.
+
+**Customizing.** Edit the home and commit on `main` (a rule in `AGENTS.md`, a skill, a hook
+setting). An update merges the new snapshot with your commits like any git merge.
+
+**Lockfile conflicts.** If you added dependencies in the home and the new snapshot changed
+`pnpm-lock.yaml` too, the merge stops on it. Take kyoten's lockfile, let pnpm add yours back, and
+finish the merge:
+
+```bash
+cd "$(kyoten where)"         # PowerShell: cd (kyoten where)
+git checkout --theirs pnpm-lock.yaml
+pnpm install                 # re-resolves your package.json changes into the lockfile
+git add pnpm-lock.yaml && git commit --no-edit
+kyoten update                # finishes the install and setup
+```
 
 ## Notes per agent
 

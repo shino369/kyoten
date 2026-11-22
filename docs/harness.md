@@ -119,10 +119,13 @@ Notes:
 
 ### Starting an agent: kyoten
 
-`kyoten [claude|codex|dsh|dscc]` (`pnpm kyoten …` in a clone, `npx kyoten …` without one) starts
-the agent with the workspace root as its working directory and adds what each harness needs: dsh
-gets its profile and `--patch .dsh/workspace.patch.yml`, and `dscc` runs Claude Code on the
-DeepSeek API from a profile kept outside the workspace. It never adds permission flags. Without a
+`kyoten [claude|codex|dsh|dscc|agy]` (`pnpm kyoten …` in a clone, `npx kyoten …` without one)
+starts the agent with the workspace root as its working directory and adds what each harness
+needs: dsh gets its profile and `--patch .dsh/workspace.patch.yml`, `dscc` runs Claude Code on the
+DeepSeek API from a profile kept outside the workspace, and claude, dscc, and codex get
+`--add-dir=<repo>` when kyoten was started inside another git repository. It sets
+`KYOTEN_AGENT`, `KYOTEN_HOME`, and `KYOTEN_CALLER_DIR` (and `KYOTEN_ADD_DIR`) for the hooks, and
+never adds permission flags. `kyoten run <script>` runs a workspace script from any folder. Without a
 clone it creates a workspace from the snapshot of one commit shipped in the npm package
 (`~/.kyoten`, a git repository that `kyoten update` merges new snapshots into). Details:
 `docs/kyoten.md`.
