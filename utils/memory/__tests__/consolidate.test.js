@@ -175,6 +175,26 @@ describe('consolidationDue', () => {
     expect(consolidationDue(root, { now: NOW })).toBeNull();
   });
 
+  test('should not be due while saving is off, and be due again once it is on', () => {
+    for (let i = 0; i < MIN_CHANGES; i++)
+      add({ text: `Filler fact number ${i} about builds.`, tags: [`f${i}`] });
+    writeConfig(dir, { ...DEFAULT_CONFIG, off: true });
+
+    expect(consolidationDue(root, { now: NOW })).toBeNull();
+
+    writeConfig(dir, { ...DEFAULT_CONFIG, off: false });
+
+    expect(consolidationDue(root, { now: NOW })).toBe('weekly');
+  });
+
+  test('should not be due when the config cannot be read', () => {
+    for (let i = 0; i < MIN_CHANGES; i++)
+      add({ text: `Filler fact number ${i} about builds.`, tags: [`f${i}`] });
+    fs.writeFileSync(path.join(dir, 'config.json'), '{oops');
+
+    expect(consolidationDue(root, { now: NOW })).toBeNull();
+  });
+
   test('should use the current time and stay quiet before memory exists', () => {
     fs.rmSync(dir, { recursive: true });
 
@@ -376,6 +396,145 @@ describe('consolidate', () => {
     expect(models).toEqual(['session-model', 'claude-sonnet-5-5']);
   });
 
+  describe('the consolidation agent', () => {
+    /** @param {import('vitest').Mock} runAgent */
+    const lastCall = (runAgent) =>
+      /** @type {any} */ (runAgent.mock.calls.at(-1))[0];
+    const answering = () => agentReturning({ profile: [], ops: [] });
+
+    test('should default to claude without a journal or session harness', () => {
+      seed();
+      const runAgent = answering();
+
+      const run = consolidate(deps({ runAgent }));
+
+      expect(lastCall(runAgent).command.agent).toBe('claude');
+      expect(run).toMatchObject({ agent: 'claude', model: null });
+    });
+
+    test('should use the session harness when there is no prior journal run', () => {
+      seed();
+      const runAgent = answering();
+
+      const run = consolidate(
+        deps({ runAgent, env: { DSH_SESSION_ID: 'dsh-1' } })
+      );
+
+      expect(lastCall(runAgent).command.agent).toBe('dsh');
+      expect(run).toMatchObject({ agent: 'dsh', model: null });
+    });
+
+    test('should treat an old journal line without agent as claude', () => {
+      seed();
+      appendJournal(dir, { at: 'x', status: 'applied', model: 'old-model' });
+
+      const run = consolidate(deps({ runAgent: answering() }));
+
+      expect(run).toMatchObject({ agent: 'claude', model: 'old-model' });
+    });
+
+    test('should follow the last applied run, with its model', () => {
+      seed();
+      appendJournal(dir, {
+        at: 'x',
+        status: 'applied',
+        agent: 'agy',
+        model: 'gemini-3.8-flash-low',
+      });
+      appendJournal(dir, { at: 'y', status: 'failed', error: 'boom' });
+      const runAgent = answering();
+
+      const run = consolidate(deps({ runAgent }));
+
+      expect(lastCall(runAgent).command.agent).toBe('agy');
+      expect(lastCall(runAgent).command.args.slice(-2)).toEqual([
+        '--model',
+        'gemini-3.8-flash-low',
+      ]);
+      expect(run).toMatchObject({
+        agent: 'agy',
+        model: 'gemini-3.8-flash-low',
+      });
+    });
+
+    test('should omit any legacy journal model when following a dsh run', () => {
+      seed();
+      appendJournal(dir, {
+        at: 'x',
+        status: 'applied',
+        agent: 'dsh',
+        model: 'deepseek-v4',
+      });
+      const runAgent = answering();
+
+      const run = consolidate(deps({ runAgent }));
+
+      expect(lastCall(runAgent).command.agent).toBe('dsh');
+      expect(lastCall(runAgent).command.args).not.toContain('--model');
+      expect(run).toMatchObject({ agent: 'dsh', model: null });
+    });
+
+    test('should not pair extractModel with the last run on another agent', () => {
+      seed();
+      appendJournal(dir, {
+        at: 'x',
+        status: 'applied',
+        agent: 'dsh',
+        model: null,
+      });
+      writeConfig(dir, {
+        ...DEFAULT_CONFIG,
+        extractModel: 'claude-sonnet-5-5',
+      });
+
+      const run = consolidate(deps({ runAgent: answering() }));
+
+      expect(run).toMatchObject({ agent: 'dsh', model: null });
+    });
+
+    test('should use the configured agent over the last run', () => {
+      seed();
+      appendJournal(dir, {
+        at: 'x',
+        status: 'applied',
+        agent: 'dsh',
+        model: 'deepseek-v4',
+      });
+      writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });
+      const runAgent = answering();
+
+      const run = consolidate(deps({ runAgent }));
+
+      expect(lastCall(runAgent).command.agent).toBe('agy');
+      expect(run).toMatchObject({ agent: 'agy', model: null });
+    });
+
+    test('should pair extractModel with the configured agent', () => {
+      seed();
+      writeConfig(dir, {
+        ...DEFAULT_CONFIG,
+        extractAgent: 'agy',
+        extractModel: 'gemini-3.8-flash-low',
+      });
+
+      const run = consolidate(deps({ runAgent: answering() }));
+
+      expect(run).toMatchObject({
+        agent: 'agy',
+        model: 'gemini-3.8-flash-low',
+      });
+    });
+
+    test('should report the agent on a dry run', () => {
+      seed();
+      appendJournal(dir, { at: 'x', status: 'applied', agent: 'dsh' });
+
+      const run = consolidate(deps({ dryRun: true }));
+
+      expect(run).toMatchObject({ agent: 'dsh', model: null });
+    });
+  });
+
   test('should say when there is nothing to consolidate', () => {
     const run = consolidate(deps());
 
@@ -413,6 +572,95 @@ describe('consolidate', () => {
     expect(runAgent).not.toHaveBeenCalled();
     expect(readConsolidated(dir)).toBeNull();
   });
+
+  test('should return off without calling the agent when saving is off before dispatch', () => {
+    seed();
+    writeConfig(dir, { ...DEFAULT_CONFIG, off: true });
+    const runAgent = agentReturning({
+      profile: ['Should not run.'],
+      ops: [],
+    });
+
+    const run = consolidate(deps({ runAgent }));
+
+    expect(run).toMatchObject({ status: 'off', job: 'consolidation' });
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(dir, PROFILE_FILE))).toBe(false);
+    expect(readConsolidated(dir)).toBeNull();
+    expect(readJournal(dir).at(-1)?.status).toBe('off');
+  });
+
+  test('should stop before sending notes when saving is turned off during the Codex probe', () => {
+    seed();
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'codex' });
+    const runAgent = vi.fn(() => {
+      writeConfig(dir, {
+        ...DEFAULT_CONFIG,
+        extractAgent: 'codex',
+        off: true,
+      });
+      return {
+        code: 0,
+        signal: null,
+        output: '',
+        stdout:
+          'No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.\n',
+        durationMs: 5,
+      };
+    });
+
+    const run = consolidate(deps({ runAgent }));
+
+    expect(run).toMatchObject({
+      status: 'off',
+      job: 'consolidation',
+      agent: 'codex',
+    });
+    expect(runAgent).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(path.join(dir, PROFILE_FILE))).toBe(false);
+    expect(readConsolidated(dir)).toBeNull();
+    expect(readJournal(dir).at(-1)?.status).toBe('off');
+  });
+
+  test('should not write when saving is turned off while the agent runs', () => {
+    seed();
+    const runAgent = vi.fn(() => {
+      writeConfig(dir, { ...DEFAULT_CONFIG, off: true });
+      return {
+        code: 0,
+        signal: null,
+        output: '',
+        stdout: JSON.stringify({
+          profile: ['Prefers terse answers.'],
+          ops: [],
+        }),
+        durationMs: 12,
+      };
+    });
+
+    const run = consolidate(deps({ runAgent }));
+
+    expect(run).toMatchObject({ status: 'off', job: 'consolidation' });
+    expect(fs.existsSync(path.join(dir, PROFILE_FILE))).toBe(false);
+    expect(readConsolidated(dir)).toBeNull();
+    expect(readJournal(dir).at(-1)?.status).toBe('off');
+  });
+
+  test('should write when forced even if saving is turned off', () => {
+    seed();
+    writeConfig(dir, { ...DEFAULT_CONFIG, off: true });
+    const runAgent = agentReturning({
+      profile: ['Prefers terse answers.'],
+      ops: [],
+    });
+
+    const run = consolidate(deps({ runAgent, force: true }));
+
+    expect(run.status).toBe('consolidated');
+    expect(fs.readFileSync(path.join(dir, PROFILE_FILE), 'utf-8')).toBe(
+      '- Prefers terse answers.\n'
+    );
+  });
 });
 
 describe('consolidateLocked', () => {
@@ -436,6 +684,7 @@ describe('consolidateLocked', () => {
     const run = consolidateLocked(deps({ runAgent }));
 
     expect(run).toMatchObject({ job: 'consolidation', status: 'failed' });
+    expect(run?.error).toContain('the consolidation agent exited with code 1:');
     expect(run?.error).not.toContain(TOKEN);
     expect(readConsolidated(dir)).toEqual({ tried: NOW.toISOString() });
     expect(readJournal(dir).at(-1)?.status).toBe('failed');

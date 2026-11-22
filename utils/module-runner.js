@@ -13,8 +13,22 @@
  * ```
  */
 
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+
+/**
+ * The real path of `file` (links resolved), or `file` when it does not exist.
+ *
+ * @param {string} file
+ */
+function realPath(file) {
+  try {
+    return fs.realpathSync(file);
+  } catch {
+    return file;
+  }
+}
 
 /**
  * Runs the provided function only if the module is executed directly
@@ -29,12 +43,18 @@ export function runIfMain(importMetaUrl, mainFunction) {
   }
 
   try {
-    const modulePath = path.resolve(fileURLToPath(importMetaUrl));
+    const modulePath = realPath(path.resolve(fileURLToPath(importMetaUrl)));
     const scriptPath = process.argv[1] ? path.resolve(process.argv[1]) : '';
 
     // Check if this file is being executed directly. Resolving both sides makes
     // this work whether the script was invoked with a relative or absolute path.
-    if (modulePath === scriptPath || modulePath === scriptPath + '.js') {
+    // Comparing both sides by real path handles scripts started through a linked
+    // folder (macOS /var is /private/var) as well as --preserve-symlinks-main.
+    if (
+      scriptPath &&
+      (modulePath === realPath(scriptPath) ||
+        modulePath === realPath(scriptPath + '.js'))
+    ) {
       mainFunction();
     }
   } catch {

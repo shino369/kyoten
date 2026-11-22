@@ -167,21 +167,37 @@ describe('prepareWorktree', () => {
     ).toBe('Goal: kept\n');
   });
 
-  test('should copy the local memory files and refresh them on reuse', () => {
+  test('should not copy the personal memory files', () => {
     fs.writeFileSync(path.join(repo, 'AGENTS.local.md'), 'core v1\n');
     fs.writeFileSync(path.join(repo, 'CLAUDE.local.md'), '@AGENTS.local.md\n');
+
+    const { dir } = prepareWorktree({ rootDir: repo, task: TASK, spawn });
+
+    expect(fs.existsSync(path.join(dir, 'AGENTS.local.md'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'CLAUDE.local.md'))).toBe(false);
+  });
+
+  test('should refuse to reuse a worktree that still holds old personal memory files', () => {
     const first = prepareWorktree({ rootDir: repo, task: TASK, spawn });
     fs.mkdirSync(path.join(first.dir, 'node_modules'));
-    fs.writeFileSync(path.join(repo, 'AGENTS.local.md'), 'core v2\n');
+    fs.writeFileSync(path.join(first.dir, 'AGENTS.local.md'), 'old core\n');
+    fs.writeFileSync(
+      path.join(first.dir, 'CLAUDE.local.md'),
+      '@AGENTS.local.md\n'
+    );
 
-    prepareWorktree({ rootDir: repo, task: TASK, spawn });
+    expect(() => prepareWorktree({ rootDir: repo, task: TASK, spawn })).toThrow(
+      /still holds personal memory files \(AGENTS\.local\.md, CLAUDE\.local\.md\).*Fix: remove/s
+    );
+  });
 
-    expect(
-      fs.readFileSync(path.join(first.dir, 'AGENTS.local.md'), 'utf-8')
-    ).toBe('core v2\n');
-    expect(
-      fs.readFileSync(path.join(first.dir, 'CLAUDE.local.md'), 'utf-8')
-    ).toBe('@AGENTS.local.md\n');
+  test('should refuse an in-place linked worktree that still holds personal memory files', () => {
+    const first = prepareWorktree({ rootDir: repo, task: TASK, spawn });
+    fs.writeFileSync(path.join(first.dir, 'AGENTS.local.md'), 'old core\n');
+
+    expect(() =>
+      prepareWorktree({ rootDir: first.dir, task: TASK, spawn })
+    ).toThrow(/still holds personal memory files \(AGENTS\.local\.md\)/);
   });
 
   test('should check out an existing loop branch', () => {

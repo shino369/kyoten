@@ -54,15 +54,22 @@ const CODEX_DISABLED_FEATURES = [
   'skill_search',
   'view_image',
 ];
+// No double quote in any argument: Windows .cmd shims cannot pass one (spawn.js
+// quoteCmdArg). Codex parses a -c value as TOML and keeps it as a raw string
+// when that fails, so bare words work, and TOML literal strings use single
+// quotes. Checked against codex 0.170: a wrong value still fails to load.
 const CODEX_ISOLATION_ARGS = [
   '-c',
-  'default_permissions="memory-persona"',
+  'default_permissions=memory-persona',
   '-c',
-  'permissions.memory-persona.filesystem={":root"="deny"}',
+  "permissions.memory-persona.filesystem={':root'='deny'}",
   '-c',
-  'web_search="disabled"',
+  'web_search=disabled',
   ...CODEX_DISABLED_FEATURES.flatMap((feature) => ['--disable', feature]),
 ];
+const CLAUDE_ISOLATION_SETTINGS = JSON.stringify({ disableAllHooks: true });
+/** The settings file callAgent writes into the job's folder for claude. */
+export const CLAUDE_SETTINGS_FILE = 'memory-job-settings.json';
 const CODEX_EMPTY_MCP_LIST =
   'No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.';
 /**
@@ -84,7 +91,12 @@ const CODEX_EMPTY_MCP_LIST =
 export function headlessCommand({ agent, model = null, rootDir }) {
   if (!CALL_AGENTS.includes(/** @type {CallAgent} */ (agent))) {
     throw new Error(
-      `Memory jobs run on ${CALL_AGENTS.join(', ')} (got ${agent}).\nFix: use --agent ${CALL_AGENTS.join('|')}`
+      `Memory jobs run on ${CALL_AGENTS.join(', ')} (got ${agent}).\n${CALL_AGENTS.map((name) => `Fix: use --agent ${name}`).join('\n')}`
+    );
+  }
+  if (model && agent === 'dsh') {
+    throw new Error(
+      'DSH selects its model in its profile, not with --model.\nFix: drop --extract-model, or choose another memory agent'
     );
   }
   const command = buildCommand({
@@ -99,7 +111,7 @@ export function headlessCommand({ agent, model = null, rootDir }) {
       args.push(
         '--strict-mcp-config',
         '--settings',
-        '{"disableAllHooks":true}',
+        CLAUDE_ISOLATION_SETTINGS,
         '--tools',
         ''
       );
@@ -140,19 +152,57 @@ export function headlessCommand({ agent, model = null, rootDir }) {
 }
 
 /**
+ * The Fix text for an agent that cannot run a memory job: another agent.
+ *
+ * @param {string} job
+ * @param {string} agent
+ * @returns {string}
+ */
+function switchFix(job, agent) {
+  const others = CALL_AGENTS.filter((name) => name !== agent);
+  return job.startsWith('persona')
+    ? others.map((name) => `Fix: use --agent ${name}`).join('\n')
+    : others
+        .map((name) => `Fix: pnpm memory set --extract-agent ${name}`)
+        .join('\n');
+}
+
+/**
+ * Claude takes `--settings <file-or-json>`: pass the JSON as a file in the
+ * job's folder using its relative name, so the command line holds neither a
+ * double quote nor temp-path characters (`!`, `%`) that Windows .cmd shims
+ * refuse.
+ *
+ * @param {import('../loop/adapters.js').AgentCommand} command
+ * @param {string} cwd
+ * @returns {import('../loop/adapters.js').AgentCommand}
+ */
+function settingsAsFile(command, cwd) {
+  const at = command.args.lastIndexOf('--settings');
+  if (command.agent !== 'claude' || at === -1) return command;
+  fs.writeFileSync(path.join(cwd, CLAUDE_SETTINGS_FILE), command.args[at + 1]);
+  const args = [...command.args];
+  args[at + 1] = CLAUDE_SETTINGS_FILE;
+  return { ...command, args };
+}
+
+/**
  * One call in an empty folder, removed afterwards. Throws when the agent
  * fails, naming the job ("the extraction agent exited with code 1: …").
+ * When `cancel` returns true right before dispatching the prompt (after any
+ * pre-flight probe), no prompt is sent and `{ cancelled: true }` is returned.
  *
  * @param {CallDeps} deps
  * @param {import('../loop/adapters.js').AgentCommand} command
  * @param {string} prompt
- * @param {{ job?: string, timeoutMs?: number }} [options]
+ * @param {{ job?: string, timeoutMs?: number, cancel?: () => boolean }} [options]
+ * @returns {import('../loop/adapters.js').AgentResult & { cancelled?: boolean }}
  */
 export function callAgent(
   deps,
   command,
   prompt,
-  { job = 'extraction', timeoutMs = AGENT_CALL_TIMEOUT_MS } = {}
+  { job = 'extraction', timeoutMs = AGENT_CALL_TIMEOUT_MS, cancel } = {}
 ) {
   const cwd = fs.mkdtempSync(path.join(deps.tmpdir(), `memory-${job}-`));
   const env = { ...deps.env, [EXTRACT_ENV]: '1', [INNER_LOOP_ENV]: 'off' };
@@ -174,17 +224,44 @@ export function callAgent(
       });
       if (probe.code !== 0 || probe.stdout.trim() !== CODEX_EMPTY_MCP_LIST) {
         throw new Error(
-          'Cannot verify Codex persona isolation. The MCP check must report zero configured servers.\nFix: use --agent claude or --agent dsh.'
+          `Cannot verify Codex persona isolation. The MCP check must report zero configured servers.\n${switchFix(job, 'codex')}`
         );
       }
     }
+    if (cancel?.()) {
+      return {
+        code: 0,
+        signal: null,
+        output: '',
+        stdout: '',
+        durationMs: 0,
+        cancelled: true,
+      };
+    }
     result = deps.runAgent({
-      command,
+      command: settingsAsFile(command, cwd),
       cwd,
       prompt,
       timeoutMs,
       env,
     });
+  } catch (error) {
+    // The adapter's "was not found" error has its own install Fix line.
+    if (
+      error instanceof Error &&
+      /was not found \(agent /.test(error.message)
+    ) {
+      error.message += `\n${switchFix(job, command.agent)}`;
+    }
+    // agy takes its isolation settings as JSON, which a .cmd shim cannot carry.
+    if (
+      error instanceof Error &&
+      command.agent === 'agy' &&
+      /cannot be passed safely to a Windows/.test(error.message)
+    ) {
+      error.message += `\n${switchFix(job, 'agy')}\n(agy runs only through a native agy.exe, not a .cmd shim)`;
+    }
+    throw error;
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
   }

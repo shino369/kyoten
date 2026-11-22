@@ -36,8 +36,8 @@ Everything above (AGENTS.md) applies. These notes cover only what is specific to
 - **Memory** (AGENTS.md §13): `CLAUDE.local.md` imports `AGENTS.local.md`, so the core block is
   already loaded; there is nothing to read at start. `utils/memory/hook.js` recalls notes on
   UserPromptSubmit, PreToolUse (triggers), and PostToolUseFailure, announces background saves at
-  SessionStart, and queues the session at SessionEnd for extraction (a detached `claude -p`, no
-  tools). It stays silent for the `reviewer` and `verifier` subagents. Save notes yourself with
+  SessionStart, and queues the session at SessionEnd for extraction (a detached run of the session's own
+  CLI, no tools). It stays silent for the `reviewer` and `verifier` subagents. Save notes yourself with
   `pnpm memory add` as §13 says; the extraction only catches what you missed.
 - **Hooks** (`.claude/settings.json`): `audit_logger.js` appends redacted tool calls to
   `logs/<YYYYMMDD>/logging.jsonl`, and `auto_format.js` runs Prettier after Edit/Write. All hooks are listed once in

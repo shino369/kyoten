@@ -16,12 +16,16 @@ import fs from 'fs';
 import path from 'path';
 import { answerOf } from '../agent/cli.js';
 import { findSecrets, redactSecrets } from '../redact.js';
-import { writeFileAtomic } from '../task/store.js';
+import {
+  sessionFromEnv,
+  sessionHarness,
+  writeFileAtomic,
+} from '../task/store.js';
 import { callAgent } from './agent-call.js';
-import { readConfig } from './config.js';
+import { readConfig, savingOff } from './config.js';
 import { looksLikeInstruction } from './instructions.js';
 import { kindLabel, refreshAfterWrite, shorten } from './context.js';
-import { applyOps, extractCommand, validateOps } from './extract.js';
+import { applyOps, extractCommand, modelFor, validateOps } from './extract.js';
 import {
   EXTRACT_DIR,
   appendInbox,
@@ -109,6 +113,14 @@ export function consolidationDue(rootDir, { now = new Date() } = {}) {
   const since = (iso) =>
     typeof iso === 'string' ? now.getTime() - Date.parse(iso) : Infinity;
   if (since(state?.tried) < DAY_MS) return null;
+  // Consolidation sends the notes to a model: not while saving is off. Its
+  // state is untouched, so it is due again once saving is back on.
+  // An unreadable config counts as off: nothing leaves without a clear yes.
+  try {
+    if (savingOff(readConfig(dir), null)) return null;
+  } catch {
+    return null;
+  }
   const changes = countOps(dir) - (state?.ops ?? 0);
   if (since(state?.at) >= WEEK_MS && changes >= MIN_CHANGES) return 'weekly';
   if (
@@ -261,16 +273,23 @@ export function cleanProfile(lines) {
 }
 
 /**
- * The model of the latest journal run that had one (the main session's).
+ * The agent and model of the latest applied journal run. Old runs have no
+ * `agent` field; they ran on claude.
  *
  * @param {string} dir
- * @returns {string | null}
+ * @returns {{ agent: string, model: string | null } | null}
  */
-function lastModel(dir) {
+function lastRun(dir) {
   const run = readJournal(dir)
     .reverse()
-    .find((item) => typeof item.model === 'string');
-  return run ? run.model : null;
+    .find(
+      (item) => item.status === 'applied' || item.status === 'consolidated'
+    );
+  if (!run) return null;
+  return {
+    agent: typeof run.agent === 'string' ? run.agent : 'claude',
+    model: typeof run.model === 'string' ? run.model : null,
+  };
 }
 
 /**
@@ -285,6 +304,13 @@ export function consolidate(deps) {
   const now = deps.now();
   const at = now.toISOString();
   const base = { at, job: 'consolidation', session: 'consolidation' };
+  const config = readConfig(dir);
+  const session = sessionFromEnv(deps.env);
+  if (!deps.dryRun && !deps.force && savingOff(config, session)) {
+    const run = { ...base, status: 'off' };
+    appendJournal(dir, run);
+    return run;
+  }
   const { shown, groups } = consolidationInput(loadNotes(dir).notes);
   if (shown.length === 0) {
     const run = { ...base, status: 'nothing' };
@@ -294,16 +320,44 @@ export function consolidate(deps) {
     return run;
   }
   const prompt = buildConsolidationPrompt({ shown, groups });
-  const model = readConfig(dir).extractModel ?? lastModel(dir);
-  if (deps.dryRun) return { ...base, status: 'dry-run', model, prompt };
+  const last = lastRun(dir);
+  const agent =
+    config.extractAgent ?? last?.agent ?? sessionHarness(deps.env) ?? 'claude';
+  const model = modelFor({
+    agent,
+    configured: config.extractAgent,
+    extractModel: config.extractModel,
+    ownModel: last?.agent === agent ? last.model : null,
+  });
+  if (deps.dryRun) return { ...base, status: 'dry-run', agent, model, prompt };
 
   const command = extractCommand({
-    agent: 'claude',
+    agent,
     model,
     rootDir: deps.rootDir,
   });
-  const result = callAgent(deps, command, prompt);
+  const result = callAgent(deps, command, prompt, {
+    job: 'consolidation',
+    cancel: () => !deps.force && Boolean(savingOff(readConfig(dir), session)),
+  });
+  if (result.cancelled) {
+    const run = { ...base, status: 'off', agent, model };
+    appendJournal(dir, run);
+    return run;
+  }
   const answer = parseConsolidation(answerOf(result));
+  // Saving may have been turned off while the agent ran.
+  if (!deps.force && savingOff(readConfig(dir), session)) {
+    const run = {
+      ...base,
+      status: 'off',
+      agent,
+      model,
+      durationMs: result.durationMs,
+    };
+    appendJournal(dir, run);
+    return run;
+  }
   /** @type {string[]} */
   const noAdds = [];
   // ADD ops become NOOPs, so validateOps numbers the rest as the model did.
@@ -337,6 +391,7 @@ export function consolidate(deps) {
   const run = {
     ...base,
     status: 'consolidated',
+    agent,
     model,
     changes,
     profile: profile.lines.length,

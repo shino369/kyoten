@@ -24,6 +24,8 @@ export default defineConfig({
 
     // Tests never see the session of the agent running them: task commands
     // would otherwise resolve to that session's task (utils/task/store.js).
+    // MEMORY_EXTRACT is cleared too so tests started from headless agents
+    // (pnpm loop, pnpm swarm) still exercise the memory hooks.
     env: {
       TASK_SESSION: '',
       CODEX_THREAD_ID: '',
@@ -31,6 +33,7 @@ export default defineConfig({
       DSH_SESSION_ID: '',
       ANTIGRAVITY_CONVERSATION_ID: '',
       CLAUDE_CODE_SESSION_ID: '',
+      MEMORY_EXTRACT: '',
     },
 
     // Include patterns

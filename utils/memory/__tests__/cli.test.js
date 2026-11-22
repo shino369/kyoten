@@ -787,6 +787,27 @@ describe('consolidate and undo', () => {
     lock?.release();
   });
 
+  test('should refuse while saving is off unless forced, and allow a dry run', () => {
+    writeConfig(dir, { ...DEFAULT_CONFIG, off: true });
+    const runAgent = agent({ profile: [], ops: [] });
+
+    expect(() => run(['consolidate'], { runAgent })).toThrow(
+      /Saving to memory is off everywhere.*Fix: pnpm memory on.*--force/s
+    );
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(run(['consolidate', '--dry-run'], { runAgent }).out).toMatch(
+      /^Would send the consolidation/
+    );
+    expect(run(['consolidate', '--force'], { runAgent }).code).toBe(0);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+  });
+
+  test('should refuse when only this session has saving off', () => {
+    writeConfig(dir, { ...DEFAULT_CONFIG, offSessions: ['sess-1'] });
+
+    expect(() => run(['consolidate'])).toThrow(/off for this session/);
+  });
+
   test('should refuse before memory is set up', () => {
     fs.rmSync(dir, { recursive: true });
 
@@ -972,6 +993,80 @@ describe('personalize --compact and --audit', () => {
     expect(fs.readFileSync(kept, 'utf-8')).toMatch(/^<!-- Kept note -->/);
     expect(fs.readFileSync(file, 'utf-8')).toBe(input);
     expect(readPersonalization(dir).persona).toBe(short);
+  });
+
+  test.each([
+    [{ CODEX_THREAD_ID: 'cx-1' }, null, 'codex'],
+    [{ DSH_SESSION_ID: 'd-1' }, null, 'dsh'],
+    [{ CLAUDE_CODE_SESSION_ID: 'cc-1' }, 'agy', 'agy'],
+    [{}, null, 'claude'],
+  ])(
+    'should pick the persona job agent from env %j and config %s',
+    (env, extractAgent, agent) => {
+      const runAgent = fakeAgent();
+      run(['personalize', '--persona', 'Stored persona.']);
+      if (extractAgent) {
+        writeConfig(dir, {
+          ...DEFAULT_CONFIG,
+          extractAgent: /** @type {any} */ (extractAgent),
+        });
+      }
+
+      run(['personalize', '--audit'], {
+        runAgent,
+        env: { ...ENV, ...env },
+      });
+
+      expect(
+        /** @type {any} */ (runAgent.mock.calls.at(-1))[0].command.agent
+      ).toBe(agent);
+    }
+  );
+
+  test('should let --agent beat the config and the session', () => {
+    const runAgent = fakeAgent();
+    run(['personalize', '--persona', 'Stored persona.']);
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'dsh' });
+
+    run(['personalize', '--audit', '--agent', 'agy'], {
+      runAgent,
+      env: { ...ENV, CODEX_THREAD_ID: 'cx-1' },
+    });
+
+    expect(
+      /** @type {any} */ (runAgent.mock.calls.at(-1))[0].command.agent
+    ).toBe('agy');
+  });
+
+  test('should name another agent when the persona agent CLI is missing', () => {
+    const runAgent = vi.fn(() => {
+      throw new Error('claude was not found (agent claude).\nFix: install it');
+    });
+    run(['personalize', '--persona', 'Stored persona.']);
+
+    expect(() => run(['personalize', '--audit'], { runAgent })).toThrow(
+      /Fix: use --agent codex\nFix: use --agent dsh\nFix: use --agent agy$/
+    );
+  });
+
+  test('should pass configured extractModel to persona jobs only when the agent matches', () => {
+    const runAgent = fakeAgent();
+    run(['personalize', '--persona', 'Stored persona.']);
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      extractAgent: 'codex',
+      extractModel: 'gpt-5.4-mini',
+    });
+
+    run(['personalize', '--audit'], { runAgent });
+    expect(
+      /** @type {any} */ (runAgent.mock.calls.at(-1))[0].command.args
+    ).toContain('gpt-5.4-mini');
+
+    run(['personalize', '--audit', '--agent', 'agy'], { runAgent });
+    expect(
+      /** @type {any} */ (runAgent.mock.calls.at(-1))[0].command.args
+    ).not.toContain('gpt-5.4-mini');
   });
 
   test('should use memory/persona.md before the stored persona and only write a dry-run candidate', () => {
@@ -1402,6 +1497,7 @@ describe('status', () => {
       personalizationEnabled: true,
       saving: 'on',
       extractModel: null,
+      extractAgent: null,
       missing: ['AGENTS.local.md', 'CLAUDE.local.md'],
       warnings: [],
     });
@@ -2581,7 +2677,7 @@ describe('personalize', () => {
 describe('set', () => {
   test('should show the settings without flags', () => {
     expect(run(['set']).out).toBe(
-      "Extraction model: the main session's model\nCore budget: 3000 characters (default)"
+      "Memory agent: the session's own CLI\nExtraction model: the main session's model\nCore budget: 3000 characters (default)"
     );
   });
 
@@ -2590,6 +2686,85 @@ describe('set', () => {
       /^Extraction model: claude-haiku-5-5$/m
     );
     expect(readConfig(dir).extractModel).toBe('claude-haiku-5-5');
+  });
+
+  test('should set the memory agent and go back to the default', () => {
+    expect(run(['set', '--extract-agent', 'codex']).out).toMatch(
+      /^Memory agent: codex$/m
+    );
+    expect(readConfig(dir).extractAgent).toBe('codex');
+    expect(run(['set', '--extract-agent', 'default']).out).toMatch(
+      /^Memory agent: the session's own CLI$/m
+    );
+    expect(readConfig(dir).extractAgent).toBeNull();
+  });
+
+  test('should refuse an unknown memory agent', () => {
+    expect(() => run(['set', '--extract-agent', 'gemini'])).toThrow(
+      /claude, codex, dsh, agy/
+    );
+  });
+
+  test('should clear the stored model when switching only --extract-agent, and refuse --extract-model for dsh', () => {
+    run(['set', '--extract-model', 'claude-haiku-5-5']);
+    expect(readConfig(dir).extractModel).toBe('claude-haiku-5-5');
+
+    run(['set', '--extract-agent', 'codex']);
+    expect(readConfig(dir)).toMatchObject({
+      extractAgent: 'codex',
+      extractModel: null,
+    });
+
+    run(['set', '--extract-agent', 'codex', '--extract-model', 'gpt-5.4']);
+    expect(readConfig(dir)).toMatchObject({
+      extractAgent: 'codex',
+      extractModel: 'gpt-5.4',
+    });
+
+    // Re-setting the same agent keeps its model.
+    run(['set', '--extract-agent', 'codex']);
+    expect(readConfig(dir).extractModel).toBe('gpt-5.4');
+
+    // Switching to dsh clears the old model cleanly, while pairing them fails.
+    run(['set', '--extract-agent', 'dsh']);
+    expect(readConfig(dir)).toMatchObject({
+      extractAgent: 'dsh',
+      extractModel: null,
+    });
+    expect(() =>
+      run(['set', '--extract-agent', 'dsh', '--extract-model', 'deepseek-v4'])
+    ).toThrow(/DSH selects its model in its profile/);
+  });
+
+  test('should recover from a legacy config file with dsh and extractModel', () => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, CONFIG_FILE),
+      JSON.stringify({ extractAgent: 'dsh', extractModel: 'deepseek-v4' })
+    );
+
+    expect(run(['off']).code).toBe(0);
+    expect(readConfig(dir)).toMatchObject({
+      off: true,
+      extractAgent: 'dsh',
+      extractModel: null,
+    });
+    expect(run(['set', '--extract-model', 'default']).code).toBe(0);
+    expect(run(['set', '--extract-agent', 'codex']).code).toBe(0);
+    expect(readConfig(dir).extractAgent).toBe('codex');
+  });
+
+  test('should show the memory agent in status', () => {
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'dsh' });
+
+    expect(run(['status']).out).toMatch(/^Memory agent: dsh$/m);
+    expect(runJson(['status']).extractAgent).toBe('dsh');
+  });
+
+  test('should show the default memory agent in status', () => {
+    expect(run(['status']).out).toMatch(
+      /^Memory agent: the session's own CLI$/m
+    );
   });
 
   test('should set the core budget and re-render', () => {

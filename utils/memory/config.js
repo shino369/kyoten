@@ -6,6 +6,8 @@
  *   these sessions only (an "incognito" session). Recall still works.
  * - `extractModel`: the model extraction uses; null means the main session's
  *   model (the workspace rule).
+ * - `extractAgent`: the agent CLI memory jobs run on; null means the
+ *   session's own CLI (consolidation: the last run's).
  * - `budget`: the core block's size in characters; null means CORE_BUDGET.
  * - `personalizationEnabled`: apply saved personalization to agent sessions.
  *
@@ -14,6 +16,7 @@
 import fs from 'fs';
 import path from 'path';
 import { SESSION_ID_RE, readIfExists, writeFileAtomic } from '../task/store.js';
+import { CALL_AGENTS } from './agent-call.js';
 import { MemoryError } from './store.js';
 
 export const CONFIG_FILE = 'config.json';
@@ -27,6 +30,7 @@ const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$/;
  * @property {boolean} off
  * @property {string[]} offSessions
  * @property {string | null} extractModel
+ * @property {import('./agent-call.js').CallAgent | null} extractAgent
  * @property {number | null} budget
  * @property {boolean} personalizationEnabled
  */
@@ -36,6 +40,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   off: false,
   offSessions: [],
   extractModel: null,
+  extractAgent: null,
   budget: null,
   personalizationEnabled: true,
 });
@@ -69,9 +74,10 @@ function normalizeSessions(value) {
  * Validate settings and fill in the defaults. Throws MemoryError('invalid').
  *
  * @param {unknown} input
+ * @param {{ allowLegacyDshModel?: boolean }} [options]
  * @returns {MemoryConfig}
  */
-export function normalizeConfig(input) {
+export function normalizeConfig(input, { allowLegacyDshModel = false } = {}) {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) {
     invalid('The memory config must be an object.');
   }
@@ -85,7 +91,7 @@ export function normalizeConfig(input) {
   if (typeof config.personalizationEnabled !== 'boolean') {
     invalid('personalizationEnabled must be true or false.');
   }
-  const extractModel = config.extractModel;
+  let extractModel = config.extractModel;
   if (
     extractModel !== null &&
     (typeof extractModel !== 'string' || !MODEL_RE.test(extractModel))
@@ -93,6 +99,24 @@ export function normalizeConfig(input) {
     invalid(
       `Invalid model name ${JSON.stringify(extractModel)}: one word, such as claude-sonnet-5-5.`
     );
+  }
+  const extractAgent = config.extractAgent;
+  if (
+    extractAgent !== null &&
+    !CALL_AGENTS.includes(/** @type {any} */ (extractAgent))
+  ) {
+    invalid(
+      `Invalid agent ${JSON.stringify(extractAgent)}: use ${CALL_AGENTS.join(', ')}, or default.`
+    );
+  }
+  if (extractAgent === 'dsh' && extractModel !== null) {
+    if (allowLegacyDshModel) {
+      extractModel = null;
+    } else {
+      invalid(
+        'DSH selects its model in its profile, not with --extract-model.\nFix: drop --extract-model, or pick another --extract-agent'
+      );
+    }
   }
   const { budget } = config;
   if (
@@ -111,6 +135,7 @@ export function normalizeConfig(input) {
     off: config.off,
     offSessions: normalizeSessions(config.offSessions),
     extractModel,
+    extractAgent,
     budget,
     personalizationEnabled: config.personalizationEnabled,
   };
@@ -131,7 +156,7 @@ export function readConfig(dir) {
       `memory/${CONFIG_FILE} is not valid JSON (${/** @type {Error} */ (error).message}). Fix it, or delete it and run pnpm memory set again.`
     );
   }
-  return normalizeConfig(parsed);
+  return normalizeConfig(parsed, { allowLegacyDshModel: true });
 }
 
 /**

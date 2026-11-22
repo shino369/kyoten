@@ -936,10 +936,16 @@ describe('extractCommand', () => {
     ).toEqual(['--tools', '']);
   });
 
-  test('should refuse an agent without extraction support', () => {
+  test.each(['codex', 'dsh', 'agy'])('should accept %s', (agent) => {
+    expect(extractCommand({ agent, model: null, rootDir: root }).agent).toBe(
+      agent
+    );
+  });
+
+  test('should refuse an agent without memory-job support', () => {
     expect(() =>
-      extractCommand({ agent: 'codex', model: null, rootDir: root })
-    ).toThrow(/claude/);
+      extractCommand({ agent: 'gemini', model: null, rootDir: root })
+    ).toThrow(/claude, codex, dsh, agy \(got gemini\)/);
   });
 });
 
@@ -1052,40 +1058,225 @@ describe('extractEntry', () => {
     ]);
   });
 
-  test('should extract a Codex rollout with Claude, without its model name', () => {
-    const msg = (
-      /** @type {string} */ role,
-      /** @type {string} */ text,
-      /** @type {string} */ block
-    ) => ({
-      type: 'response_item',
-      payload: { type: 'message', role, content: [{ type: block, text }] },
-    });
-    writeTranscript([
-      { type: 'turn_context', payload: { model: 'gpt-5.5', cwd: repoDir } },
-      msg(
-        'user',
-        'From now on use pnpm in every repo; npm breaks the lockfile here.',
-        'input_text'
-      ),
-      msg(
-        'assistant',
-        `Understood. ${'I switched to pnpm. '.repeat(10)}`,
-        'output_text'
-      ),
-    ]);
-    const runAgent = agentReturning({ ops: [ADD_PNPM] });
+  describe('the extraction agent', () => {
+    const CODEX_NO_MCP =
+      'No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.';
+    /** A fake agent that answers the Codex MCP probe and the real call. */
+    const answering = () =>
+      vi.fn((/** @type {any} */ call) => {
+        const stdout =
+          call.prompt === '' ? CODEX_NO_MCP : JSON.stringify({ ops: [] });
+        return {
+          code: 0,
+          signal: null,
+          stdout,
+          output: stdout,
+          durationMs: 5,
+        };
+      });
+    /** @param {import('vitest').Mock} runAgent */
+    const lastCall = (runAgent) =>
+      /** @type {any} */ (runAgent.mock.calls.at(-1))[0];
 
-    const run = extractEntry(queued({ harness: 'codex' }), deps({ runAgent }));
+    const writeCodexSession = () => {
+      const msg = (
+        /** @type {string} */ role,
+        /** @type {string} */ text,
+        /** @type {string} */ block
+      ) => ({
+        type: 'response_item',
+        payload: { type: 'message', role, content: [{ type: block, text }] },
+      });
+      writeTranscript([
+        { type: 'turn_context', payload: { model: 'gpt-5.5', cwd: repoDir } },
+        msg(
+          'user',
+          'From now on use pnpm in every repo; npm breaks the lockfile here.',
+          'input_text'
+        ),
+        msg(
+          'assistant',
+          `Understood. ${'I switched to pnpm. '.repeat(10)}`,
+          'output_text'
+        ),
+      ]);
+    };
 
-    expect(run).toMatchObject({
-      status: 'applied',
-      harness: 'codex',
-      model: null,
+    test('should extract a Codex rollout with Codex, on its own model', () => {
+      writeCodexSession();
+      const runAgent = answering();
+
+      const run = extractEntry(
+        queued({ harness: 'codex' }),
+        deps({ runAgent })
+      );
+
+      expect(run).toMatchObject({
+        status: 'applied',
+        harness: 'codex',
+        agent: 'codex',
+        model: 'gpt-5.5',
+      });
+      const call = lastCall(runAgent);
+      expect(call.command.bin).toBe('codex');
+      expect(call.prompt).toContain('[user] From now on use pnpm');
+      expect(call.command.args.slice(-2)).toEqual(['--model', 'gpt-5.5']);
     });
-    const call = /** @type {any} */ (runAgent.mock.calls[0])[0];
-    expect(call.prompt).toContain('[user] From now on use pnpm');
-    expect(call.command.args).not.toContain('--model');
+
+    test('should record claude as the agent of a Claude session', () => {
+      richSession();
+
+      const run = extractEntry(queued(), deps());
+
+      expect(run).toMatchObject({
+        agent: 'claude',
+        model: 'us.anthropic.claude-opus-5-5',
+      });
+    });
+
+    test('should not pair extractModel with a session on another agent', () => {
+      writeCodexSession();
+      writeConfig(dir, {
+        ...DEFAULT_CONFIG,
+        extractModel: 'claude-sonnet-5-5',
+      });
+
+      const run = extractEntry(
+        queued({ harness: 'codex' }),
+        deps({ runAgent: answering() })
+      );
+
+      expect(run).toMatchObject({ agent: 'codex', model: 'gpt-5.5' });
+    });
+
+    test.each(['codex', 'dsh', 'agy'])(
+      'should run a Claude session on %s when extractAgent says so, without the Claude model',
+      (agent) => {
+        richSession();
+        writeConfig(dir, {
+          ...DEFAULT_CONFIG,
+          extractAgent: /** @type {any} */ (agent),
+        });
+        const runAgent = answering();
+
+        const run = extractEntry(queued(), deps({ runAgent }));
+
+        expect(run).toMatchObject({ agent, model: null });
+        expect(lastCall(runAgent).command.agent).toBe(agent);
+        expect(lastCall(runAgent).command.args).not.toContain('--model');
+      }
+    );
+
+    test('should pair extractModel with the configured agent', () => {
+      richSession();
+      writeConfig(dir, {
+        ...DEFAULT_CONFIG,
+        extractAgent: 'codex',
+        extractModel: 'gpt-5.5-mini',
+      });
+      const runAgent = answering();
+
+      const run = extractEntry(queued(), deps({ runAgent }));
+
+      expect(run).toMatchObject({ agent: 'codex', model: 'gpt-5.5-mini' });
+      expect(lastCall(runAgent).command.args.slice(-2)).toEqual([
+        '--model',
+        'gpt-5.5-mini',
+      ]);
+    });
+
+    test('should pair extractModel with claude when extractAgent is claude', () => {
+      writeCodexSession();
+      writeConfig(dir, {
+        ...DEFAULT_CONFIG,
+        extractAgent: 'claude',
+        extractModel: 'claude-sonnet-5-5',
+      });
+
+      const run = extractEntry(
+        queued({ harness: 'codex' }),
+        deps({ runAgent: answering() })
+      );
+
+      expect(run).toMatchObject({
+        agent: 'claude',
+        model: 'claude-sonnet-5-5',
+      });
+    });
+
+    test('should pass no model to claude for a Codex session', () => {
+      writeCodexSession();
+      writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'claude' });
+
+      const run = extractEntry(
+        queued({ harness: 'codex' }),
+        deps({ runAgent: answering() })
+      );
+
+      expect(run).toMatchObject({ agent: 'claude', model: null });
+    });
+
+    test('should name a replacement agent when the CLI is missing', () => {
+      writeCodexSession();
+      const runAgent = vi.fn(() => {
+        throw new Error('codex was not found (agent codex).\nFix: install it');
+      });
+
+      expect(() =>
+        extractEntry(queued({ harness: 'codex' }), deps({ runAgent }))
+      ).toThrow(
+        /Fix: pnpm memory set --extract-agent claude\nFix: pnpm memory set --extract-agent dsh\nFix: pnpm memory set --extract-agent agy$/
+      );
+    });
+
+    test('should stop before sending the transcript when saving is turned off during the Codex probe', () => {
+      writeCodexSession();
+      const runAgent = vi.fn(() => {
+        writeConfig(dir, { ...DEFAULT_CONFIG, off: true });
+        return {
+          code: 0,
+          signal: null,
+          output: '',
+          stdout:
+            'No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.\n',
+          durationMs: 5,
+        };
+      });
+
+      const run = extractEntry(
+        queued({ harness: 'codex' }),
+        deps({ runAgent })
+      );
+
+      expect(run.status).toBe('off');
+      expect(runAgent).toHaveBeenCalledTimes(1);
+    });
+
+    test('should name a replacement agent when the Codex check fails', () => {
+      writeCodexSession();
+      const runAgent = agentReturning('Configured MCP server.');
+
+      expect(() =>
+        extractEntry(queued({ harness: 'codex' }), deps({ runAgent }))
+      ).toThrow(
+        /Cannot verify Codex persona isolation[\s\S]*Fix: pnpm memory set --extract-agent claude\nFix: pnpm memory set --extract-agent dsh\nFix: pnpm memory set --extract-agent agy$/
+      );
+    });
+
+    test('should journal the Fix line of a failed worker run', () => {
+      writeCodexSession();
+      queued({ harness: 'codex' });
+      const runAgent = vi.fn(() => {
+        throw new Error('codex was not found (agent codex).');
+      });
+
+      const runs = runWorker(deps({ runAgent }));
+
+      expect(runs?.[0]).toMatchObject({
+        status: 'failed',
+        error: expect.stringContaining('Fix: pnpm memory set --extract-agent'),
+      });
+    });
   });
 
   test('should use the queued folder when the transcript names none', () => {

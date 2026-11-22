@@ -2,14 +2,14 @@
  * Worktree isolation for `pnpm loop`: unattended runs never touch the main
  * checkout. From a linked worktree the loop runs in place; from the main
  * checkout it creates (or reuses) `../<repo>-wt/<task>` on branch
- * `loop/<task>`, copies the git-ignored task directory and the memory files
- * (AGENTS.local.md, CLAUDE.local.md) into it, and installs dependencies
- * there. Nothing is ever deleted.
+ * `loop/<task>`, copies the git-ignored task directory into it (not the personal
+ * AGENTS.local.md and CLAUDE.local.md, so headless agents start clean), and
+ * installs dependencies there. Nothing is ever deleted.
  */
 import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { copyLocalFiles } from '../memory/render.js';
+import { LOCAL_FILES } from '../memory/render.js';
 import { pnpmInstall } from '../spawn.js';
 import { tasksRoot, writeActive } from '../task/store.js';
 
@@ -94,6 +94,24 @@ export const loopBranch = (task) => `loop/${task}`;
  */
 
 /**
+ * Refuse a worktree that still holds personal memory files (left over from an
+ * older checkout): Claude Code and DSH load them natively despite
+ * MEMORY_EXTRACT=1, breaking the clean-context guarantee.
+ *
+ * @param {string} dir
+ */
+export function assertCleanWorktree(dir) {
+  const stale = LOCAL_FILES.filter((file) =>
+    fs.existsSync(path.join(dir, file))
+  );
+  if (stale.length > 0) {
+    throw new Error(
+      `${dir} still holds personal memory files (${stale.join(', ')}), which Claude Code and DSH load natively.\nFix: remove ${stale.join(' and ')} from ${dir}, or run from a fresh worktree`
+    );
+  }
+}
+
+/**
  * Find or create the loop worktree for a task.
  *
  * @param {{ rootDir: string, task: string, spawn?: Spawn, install?: Install }} options
@@ -106,6 +124,7 @@ export function prepareWorktree({
   install = (dir) => pnpmInstall(dir, spawn),
 }) {
   if (isLinkedWorktree(rootDir, spawn)) {
+    assertCleanWorktree(rootDir);
     return {
       dir: rootDir,
       inPlace: true,
@@ -169,7 +188,7 @@ export function prepareWorktree({
     fs.cpSync(source, target, { recursive: true });
   }
   writeActive(dir, task);
-  copyLocalFiles(rootDir, dir);
+  assertCleanWorktree(dir);
 
   let installed = false;
   if (!fs.existsSync(path.join(dir, 'node_modules'))) {

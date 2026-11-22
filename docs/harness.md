@@ -329,6 +329,11 @@ result and copy or merge it back yourself.
 against `tools/catalog.json`. `pnpm agent ask --agent codex "…"` runs one read-only turn of another
 agent and saves the exchange in the task's `tmp/`. `pnpm loop`, `pnpm swarm`, and the review loop
 use the same adapters (`utils/loop/adapters.js`): fixed argument arrays, prompt on stdin, no shell.
+Every headless child gets `MEMORY_EXTRACT=1`, so the workspace's memory hooks stay silent in it: no
+injected core block, persona, or recalled notes, and its session is never queued for extraction into
+memory. Claude Code and DSH still load `AGENTS.local.md` natively when they run in the workspace root
+(`pnpm agent ask`); `pnpm loop` and `pnpm swarm` worktrees have no such file, so reviews and fixes
+there start with a clean context.
 
 | Agent  | Write mode (fixers)                                                      | Read mode (reviewers, `agent ask`)                                        |
 | ------ | ------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
@@ -405,13 +410,29 @@ digests, at most 3,000 characters) that every session loads. Rules for agents: A
 - **Extraction (B)** (Claude Code, Codex, and Antigravity; DSH has no SessionEnd or transcript):
   SessionEnd (or `SessionStart` idle catch-up in Antigravity, using `condenseAgy`) queues the
   session; a detached worker reads what the transcript gained, condenses it (prompts, final
-  replies, failed commands; secrets left out), and makes one read-only `claude -p` call without
-  tools for ADD/UPDATE/DELETE ops on the related notes. Secrets are refused, instruction-like ops
+  replies, failed commands; secrets left out), and makes one read-only call without tools, on the
+  session's own agent CLI (claude, codex, dsh, or agy; `pnpm memory set --extract-agent <agent>`
+  overrides, `default` restores), for ADD/UPDATE/DELETE ops on the related notes. `--extract-model`
+  pairs with the configured agent (claude by default; cleared when switching `--extract-agent`
+  alone, and not accepted for DSH, which chooses its model in its profile); otherwise the session's
+  own model is used.
+  Consolidation and `personalize --compact/--audit` follow the same agent and model choice (consolidation: the
+  last run's agent, else the session's own CLI, else Claude). Codex needs zero configured MCP servers; a missing CLI or failed check says
+  which `--extract-agent` to switch to. Secrets are refused, instruction-like ops
   wait in `memory/inbox.jsonl`, and the next session announces the saves.
+  Memory jobs build their isolation arguments without a double quote, so they start through
+  Windows `.cmd` shims (which refuse `"`): Codex gets bare or single-quoted TOML values, Claude gets
+  its settings as a file in the job's temporary folder. Antigravity takes its settings as JSON on
+  the command line, so it needs a native `agy.exe`; behind a `.cmd` shim the job fails with a Fix
+  line naming another `--extract-agent`. Not verified on a real Windows machine. Consolidation never
+  runs while saving is off everywhere (`pnpm memory off`; it stays due and runs once saving is back
+  on); a manual `pnpm memory consolidate` then refuses with a Fix line unless `--force` (a
+  `--dry-run` is always allowed).
 - **Safety:** every write path refuses text matching `utils/redact.js`; notes are framed as facts;
   `pnpm workspace:check` fails if a memory file is tracked.
-- **Worktrees:** `pnpm loop` and `pnpm swarm` copy `AGENTS.local.md` and `CLAUDE.local.md` into
-  their worktrees; the store stays in the main checkout.
+- **Worktrees:** `pnpm loop` and `pnpm swarm` do not copy `AGENTS.local.md` or `CLAUDE.local.md`
+  into their worktrees (and refuse to reuse a worktree that still holds old copies), so headless
+  agents there start with a clean context; the store stays in the main checkout.
 - **Export and import** (`pnpm memory export` / `import`): one `.tar.gz` with a checksummed
   manifest, validated (paths, entry types, checksums) before anything is written; imports merge
   and take a snapshot first.

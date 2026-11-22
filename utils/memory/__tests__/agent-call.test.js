@@ -6,6 +6,7 @@ import { INNER_LOOP_ENV } from '../../task/loop.js';
 import {
   AGENT_CALL_TIMEOUT_MS,
   CALL_AGENTS,
+  CLAUDE_SETTINGS_FILE,
   callAgent,
   headlessCommand,
   jsonObjectOf,
@@ -56,6 +57,7 @@ describe('headlessCommand', () => {
     );
     expect(command.args).toContain('--strict-mcp-config');
     expect(command.args).toContain('{"disableAllHooks":true}');
+    expect(command.args).toContain('--settings');
     expect(command.args.slice(-4)).toEqual(['--tools', '', '--model', 'opus']);
     expect(
       headlessCommand({ agent: 'claude', rootDir: root }).args.slice(-2)
@@ -68,14 +70,15 @@ describe('headlessCommand', () => {
 
     expect(codex.bin).toBe('codex');
     expect(codex.args).toContain(
-      'permissions.memory-persona.filesystem={":root"="deny"}'
+      "permissions.memory-persona.filesystem={':root'='deny'}"
     );
+    expect(codex.args).toContain('default_permissions=memory-persona');
     expect(codex.args).not.toContain('--sandbox');
     expect(codex.args).toContain('--skip-git-repo-check');
     expect(codex.args).toContain('--ignore-user-config');
     expect(codex.args).toContain('shell_tool');
     expect(codex.args).toContain('view_image');
-    expect(codex.args).toContain('web_search="disabled"');
+    expect(codex.args).toContain('web_search=disabled');
     expect(codex.args).not.toContain('--tools');
     expect(dsh.bin).toBe('dsh');
     expect(dsh.args).toContain('read-only');
@@ -114,9 +117,27 @@ describe('headlessCommand', () => {
     });
   });
 
+  test.each([
+    ['codex', 'm'],
+    ['dsh', null],
+  ])(
+    'should keep double quotes out of the %s command line (Windows .cmd shims)',
+    (agent, model) => {
+      const command = headlessCommand({ agent, model, rootDir: root });
+
+      expect(command.args.filter((arg) => arg.includes('"'))).toEqual([]);
+    }
+  );
+
+  test('should refuse --model for dsh (DSH selects its model in its profile)', () => {
+    expect(() =>
+      headlessCommand({ agent: 'dsh', model: 'deepseek-v4', rootDir: root })
+    ).toThrow(/DSH selects its model in its profile/);
+  });
+
   test('should refuse an agent memory jobs cannot call', () => {
     expect(() => headlessCommand({ agent: 'gemini', rootDir: root })).toThrow(
-      `Memory jobs run on claude, codex, dsh, agy (got gemini).\nFix: use --agent ${CALL_AGENTS.join('|')}`
+      `Memory jobs run on claude, codex, dsh, agy (got gemini).\n${CALL_AGENTS.map((name) => `Fix: use --agent ${name}`).join('\n')}`
     );
   });
 });
@@ -147,7 +168,7 @@ describe('callAgent', () => {
     expect(result.stdout).toBe('answer');
     const call = /** @type {any} */ (runAgent.mock.calls[0])[0];
     expect(call).toMatchObject({
-      command,
+      command: expect.objectContaining({ bin: command.bin }),
       prompt: 'P',
       timeoutMs: AGENT_CALL_TIMEOUT_MS,
       env: { PATH: '/bin', [EXTRACT_ENV]: '1', [INNER_LOOP_ENV]: 'off' },
@@ -206,6 +227,153 @@ describe('callAgent', () => {
       expect(fs.readdirSync(root)).toEqual([]);
     }
   );
+
+  test.each([
+    [
+      'persona-audit',
+      'Fix: use --agent claude\nFix: use --agent dsh\nFix: use --agent agy',
+    ],
+    [
+      'extraction',
+      'Fix: pnpm memory set --extract-agent claude\nFix: pnpm memory set --extract-agent dsh\nFix: pnpm memory set --extract-agent agy',
+    ],
+  ])('should point a failed Codex check of %s at another agent', (job, fix) => {
+    const codex = headlessCommand({ agent: 'codex', rootDir: root });
+    const runAgent = agentReturning({ code: 1, stdout: 'x' });
+
+    expect(() => callAgent(deps(runAgent), codex, 'P', { job })).toThrow(
+      new RegExp(`${fix}$`)
+    );
+  });
+
+  test('should stop before sending the prompt when cancel returns true after the Codex probe', () => {
+    const codex = headlessCommand({ agent: 'codex', rootDir: root });
+    let cancelled = false;
+    const runAgent = vi.fn(() => {
+      cancelled = true;
+      return {
+        code: 0,
+        signal: null,
+        stdout:
+          'No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.\n',
+        output: '',
+        durationMs: 0,
+      };
+    });
+
+    const result = callAgent(deps(runAgent), codex, 'Private note', {
+      cancel: () => cancelled,
+    });
+
+    expect(result.cancelled).toBe(true);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+    expect(fs.readdirSync(root)).toEqual([]);
+  });
+
+  test('should add a switch-agent Fix line to a missing CLI', () => {
+    const runAgent = vi.fn(() => {
+      throw new Error('claude was not found (agent claude).\nFix: install');
+    });
+
+    expect(() => callAgent(deps(runAgent), command, 'P')).toThrow(
+      /Fix: install\nFix: pnpm memory set --extract-agent codex\nFix: pnpm memory set --extract-agent dsh\nFix: pnpm memory set --extract-agent agy$/
+    );
+  });
+
+  test('should pass claude settings as a quote-free relative filename', () => {
+    const trickyTmp = path.join(root, 'a!b%c');
+    fs.mkdirSync(trickyTmp);
+    const claude = headlessCommand({ agent: 'claude', rootDir: root });
+    /** @type {string[]} */
+    let args = [];
+    let jobDir = '';
+    let settings = '';
+    const runAgent = vi.fn((/** @type {any} */ input) => {
+      args = input.command.args;
+      jobDir = input.cwd;
+      settings = fs.readFileSync(
+        path.join(input.cwd, args[args.indexOf('--settings') + 1]),
+        'utf-8'
+      );
+      return { code: 0, signal: null, stdout: 'a', output: 'a', durationMs: 1 };
+    });
+
+    callAgent(
+      { ...deps(/** @type {any} */ (runAgent)), tmpdir: () => trickyTmp },
+      claude,
+      'P'
+    );
+
+    const file = args[args.indexOf('--settings') + 1];
+    expect(file).toBe(CLAUDE_SETTINGS_FILE);
+    expect(args.filter((arg) => /["!%]/.test(arg))).toEqual([]);
+    expect(JSON.parse(settings)).toEqual({ disableAllHooks: true });
+    expect(fs.existsSync(path.join(jobDir, file))).toBe(false);
+    expect(claude.args).toContain('{"disableAllHooks":true}');
+  });
+
+  test('should rewrite the isolation --settings flag when the command already has one', () => {
+    const claude = headlessCommand({ agent: 'claude', rootDir: root });
+    const withPrefix = {
+      ...claude,
+      args: ['--settings', '/path/base.json', ...claude.args],
+    };
+    /** @type {string[]} */
+    let args = [];
+    let settings = '';
+    const runAgent = vi.fn((/** @type {any} */ input) => {
+      args = input.command.args;
+      settings = fs.readFileSync(
+        path.join(input.cwd, args[args.lastIndexOf('--settings') + 1]),
+        'utf-8'
+      );
+      return { code: 0, signal: null, stdout: 'a', output: 'a', durationMs: 1 };
+    });
+
+    callAgent(deps(/** @type {any} */ (runAgent)), withPrefix, 'P');
+
+    expect(args.slice(0, 2)).toEqual(['--settings', '/path/base.json']);
+    expect(args[args.lastIndexOf('--settings') + 1]).toBe(CLAUDE_SETTINGS_FILE);
+    expect(args.filter((arg) => arg.includes('"'))).toEqual([]);
+    expect(JSON.parse(settings)).toEqual({ disableAllHooks: true });
+  });
+
+  test('should leave a claude command without --settings alone', () => {
+    const runAgent = agentReturning();
+    const bare = { ...command, args: ['-p'] };
+
+    callAgent(deps(runAgent), bare, 'P');
+
+    expect(/** @type {any} */ (runAgent.mock.calls[0])[0].command).toEqual(
+      bare
+    );
+  });
+
+  test('should point agy at another agent when a .cmd shim refuses its JSON settings', () => {
+    const refusal =
+      '"{}" cannot be passed safely to a Windows .cmd/.bat shim (it contains " % ! or a line break).\nFix: pass it on stdin or in a file instead';
+    const runAgent = vi.fn(() => {
+      throw new Error(refusal);
+    });
+    const agy = headlessCommand({ agent: 'agy', rootDir: root });
+
+    expect(() => callAgent(deps(runAgent), agy, 'P')).toThrow(
+      /Fix: pnpm memory set --extract-agent claude\nFix: pnpm memory set --extract-agent codex\nFix: pnpm memory set --extract-agent dsh\n\(agy runs only through a native agy\.exe/
+    );
+  });
+
+  test('should pass other runner errors through unchanged', () => {
+    const boom = new Error('disk full');
+    const runAgent = vi.fn(() => {
+      throw boom;
+    });
+    expect(() => callAgent(deps(runAgent), command, 'P')).toThrow(boom);
+    const odd = vi.fn(() => {
+      // eslint-disable-next-line no-throw-literal -- a non-Error rejection
+      throw 'plain';
+    });
+    expect(() => callAgent(deps(odd), command, 'P')).toThrow('plain');
+  });
 
   test('should name the job and use its timeout', () => {
     const runAgent = agentReturning();

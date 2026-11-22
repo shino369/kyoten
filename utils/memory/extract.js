@@ -27,6 +27,7 @@ import { redactSecrets } from '../redact.js';
 import { ROOT_DIR } from '../workspace-config.js';
 import {
   AGENT_CALL_TIMEOUT_MS,
+  CALL_AGENTS,
   callAgent,
   headlessCommand,
   jsonObjectOf,
@@ -120,6 +121,7 @@ const CHANGE_FIELDS = /** @type {const} */ ([
  * @property {typeof defaultRunAgent} runAgent
  * @property {() => string} tmpdir
  * @property {boolean} [dryRun] build the prompt, call and change nothing
+ * @property {boolean} [force] override the saving-off guard for manual runs
  * @property {import('./queue.js').LockOptions} [lock]
  */
 
@@ -507,17 +509,34 @@ export function formatRun(run) {
 }
 
 /**
- * The headless command for one extraction call (Claude only: the model
- * names in transcripts are Claude's).
+ * The headless command for one extraction call, on any memory-job agent.
  *
  * @param {{ agent: string, model: string | null, rootDir: string }} input
  * @returns {import('../loop/adapters.js').AgentCommand}
  */
 export function extractCommand({ agent, model, rootDir }) {
-  if (agent !== 'claude') {
-    throw new Error(`Extraction runs on claude only (got ${agent}).`);
+  if (!CALL_AGENTS.includes(/** @type {any} */ (agent))) {
+    throw new Error(
+      `Extraction runs on ${CALL_AGENTS.join(', ')} (got ${agent}).`
+    );
   }
   return headlessCommand({ agent, model, rootDir });
+}
+
+/**
+ * The model a memory job passes: `extractModel` when the agent is the
+ * configured one (claude when none is configured), else `ownModel`.
+ *
+ * @param {{
+ *   agent: string, configured: string | null, extractModel: string | null,
+ *   ownModel: string | null,
+ * }} input
+ * @returns {string | null}
+ */
+export function modelFor({ agent, configured, extractModel, ownModel }) {
+  if (agent === 'dsh') return null;
+  if (extractModel && agent === (configured ?? 'claude')) return extractModel;
+  return ownModel;
 }
 
 /**
@@ -572,21 +591,31 @@ export function extractEntry(entry, deps) {
   const { notes, index } = loadIndex(dir);
   const related = relatedNotes(notes, index, sessionText, { repo });
   const prompt = buildPrompt({ session: sessionText, related, repo });
-  // The extractor is Claude whatever harness the session came from, so only
-  // a Claude session's own model name is passed on.
-  const model =
-    readConfig(dir).extractModel ??
-    (harness === 'claude' ? condensed.model : null);
+  // The extractor is the configured agent, else the session's own CLI.
+  // `extractModel` pairs with the configured agent (claude when none is
+  // set); otherwise only the session's own model name, and only when the
+  // extractor is the session's own CLI, is passed on.
+  const config = readConfig(dir);
+  const agent = config.extractAgent ?? harness;
+  const model = modelFor({
+    agent,
+    configured: config.extractAgent,
+    extractModel: config.extractModel,
+    ownModel: agent === harness ? condensed.model : null,
+  });
   if (deps.dryRun) {
-    return { ...base, status: 'dry-run', ...range, model, prompt };
+    return { ...base, status: 'dry-run', ...range, agent, model, prompt };
   }
 
   const command = extractCommand({
-    agent: 'claude',
+    agent,
     model,
     rootDir: deps.rootDir,
   });
-  const result = callAgent(deps, command, prompt);
+  const result = callAgent(deps, command, prompt, {
+    cancel: () => Boolean(savingOff(readConfig(dir), session)),
+  });
+  if (result.cancelled) return settle(offRun, chunk.end);
   const rawOps = parseOps(answerOf(result));
   // Saving may have been turned off while the agent ran.
   if (savingOff(readConfig(dir), session)) return settle(offRun, chunk.end);
@@ -610,6 +639,7 @@ export function extractEntry(entry, deps) {
       ...base,
       status: 'applied',
       ...range,
+      agent,
       model,
       changes,
       quarantined: checked.quarantined.length,
