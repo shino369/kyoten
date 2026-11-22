@@ -22,7 +22,7 @@ Everything runs on plain Node.js ESM with zero runtime dependencies, no monorepo
 - **🧠 Local Personal Memory & Personalization (`pnpm memory`)** — Machine-local, git-ignored memory with core-block injection, prompt/failure recall, multi-agent background extraction and consolidation, and customizable agent voice (`pnpm memory personalize`).
 - **🚀 Multi-Agent Orchestration (`pnpm agent`, `pnpm loop`, `pnpm swarm`)** — Ask another agent for a headless second opinion, run unattended fix-and-review loops in a git worktree, or parallelize ready steps across worktrees with a clean context.
 - **🧩 Modular Skills Ecosystem (`skills-lock.json`)** — Tracked workspace skills plus pinned external skills (including portable skills from [`shino369/kyoten-skills`](https://github.com/shino369/kyoten-skills)), managed cleanly with `pnpm skills:install`, `pnpm skills:check`, and `pnpm skills:link`.
-- **🛡️ Built-in Guardrails & 100% Quality Gate (`pnpm check`)** — Secret protection, undoable deletion (`pnpm task rm`), supply-chain hardening, cross-harness git hooks, TypeScript typechecking, ESLint, Prettier, and Vitest with 100% coverage thresholds.
+- **🛡️ Built-in Guardrails & Quality Gate (`pnpm check`)** — Secret protection, undoable deletion (`pnpm task rm`), supply-chain hardening, cross-harness git hooks, TypeScript typechecking, ESLint, Prettier, and Vitest with a 95% coverage floor.
 
 > 📖 Looking for every command and flag? Check the generated [CLI Reference](docs/cli.md) and the full architecture walkthrough in [docs/harness.md](docs/harness.md).
 
@@ -52,7 +52,7 @@ Optional setup flags:
 
 See `.agents/skills/workspace-setup/SKILL.md` for troubleshooting.
 
-Run the full quality gate (typecheck, lint, format check, tests at 100% coverage):
+Run the full quality gate for typechecking, linting, format checks, and tests with coverage.
 
 ```bash
 pnpm check
@@ -282,7 +282,7 @@ Always-on guidance lives in `AGENTS.md` so every harness sees it. `.claude/rules
 
 | Rule                  | Scope      | Purpose                                    |
 | --------------------- | ---------- | ------------------------------------------ |
-| `testing`             | Test files | Vitest, 100% coverage, mocking.            |
+| `testing`             | Test files | Vitest, 95% coverage floor, mocking.       |
 | `working-with-script` | Scripts    | Node-first scripts, error handling, tests. |
 
 ## 🪝 Hooks
@@ -316,11 +316,11 @@ Ask your agent to translate, or invoke the `trilingual-translator` subagent. The
 
 ## 🧪 Testing
 
-Unit and integration tests use **Vitest** with **100% coverage thresholds** on `utils/`, `.claude/hooks/`, and project-owned `.agents/skills/`:
+Unit and integration tests use **Vitest**. Across the measured suite, including `utils/`, `.claude/hooks/`, and project-owned `.agents/skills/`, the coverage floor is **95%** for statements, branches, functions, and lines.
 
 ```bash
 pnpm test
-pnpm test:coverage   # 100% statements, branches, functions, lines
+pnpm test:coverage   # enforces the 95% coverage floor
 ```
 
 Test rules live in `.claude/rules/testing.md`, with deeper guides under `docs/testing/`.

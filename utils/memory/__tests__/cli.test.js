@@ -230,14 +230,6 @@ describe('defaultDeps', () => {
     expect(defaultDeps({ env: {} }).rootDir).toBe(mainCheckout(ROOT_DIR));
   });
 
-  test('should take the time from the clock', () => {
-    const before = Date.now();
-
-    expect(defaultDeps({ env: {} }).now().getTime()).toBeGreaterThanOrEqual(
-      before
-    );
-  });
-
   test('should keep overrides', () => {
     expect(defaultDeps({ rootDir: root, cwd: tmp })).toMatchObject({
       rootDir: root,

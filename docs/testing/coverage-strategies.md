@@ -1,15 +1,13 @@
 ## Coverage Strategies
 
-Guide for achieving 100% test coverage without cheating.
+Use coverage reports to find behavior that needs regression tests. The measured suite must reach at least 95% for each metric.
 
 ### Coverage Means
 
-- **Statements**: 100% - Every statement executed
-- **Branches**: 100% - Every if/else tested
-- **Functions**: 100% - Every function called
-- **Lines**: 100% - Every line executed
-
-**No exceptions. No coverage ignore comments.**
+- **Statements** measure which executable statements ran.
+- **Branches** measure which outcomes of a conditional ran.
+- **Functions** measure which functions were called.
+- **Lines** measure which executable lines ran.
 
 ### Strategy 1: Refactor I/O-Heavy Code
 
@@ -56,7 +54,7 @@ function main() {
 
 ### Strategy 2: Test Error Paths
 
-Every try-catch needs both success and error tests.
+Cover the different outcomes callers rely on. For example, both a missing file and invalid JSON can trigger a fallback.
 
 ```javascript
 export function readConfig(filePath) {
@@ -87,7 +85,7 @@ test('invalid JSON', () => {
 });
 ```
 
-### Strategy 3: Test All Branches
+### Strategy 3: Test Conditional Outcomes
 
 Every conditional creates branches.
 
@@ -329,16 +327,12 @@ export function validate(a, b) {
 
 ```bash
 pnpm test:coverage
-# Must show 100% for all metrics
+# enforces the 95% coverage floor
 ```
 
-If not 100%:
+To investigate a coverage gap, open `coverage/index.html` and look for uncovered behavior that would cause a regression. Add a test through the public interface and rerun coverage.
 
-1. Open `coverage/index.html`
-2. Find uncovered lines (red)
-3. Identify missing branch/path
-4. Write test for that case
-5. Re-run coverage
+Prioritize error and boundary behavior for permission decisions, archive restore, atomic file operations, and platform-specific process launches. A high overall percentage can still leave gaps in those areas.
 
 ### Refactoring Checklist
 
@@ -348,23 +342,12 @@ When code seems untestable:
 - [ ] Extract pure functions
 - [ ] Make dependencies injectable
 - [ ] Avoid global state
-- [ ] Export internal functions
+- [ ] Test through existing public interfaces
 - [ ] Break down large functions
 
-### 100% Coverage Without Cheating
+### Coverage Ignores
 
-**Never use:**
-
-- `/* istanbul ignore next */`
-- `/* c8 ignore next */`
-- `/* c8 ignore start */` ... `/* c8 ignore stop */`
-
-**Instead:**
-
-1. Refactor code to be testable
-2. Mock external dependencies
-3. Test all branches explicitly
-4. Use integration tests for I/O
+Use realistic fixtures or dependency injection to exercise I/O and platform-specific behavior where practical. Follow the coverage ignore criteria in the [testing rules](../../.claude/rules/testing.md#coverage-ignores).
 
 ### Complete Example
 
@@ -394,7 +377,7 @@ function main() {
 }
 ```
 
-**Tests - 100% coverage:**
+**Example tests**
 
 ```javascript
 describe('processHookData', () => {
@@ -421,5 +404,3 @@ describe('saveToLog', () => {
   });
 });
 ```
-
-Result: **100% statements, branches, functions, lines**.

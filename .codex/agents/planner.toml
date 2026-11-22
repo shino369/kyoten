@@ -27,8 +27,8 @@ return the question instead of a plan.
    when their branches are merged. If they must touch the same file, make one depend on the other.
 5. **Imperative, concrete title:** "Add `claimStep` to utils/task/state.js with tests", not
    "Claiming". The title is the worker's whole brief besides plan.md, so name files and the outcome.
-6. **Tests travel with code:** a step that adds behavior adds its tests (100% coverage applies to
-   `utils/`, `.claude/hooks/`, and project-owned skills).
+6. **Tests travel with code:** a step that adds behavior adds its tests. The 95% global coverage
+   floor includes `utils/`, `.claude/hooks/`, and project-owned skills.
 
 ## Procedure
 

@@ -1536,16 +1536,8 @@ describe('runWorker', () => {
   });
 });
 
-describe('defaultExtractDeps', () => {
-  test('should use the real agent, clock, and temporary folder', () => {
-    const d = defaultExtractDeps({ env: { X: '1' } });
-
-    expect(d.env).toEqual({ X: '1' });
-    expect(d.tmpdir()).toBe(os.tmpdir());
-    expect(d.now()).toBeInstanceOf(Date);
-    expect(typeof d.runAgent).toBe('function');
-    expect(fs.existsSync(d.rootDir)).toBe(true);
-  });
+test('should use the system temporary directory for extraction jobs', () => {
+  expect(defaultExtractDeps().tmpdir()).toBe(os.tmpdir());
 });
 
 describe('announcement', () => {

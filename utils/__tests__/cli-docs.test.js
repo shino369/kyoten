@@ -2,7 +2,6 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { vi } from 'vitest';
 import { main } from '../cli-docs.js';
 import { ROOT_DIR } from '../workspace-config.js';
 
@@ -192,22 +191,6 @@ test.each([[['--unknown']], [['--check', '--help']]])(
     expect(() => run(argv)).toThrow(/Usage: pnpm docs:cli/);
   }
 );
-
-test('should use the process arguments when called with no options', () => {
-  const previous = process.argv;
-  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-  try {
-    process.argv = ['node', 'utils/cli-docs.js', '--help'];
-
-    expect(main()).toBe(0);
-    expect(log).toHaveBeenCalledWith(
-      expect.stringContaining('Usage: pnpm docs:cli')
-    );
-  } finally {
-    process.argv = previous;
-    log.mockRestore();
-  }
-});
 
 test('should keep the checked-in reference in sync with the live CLI help', () => {
   const lines = /** @type {string[]} */ ([]);

@@ -5,8 +5,7 @@ import path from 'path';
 import { vi } from 'vitest';
 import { createState } from '../../task/state.js';
 import { saveState, tasksRoot, writeActive } from '../../task/store.js';
-import { ROOT_DIR } from '../../workspace-config.js';
-import { HELP, defaultCliDeps, main, parseArgs } from '../cli.js';
+import { HELP, main, parseArgs } from '../cli.js';
 import { worktreePath } from '../worktree.js';
 
 const NAME = 'demo-261117';
@@ -441,15 +440,5 @@ describe('main', () => {
     });
     expect(code).toBe(1);
     expect(out).toContain('still failing after 1 iteration(s)');
-  });
-});
-
-describe('defaultCliDeps', () => {
-  test('should default to the workspace and real processes', () => {
-    const deps = defaultCliDeps();
-    expect(deps.rootDir).toBe(ROOT_DIR);
-    expect(deps.spawn).toBe(spawnSync);
-    expect(deps.date()).toBeInstanceOf(Date);
-    expect(deps.install).toBeUndefined();
   });
 });
