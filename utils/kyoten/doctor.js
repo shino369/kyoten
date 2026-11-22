@@ -10,7 +10,11 @@ import {
   DSH_BRIDGE_INSTALL,
   DSH_PATCH,
 } from '../loop/adapters.js';
-import { codexTrustsProject } from '../harness/codex-trust.js';
+import {
+  agySettingsPath,
+  agyTrustsProject,
+  codexTrustsProject,
+} from '../harness/trust.js';
 import { crossSpawn } from '../spawn.js';
 import { readIfExists } from '../task/store.js';
 import { mask, parseProfile, tokenUnset, TOKEN_KEY } from './dscc.js';
@@ -133,7 +137,12 @@ export function runChecks({
 
   if (state === 'workspace') checks.push(memoryCheck(home));
 
-  for (const agent of /** @type {const} */ (['claude', 'codex', 'dsh'])) {
+  for (const agent of /** @type {const} */ ([
+    'claude',
+    'codex',
+    'dsh',
+    'agy',
+  ])) {
     const command = findAgentCommand({
       agent,
       home,
@@ -170,6 +179,24 @@ export function runChecks({
               detail:
                 'the home is not trusted in Codex, so Codex ignores .codex/ (hooks, rules, roles)',
               fix: 'kyoten codex, accept the trust prompt, then run /hooks',
+            }
+      );
+    }
+    if (agent === 'agy') {
+      const settings = readIfExists(agySettingsPath(homedir));
+      checks.push(
+        settings !== null && agyTrustsProject(settings, home, platform)
+          ? {
+              id: 'agy-trust',
+              status: 'ok',
+              detail: 'the home is trusted in Antigravity CLI',
+            }
+          : {
+              id: 'agy-trust',
+              status: 'warn',
+              detail:
+                'the home is not trusted in Antigravity CLI, so project hooks may not run',
+              fix: 'kyoten agy, then trust the workspace',
             }
       );
     }

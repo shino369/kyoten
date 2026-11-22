@@ -12,7 +12,11 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { spawnSync } from 'child_process';
-import { codexTrustsProject } from './harness/codex-trust.js';
+import {
+  agySettingsPath,
+  agyTrustsProject,
+  codexTrustsProject,
+} from './harness/trust.js';
 import { main as harnessMain } from './harness/cli.js';
 import {
   DSH_BRIDGE_INSTALL,
@@ -33,8 +37,8 @@ import {
   ROOT_DIR,
 } from './workspace-config.js';
 
-// Kept here for existing importers; the rule lives in harness/codex-trust.js.
-export { codexTrustsProject };
+// Kept here for existing importers; the rules live in harness/trust.js.
+export { agyTrustsProject, codexTrustsProject };
 
 export const HELP = `Usage: pnpm workspace:setup [options]
        pnpm workspace:check [options]
@@ -604,37 +608,6 @@ export function stepHarness(options, deps) {
 }
 
 /**
-/**
- * Whether Antigravity CLI settings JSON marks `root` as a trusted workspace
- * (`trustedWorkspaces` array). The text is only matched, never printed.
- *
- * @param {string} text
- * @param {string} root
- * @param {string} [platform]
- * @returns {boolean}
- */
-export function agyTrustsProject(text, root, platform = process.platform) {
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return false;
-  }
-  const list = parsed?.trustedWorkspaces;
-  if (!Array.isArray(list)) return false;
-  const ignoreCase = platform === 'win32' || platform === 'darwin';
-  /** @param {string} value */
-  const norm = (value) => {
-    const clean = value.replace(/\\/g, '/').replace(/\/+$/, '');
-    return ignoreCase ? clean.toLowerCase() : clean;
-  };
-  const target = norm(root);
-  return list.some(
-    (entry) => typeof entry === 'string' && norm(entry) === target
-  );
-}
-
-/**
  * Per-agent hints for the generated config: Codex ignores `.codex/` in a
  * project it does not trust, DSH has no project config so it must be started
  * with the workspace patch, and Antigravity CLI trusts workspaces in
@@ -699,12 +672,7 @@ export function stepHarnessAgents(deps) {
     });
   }
   if (installed.has('agy')) {
-    const settingsPath = path.join(
-      deps.homedir(),
-      '.gemini',
-      'antigravity-cli',
-      'settings.json'
-    );
+    const settingsPath = agySettingsPath(deps.homedir());
     let trusted = false;
     try {
       trusted = agyTrustsProject(

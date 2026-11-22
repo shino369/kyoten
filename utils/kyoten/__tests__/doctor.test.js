@@ -237,7 +237,7 @@ describe('runChecks agents', () => {
   test('should warn with an install hint for each missing agent', () => {
     const checks = check();
 
-    for (const id of ['claude', 'codex', 'dsh']) {
+    for (const id of ['claude', 'codex', 'dsh', 'agy']) {
       expect(byId(checks, id)).toMatchObject({
         status: 'warn',
         detail: 'not found',
@@ -340,6 +340,58 @@ describe('runChecks codex trust', () => {
     );
 
     expect(codexCheck('', { homedir: user })?.status).toBe('ok');
+  });
+});
+
+describe('runChecks agy trust', () => {
+  /** @type {string} */
+  let home;
+  /** @type {string} */
+  let user;
+
+  beforeEach(() => {
+    home = path.join(tmp, 'home');
+    user = path.join(tmp, 'user');
+    makeWorkspace(home);
+  });
+
+  /** @param {string | null} settings  the settings.json text */
+  const agyCheck = (settings, overrides = {}) => {
+    if (settings !== null) {
+      const dir = path.join(user, '.gemini', 'antigravity-cli');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'settings.json'), settings);
+    }
+    return byId(
+      check({
+        home,
+        homedir: user,
+        registry: (_h, name) => (name === 'agy' ? ['agy'] : null),
+        ...overrides,
+      }),
+      'agy-trust'
+    );
+  };
+
+  test('should pass when the settings trust the home', () => {
+    expect(
+      agyCheck(JSON.stringify({ trustedWorkspaces: [home] }))
+    ).toMatchObject({ status: 'ok' });
+  });
+
+  test('should warn when the home is not trusted', () => {
+    expect(agyCheck(JSON.stringify({ trustedWorkspaces: [] }))).toMatchObject({
+      status: 'warn',
+      fix: 'kyoten agy, then trust the workspace',
+    });
+  });
+
+  test('should warn when there are no settings', () => {
+    expect(agyCheck(null)?.status).toBe('warn');
+  });
+
+  test('should skip the trust check when the home is not a workspace', () => {
+    expect(agyCheck(null, { home: path.join(tmp, 'none') })).toBeUndefined();
   });
 });
 
