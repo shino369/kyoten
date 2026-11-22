@@ -237,7 +237,7 @@ describe('main', () => {
     const { code, out, runAgent } = run(['--agent', 'dsh', '--dry-run']);
     expect(code).toBe(0);
     expect(out).toContain(
-      'Agent: dsh --profile headless --permission-mode workspace-write --approval-policy never --patch .dsh/workspace.patch.yml - (prompt on stdin)'
+      'Agent: dsh --profile headless --patch .dsh/workspace.patch.yml --permission-mode workspace-write --approval-policy never - (prompt on stdin)'
     );
     expect(out).toContain('Verify: pnpm test');
     expect(out).toContain(`Worktree: ${worktreePath(repo, NAME)}`);
@@ -322,7 +322,7 @@ describe('main', () => {
       expect(
         run(['--agent', 'dsh', '--review', '--bin', 'mydsh', '--dry-run']).out
       ).toContain(
-        'reviewer + triage: mydsh --profile headless --permission-mode read-only'
+        'reviewer + triage: mydsh --profile headless --patch .dsh/workspace.patch.yml --permission-mode read-only'
       );
     });
 

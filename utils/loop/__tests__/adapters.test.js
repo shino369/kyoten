@@ -39,12 +39,12 @@ describe('buildCommand', () => {
     expect(buildCommand({ agent: 'dsh' }).args).toEqual([
       '--profile',
       'headless',
+      '--patch',
+      '.dsh/workspace.patch.yml',
       '--permission-mode',
       'workspace-write',
       '--approval-policy',
       'never',
-      '--patch',
-      '.dsh/workspace.patch.yml',
       '-',
     ]);
   });
@@ -104,12 +104,12 @@ describe('buildCommand', () => {
     expect(buildCommand({ agent: 'dsh', mode: 'read' }).args).toEqual([
       '--profile',
       'headless',
+      '--patch',
+      '.dsh/workspace.patch.yml',
       '--permission-mode',
       'read-only',
       '--approval-policy',
       'never',
-      '--patch',
-      '.dsh/workspace.patch.yml',
       '-',
     ]);
     expect(buildCommand({ agent: 'agy', mode: 'read' }).args).toEqual([
