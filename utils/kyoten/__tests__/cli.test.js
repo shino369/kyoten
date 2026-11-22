@@ -126,11 +126,19 @@ class FakeChild extends EventEmitter {
  * real (with the real PATH), pnpm is faked with `pnpmStatus`.
  *
  * @param {string[]} argv
- * @param {{ env?: NodeJS.ProcessEnv, exit?: number, stdin?: any, cwd?: string, answer?: string, pnpmStatus?: number }} [options]
+ * @param {{ env?: NodeJS.ProcessEnv, exit?: number, stdin?: any, cwd?: string, answer?: string, pnpmStatus?: number, connect?: (port: number) => Promise<boolean> }} [options]
  */
 async function run(
   argv,
-  { env = {}, exit = 0, stdin, cwd = tmp, answer = '', pnpmStatus = 0 } = {}
+  {
+    env = {},
+    exit = 0,
+    stdin,
+    cwd = tmp,
+    answer = '',
+    pnpmStatus = 0,
+    connect = async () => false,
+  } = {}
 ) {
   /** @type {string[]} */
   const out = [];
@@ -190,6 +198,7 @@ async function run(
     },
     now: () => new Date(2026, 10, 22, 9, 5, 7),
     root: source,
+    connect,
   });
   return { code, out, err, tty, spawn, questions, pnpm };
 }
@@ -724,7 +733,7 @@ describe('main: launch', () => {
 
         expect(spawn.mock.calls[0][1].join(' ')).not.toContain('--add-dir');
         expect(spawn.mock.calls[0][2].env.KYOTEN_ADD_DIR).toBeUndefined();
-        expect(err.at(-1)).toBe(`kyoten: ${agent} in ${home} (--home)`);
+        expect(err).toContain(`kyoten: ${agent} in ${home} (--home)`);
       }
     );
 
@@ -877,6 +886,80 @@ describe('main: launch', () => {
     expect(err[0]).toBe(
       'kyoten: dscc profile line 3 skipped: not a variable name: 9X'
     );
+  });
+});
+
+describe('main: dsh web workspace hint', () => {
+  test.each([[[]], [['web', '--no-open']], [['--no-open']]])(
+    'should say which Web UI workspace to choose for dsh %j',
+    async (args) => {
+      const home = makeHome();
+
+      const { err } = await run(['--home', home, 'dsh', ...args]);
+
+      expect(err.at(-1)).toBe(
+        `kyoten: in the DSH Web UI, click Choose workspace, add ${home}, and select it; sessions in another workspace still run this home's hooks`
+      );
+    }
+  );
+
+  test('should not print the hint for another dsh profile', async () => {
+    const home = makeHome();
+
+    const { err } = await run(['--home', home, 'dsh', 'tui']);
+
+    expect(err.join('\n')).not.toContain('Choose workspace');
+  });
+});
+
+describe('main: doctor dsh web', () => {
+  test('should probe the dsh web port from the config when dsh is found', async () => {
+    const home = makeHome();
+    fs.mkdirSync(path.join(home, 'node_modules'));
+    fs.mkdirSync(path.join(tmp, 'cfg', 'kyoten'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, 'cfg', 'kyoten', 'config.json'),
+      JSON.stringify({ args: { dsh: ['--port', '4100'] } })
+    );
+    const probed = /** @type {number[]} */ ([]);
+
+    const { out } = await run(['--home', home, 'doctor'], {
+      connect: async (/** @type {number} */ port) => {
+        probed.push(port);
+        return true;
+      },
+    });
+
+    expect(probed).toEqual([4100]);
+    expect(out.join('\n')).toContain(
+      '! dsh-web: something answers on 127.0.0.1:4100'
+    );
+  });
+
+  test('should probe the default port without a config', async () => {
+    const home = makeHome();
+    fs.mkdirSync(path.join(home, 'node_modules'));
+    const connect = vi.fn(async () => false);
+
+    const { out } = await run(['--home', home, 'doctor'], { connect });
+
+    expect(connect).toHaveBeenCalledWith(3080);
+    expect(out.join('\n')).toContain('✓ dsh-web: 127.0.0.1:3080 is free');
+  });
+
+  test('should not probe without dsh', async () => {
+    const home = makeHome();
+    fs.mkdirSync(path.join(home, 'node_modules'));
+    const connect = vi.fn(async () => true);
+
+    // No folder on PATH holds a dsh the fake canRun accepts.
+    const { out } = await run(['--home', home, 'doctor'], {
+      connect,
+      env: { PATH: path.join(tmp, 'empty') },
+    });
+
+    expect(connect).not.toHaveBeenCalled();
+    expect(out.join('\n')).not.toContain('dsh-web');
   });
 });
 

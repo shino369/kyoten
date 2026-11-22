@@ -133,11 +133,22 @@ export function buildArgv({ agent, command, args, defaults = [], addDir }) {
     const extra = addDir ? [`--add-dir=${addDir}`] : [];
     return [...command, ...extra, ...defaults, ...args];
   }
-  // dsh takes the profile as its first word: `dsh web`, `dsh tui`.
-  const named = args.length > 0 && !args[0].startsWith('-');
-  const profile = named ? args[0] : DSH_DEFAULT_PROFILE;
-  const rest = named ? args.slice(1) : args;
+  const { profile, rest } = dshProfile(args);
   return [...command, profile, '--patch', DSH_PATCH, ...defaults, ...rest];
+}
+
+/**
+ * dsh takes the profile as its first word (`dsh web`, `dsh tui`): the first
+ * argument when it is not an option, else web.
+ *
+ * @param {string[]} args
+ * @returns {{ profile: string, rest: string[] }}
+ */
+export function dshProfile(args) {
+  const named = args.length > 0 && !args[0].startsWith('-');
+  return named
+    ? { profile: args[0], rest: args.slice(1) }
+    : { profile: DSH_DEFAULT_PROFILE, rest: args };
 }
 
 /**

@@ -70,6 +70,7 @@ export function processHookInput(
   }
   const toolText = tools(rootDir);
   const callerText = caller(rootDir);
+  const workspaceText = workspaceLine(rootDir, harness, normalized.cwd);
 
   const source = normalized.source ?? 'startup';
   const parts = [];
@@ -83,6 +84,7 @@ export function processHookInput(
   }
   if (toolText) parts.push(toolText);
   if (callerText) parts.push(callerText);
+  if (workspaceText) parts.push(workspaceText);
   if (harness === 'agy') {
     /** @type {import('#utils/harness/input.js').AgyInjectOutput['injectSteps']} */
     const injectSteps = parts.length
@@ -179,6 +181,30 @@ export function callerLine(rootDir, env = process.env) {
   } catch {
     return null;
   }
+}
+
+/**
+ * DSH's Web UI runs a session in whichever workspace the user chose, while
+ * the hooks (from the workspace patch) act on this workspace. Null unless a
+ * DSH session's cwd is another folder.
+ *
+ * @param {string} rootDir
+ * @param {import('#utils/harness/input.js').Harness} harness
+ * @param {unknown} cwd  the hook input's cwd
+ * @returns {string | null}
+ */
+export function workspaceLine(rootDir, harness, cwd) {
+  if (harness !== 'dsh' || typeof cwd !== 'string' || !cwd) return null;
+  /** @param {string} dir */
+  const real = (dir) => {
+    try {
+      return fs.realpathSync(dir);
+    } catch {
+      return path.resolve(dir);
+    }
+  };
+  if (real(cwd) === real(rootDir)) return null;
+  return `[Workspace] This DSH session's workspace is ${cwd}, not ${rootDir}: the hooks, tasks, and memory act on ${rootDir}, while AGENTS.md and skills come from ${cwd}. Tell the user before acting: to use this workspace's rules, choose ${rootDir} in the DSH Web UI (Choose workspace).`;
 }
 
 /* c8 ignore start - stdin/stdout wiring; logic is tested through processHookInput */

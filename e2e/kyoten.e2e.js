@@ -228,6 +228,21 @@ test('dsh starts with its profile and the workspace patch', () => {
     '--patch',
     '.dsh/workspace.patch.yml',
   ]);
+  expect(result.stderr).not.toContain('Choose workspace');
+});
+
+test('dsh web says which Web UI workspace to choose', () => {
+  const result = kyoten(['dsh', '--no-open']);
+
+  expect(result.agent.argv).toEqual([
+    'web',
+    '--patch',
+    '.dsh/workspace.patch.yml',
+    '--no-open',
+  ]);
+  expect(result.stderr).toContain(
+    `click Choose workspace, add ${home}, and select it`
+  );
 });
 
 test('agy starts in the home with no added arguments', () => {

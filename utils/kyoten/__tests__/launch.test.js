@@ -17,6 +17,7 @@ import {
   outsideRepo,
   prepareLaunch,
   spawnInteractive,
+  dshProfile,
 } from '../launch.js';
 
 const POSIX_ENV = { PATH: '/bin:/usr/bin' };
@@ -154,6 +155,16 @@ describe('agentInstallHint', () => {
 
   test('should give a generic hint when the home has no catalog', () => {
     expect(agentInstallHint('claude', tmp, 'linux')).toMatch(/^install claude/);
+  });
+});
+
+describe('dshProfile', () => {
+  test.each([
+    [[], 'web', []],
+    [['--no-open'], 'web', ['--no-open']],
+    [['tui', '-x'], 'tui', ['-x']],
+  ])('should read the profile of %j', (args, profile, rest) => {
+    expect(dshProfile(args)).toEqual({ profile, rest });
   });
 });
 

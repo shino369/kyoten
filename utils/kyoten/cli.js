@@ -24,7 +24,13 @@ import {
   setKey,
   showProfile,
 } from './dscc.js';
-import { formatCheck, runChecks, workspaceCheck } from './doctor.js';
+import {
+  dshWebCheck,
+  dshWebPort,
+  formatCheck,
+  runChecks,
+  workspaceCheck,
+} from './doctor.js';
 import {
   AGENTS,
   configDir,
@@ -41,7 +47,9 @@ import { runConfig } from './config-cmd.js';
 import { initHome } from './init.js';
 import { pauseSaving } from './memory.js';
 import {
+  DSH_DEFAULT_PROFILE,
   buildEnv,
+  dshProfile,
   exitCode,
   outsideRepo,
   prepareLaunch,
@@ -91,6 +99,7 @@ export const COMMANDS = /** @type {const} */ ([
  *   ask: (question: string) => Promise<string>,
  *   now: () => Date,
  *   root: string,
+ *   connect?: (port: number) => Promise<boolean>,
  * }} KyotenDeps
  */
 
@@ -501,8 +510,8 @@ function commandRestore(ctx, args) {
  * @param {Context} ctx
  * @param {string[]} args
  */
-function commandDoctor(ctx, args) {
-  const { deps, version, home } = ctx;
+async function commandDoctor(ctx, args) {
+  const { deps, version, config, home } = ctx;
   parseCommandArgs('doctor', args);
   const checks = runChecks({
     home: home.dir,
@@ -517,6 +526,14 @@ function commandDoctor(ctx, args) {
     registry: deps.registry,
   });
   for (const check of checks) deps.out(formatCheck(check));
+  if (checks.some((check) => check.id === 'dsh' && check.status === 'ok')) {
+    const check = await dshWebCheck({
+      port: dshWebPort(config.args?.dsh),
+      connect: deps.connect,
+    });
+    checks.push(check);
+    deps.out(formatCheck(check));
+  }
   if (homeState(home.dir) === 'workspace') {
     const check = workspaceCheck({
       home: home.dir,
@@ -676,6 +693,11 @@ async function launch(ctx, agent, args, addDirFlag) {
   deps.err(
     `kyoten: ${agent} in ${home.dir} (${home.source})${addDir ? `; --add-dir=${addDir}` : ''}`
   );
+  if (agent === 'dsh' && dshProfile(args).profile === DSH_DEFAULT_PROFILE) {
+    deps.err(
+      `kyoten: in the DSH Web UI, click Choose workspace, add ${home.dir}, and select it; sessions in another workspace still run this home's hooks`
+    );
+  }
   const status = await spawnInteractive({
     argv,
     cwd: home.dir,

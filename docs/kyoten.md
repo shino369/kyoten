@@ -190,6 +190,11 @@ When the home was made by another kyoten version, each launch prints a one-line 
   each DSH profile you start, at the version `dsh --version` prints (see `docs/harness.md` in the
   home). DSH cannot run the hooks from a home path that contains `$`, a backtick, or `"` (or `\` on
   macOS and Linux); `kyoten doctor` reports it.
+  The Web UI starts with no workspace selected: click **Choose workspace**, add the home, and select
+  it (`kyoten dsh` prints the path). The patch is read once per server, and a session in another
+  workspace still runs the home's hooks while it reads that workspace's `AGENTS.md` and skills; its
+  session start says so. `kyoten doctor` warns when something already answers on the dsh web port
+  (127.0.0.1:3080, or a `--port` in `args.dsh`), such as a `dsh web` started without kyoten.
 - **Windows:** an agent installed by npm is a `.cmd` shim, which cannot take arguments containing
   `"`, `%`, or `!` safely. kyoten refuses those arguments with an explanation: type that text inside
   the agent instead.

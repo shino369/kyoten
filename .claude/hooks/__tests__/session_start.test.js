@@ -13,6 +13,7 @@ import {
   callerLine,
   processHookInput,
   registryLine,
+  workspaceLine,
 } from '../session_start.js';
 
 /** @type {string} */
@@ -416,5 +417,65 @@ describe('session_start callerLine', () => {
     );
 
     expect(output?.hookSpecificOutput.additionalContext).toBe('[kyoten] hint');
+  });
+});
+
+describe('session_start workspaceLine', () => {
+  test('should warn a DSH session that runs in another workspace', () => {
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'session-other-'));
+    try {
+      const line = workspaceLine(root, 'dsh', other);
+
+      expect(line).toBe(
+        `[Workspace] This DSH session's workspace is ${other}, not ${root}: the hooks, tasks, and memory act on ${root}, while AGENTS.md and skills come from ${other}. Tell the user before acting: to use this workspace's rules, choose ${root} in the DSH Web UI (Choose workspace).`
+      );
+    } finally {
+      fs.rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  test('should compare real paths', () => {
+    const link = `${root}-link`;
+    fs.symlinkSync(root, link, 'junction');
+    try {
+      expect(workspaceLine(root, 'dsh', link)).toBeNull();
+    } finally {
+      fs.unlinkSync(link);
+    }
+  });
+
+  test('should compare a folder that does not exist by its path', () => {
+    expect(workspaceLine(root, 'dsh', path.join(root, 'gone'))).toContain(
+      'This DSH session'
+    );
+  });
+
+  test.each([
+    ['claude', '/elsewhere'],
+    ['dsh', undefined],
+    ['dsh', ''],
+    ['dsh', 7],
+  ])('should stay silent for %s with cwd %j', (harness, cwd) => {
+    expect(
+      workspaceLine(
+        root,
+        /** @type {any} */ (harness),
+        /** @type {any} */ (cwd)
+      )
+    ).toBeNull();
+  });
+
+  test('should add the line to the DSH session start context', () => {
+    const other = path.join(root, 'nested');
+    fs.mkdirSync(other);
+
+    const output = processHookInput(
+      { source: 'startup', session_id: 'dsh-1', cwd: other },
+      { rootDir: root, harness: 'dsh', tools: () => null }
+    );
+
+    expect(output?.hookSpecificOutput.additionalContext).toContain(
+      `[Workspace] This DSH session's workspace is ${other}`
+    );
   });
 });

@@ -4,6 +4,7 @@
  * problem with a Fix line. Ends with `pnpm workspace:check` in the home.
  */
 import fs from 'fs';
+import net from 'net';
 import path from 'path';
 import {
   dshDirProblem,
@@ -262,5 +263,75 @@ export function workspaceCheck({ home, run, env }) {
         status: 'fail',
         detail: 'pnpm workspace:check failed (see above)',
         fix: `run each Fix command above in the home with kyoten run, e.g. kyoten --home "${home}" run workspace:setup`,
+      };
+}
+
+/** Where `dsh web` listens unless given --port (DSH README). */
+export const DSH_WEB_PORT = 3080;
+
+/**
+ * The port `kyoten dsh` will use: a --port in the config's dsh arguments,
+ * else DSH's default.
+ *
+ * @param {string[]} [args]  config.args.dsh
+ * @returns {number}
+ */
+export function dshWebPort(args = []) {
+  let value;
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === '--port') value = args[i + 1];
+    else if (args[i].startsWith('--port=')) value = args[i].slice(7);
+  }
+  const port = Number(value);
+  return Number.isInteger(port) && port > 0 && port < 65536
+    ? port
+    : DSH_WEB_PORT;
+}
+
+/**
+ * Whether something accepts a TCP connection on 127.0.0.1:`port` (nothing
+ * is sent).
+ *
+ * @param {number} port
+ * @param {{ timeoutMs?: number, createConnection?: typeof net.connect }} [options]
+ * @returns {Promise<boolean>}
+ */
+export function probePort(
+  port,
+  { timeoutMs = 500, createConnection = net.connect } = {}
+) {
+  return new Promise((resolve) => {
+    const socket = createConnection({ host: '127.0.0.1', port });
+    /** @param {boolean} open */
+    const done = (open) => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(open);
+    };
+    const timer = setTimeout(() => done(false), timeoutMs);
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
+  });
+}
+
+/**
+ * A dsh web that kyoten did not start has no workspace patch, so its
+ * sessions run without kyoten's hooks; a second one cannot take the port.
+ *
+ * @param {{ port: number, connect?: (port: number) => Promise<boolean> }} input
+ * @returns {Promise<Check>}
+ */
+export async function dshWebCheck({ port, connect = probePort }) {
+  return (await connect(port))
+    ? {
+        id: 'dsh-web',
+        status: 'warn',
+        detail: `something answers on 127.0.0.1:${port}, likely a dsh web already running; it uses the kyoten hooks only if kyoten started it`,
+        fix: 'stop it before kyoten dsh, or give kyoten dsh another --port',
+      }
+    : {
+        id: 'dsh-web',
+        status: 'ok',
+        detail: `127.0.0.1:${port} is free for kyoten dsh`,
       };
 }

@@ -1,7 +1,16 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { formatCheck, runChecks, workspaceCheck } from '../doctor.js';
+import net from 'net';
+import {
+  DSH_WEB_PORT,
+  dshWebCheck,
+  dshWebPort,
+  formatCheck,
+  probePort,
+  runChecks,
+  workspaceCheck,
+} from '../doctor.js';
 
 /** @type {string} */
 let tmp;
@@ -512,5 +521,75 @@ describe('workspaceCheck', () => {
       detail: 'pnpm workspace:check failed (see above)',
       fix: `run each Fix command above in the home with kyoten run, e.g. kyoten --home "${tmp}" run workspace:setup`,
     });
+  });
+});
+
+describe('dshWebPort', () => {
+  test.each([
+    [undefined, DSH_WEB_PORT],
+    [[], DSH_WEB_PORT],
+    [['--port', '4100'], 4100],
+    [['--no-open', '--port=4200'], 4200],
+    [['--port'], DSH_WEB_PORT],
+    [['--port', 'x'], DSH_WEB_PORT],
+    [['--port=0'], DSH_WEB_PORT],
+    [['--port=70000'], DSH_WEB_PORT],
+  ])('should read the port from %j', (args, port) => {
+    expect(dshWebPort(args)).toBe(port);
+  });
+});
+
+describe('dshWebCheck', () => {
+  test('should warn when something answers on the port', async () => {
+    const check = await dshWebCheck({ port: 3080, connect: async () => true });
+
+    expect(check).toEqual({
+      id: 'dsh-web',
+      status: 'warn',
+      detail:
+        'something answers on 127.0.0.1:3080, likely a dsh web already running; it uses the kyoten hooks only if kyoten started it',
+      fix: 'stop it before kyoten dsh, or give kyoten dsh another --port',
+    });
+  });
+
+  test('should pass when the port is free', async () => {
+    const check = await dshWebCheck({ port: 3080, connect: async () => false });
+
+    expect(check).toEqual({
+      id: 'dsh-web',
+      status: 'ok',
+      detail: '127.0.0.1:3080 is free for kyoten dsh',
+    });
+  });
+});
+
+describe('probePort', () => {
+  test('should see a listening port, then a closed one', async () => {
+    const server = net.createServer();
+    await new Promise((resolve) =>
+      server.listen(0, '127.0.0.1', () => resolve(null))
+    );
+    const { port } = /** @type {net.AddressInfo} */ (server.address());
+
+    const open = await probePort(port);
+    await new Promise((resolve) => server.close(() => resolve(null)));
+    const closed = await probePort(port);
+
+    expect(open).toBe(true);
+    expect(closed).toBe(false);
+  });
+
+  test('should give up after the timeout', async () => {
+    const socket = Object.assign(new (await import('events')).EventEmitter(), {
+      destroy: vi.fn(),
+    });
+
+    const result = await probePort(1, {
+      timeoutMs: 5,
+      createConnection: /** @type {any} */ (() => socket),
+    });
+
+    expect(result).toBe(false);
+    expect(socket.destroy).toHaveBeenCalled();
   });
 });
