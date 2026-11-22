@@ -1,119 +1,128 @@
 # Kyoten
 
-[![Test CI](https://github.com/shino369/claude-code-personal-workspace/actions/workflows/test.yml/badge.svg)](https://github.com/shino369/claude-code-personal-workspace/actions/workflows/test.yml)
+![Kyoten](./docs/images/kyoten-logo.png)
+
+> **Your personal home base for AI coding agents** — one shared workspace for programming, documentation, research, translation, and generative-AI work. ✨
+
+[![Test CI](https://github.com/shino369/kyoten/actions/workflows/test.yml/badge.svg)](https://github.com/shino369/kyoten/actions/workflows/test.yml)
 [![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](./LICENSE)
 
-Kyoten (拠点) is a supercharged personal workspace for programming, documentation, research, translation, and
-generative-AI work. It packages reusable rules, subagents, skills, hooks, and a repeatable quality
-gate. Mainly designed for Claude Code, and also works for Codex, DSH, and Antigravity CLI (`agy`).
+🌐 **English** · [日本語](./README.ja.md) · [繁體中文](./README.zh-TW.md)
 
-## Table of Contents
+---
 
-- [Overview](#overview)
-- [Requirements](#requirements)
-- [Getting Started](#getting-started)
-- [CLI Reference](docs/cli.md)
-- [Repository Layout](#repository-layout)
-  - [Tasks](#tasks)
-  - [Memory](#memory)
-- [Skills](#skills)
-  - [Project-owned skills](#project-owned-skills)
-  - [External skills (`skills-lock.json`)](#external-skills-skills-lockjson)
-  - [Managing skills](#managing-skills)
-  - [Skill runtime prerequisites](#skill-runtime-prerequisites)
-- [Agents](#agents)
-- [Rules](#rules)
-- [Hooks](#hooks)
-- [Translation](#translation)
-- [Testing](#testing)
-- [Configuration](#configuration)
-  - [Package Management](#package-management)
-  - [Permissions](#permissions)
-  - [MCP Servers](#mcp-servers)
-- [Contributing](#contributing)
-- [Credits](#credits)
-- [License](#license)
+**Kyoten** (_拠点_, Japanese for "home base" or "operations hub") brings all of your AI-agent setup into one clean, portable repository. Instead of repeating rules, hooks, skills, and memory across every tool, you configure your home base once and work seamlessly with **Claude Code**, **Codex**, **Antigravity CLI (`agy`)**, and **DeepSeek Harness (`dsh`)**.
 
-## Overview
+Everything runs on plain Node.js ESM with zero runtime dependencies, no monorepo, and no build step — just clone, run setup once, and launch your preferred coding agent inside the workspace. 🌿
 
-This workspace keeps the Claude Code setup in one repository:
+## ✨ Why Kyoten?
 
-- `AGENTS.md` — canonical instructions for every agent harness (Claude Code, Codex, DeepSeek harnesses, …)
-- `CLAUDE.md` — imports `AGENTS.md` and adds Claude-Code-only notes
-- `.agents/skills/` — skills (project-owned ones tracked; third-party ones from skills.sh git-ignored)
-- `.claude/skills/` — generated links into `.agents/skills/` for Claude Code (git-ignored)
-- `.claude/rules/` — path-scoped rules (scripts, tests)
-- `.claude/agents/` — role prompts / subagents
-- `.claude/hooks/` — task resume brief, context monitor, audit logger, auto-formatter (Claude Code only)
-- `utils/task/` + `templates/task/` — the `pnpm task` CLI and task templates (every harness)
-- `.githooks/` — commit hooks for every harness (format, lint, Conventional Commits)
-- `skills-lock.json` — pinned sources and hashes for third-party skills
+- **🤝 One Home Base, Four Harnesses** — Canonical instructions (`AGENTS.md`), shared hooks (`utils/harness/hooks.js`), and synced role prompts across Claude Code, Codex, Antigravity CLI (`agy`), and DeepSeek Harness (`dsh`), kept in sync with `pnpm harness sync`.
+- **📝 Task Continuity & Clean-Context Reviews (`pnpm task`)** — Per-session active task tracking (`plan.md`, `state.json`, `NOTES.md`), step dependencies, verification gates, and an independent 2-round review + triage loop.
+- **🧠 Local Personal Memory & Personalization (`pnpm memory`)** — Machine-local, git-ignored memory with core-block injection, prompt/failure recall, multi-agent background extraction and consolidation, and customizable agent voice (`pnpm memory personalize`).
+- **🚀 Multi-Agent Orchestration (`pnpm agent`, `pnpm loop`, `pnpm swarm`)** — Ask another agent for a headless second opinion, run unattended fix-and-review loops in a git worktree, or parallelize ready steps across worktrees with a clean context.
+- **🧩 Modular Skills Ecosystem (`skills-lock.json`)** — Tracked workspace skills plus pinned external skills (including portable skills from [`shino369/kyoten-skills`](https://github.com/shino369/kyoten-skills)), managed cleanly with `pnpm skills:install`, `pnpm skills:check`, and `pnpm skills:link`.
+- **🛡️ Built-in Guardrails & 100% Quality Gate (`pnpm check`)** — Secret protection, undoable deletion (`pnpm task rm`), supply-chain hardening, cross-harness git hooks, TypeScript typechecking, ESLint, Prettier, and Vitest with 100% coverage thresholds.
 
-The workspace is deliberately lightweight: no slash commands, no monorepo, and no build step.
-Translation, code review, dependency maintenance, and context management are handled by skills and
-subagents — ask Claude directly.
+> 📖 Looking for every command and flag? Check the generated [CLI Reference](docs/cli.md) and the full architecture walkthrough in [docs/harness.md](docs/harness.md).
 
-## Requirements
+## 📋 Requirements
 
-- Node.js **24 or later** (`.nvmrc` pins 24; `agent-browser` requires 24+)
-- pnpm **12.14.0**, pinned in `package.json` via Corepack. Run `corepack enable`, or prefix
-  commands with `corepack pnpm`
-- Chrome/Chromium, for Playwright e2e tests and browser-driving skills
-- `uv`, for the `browser-use` runtime and the `skill-creator` and `transparent-background` Python
-  scripts
+- **Node.js 24 or later** (`.nvmrc` pins 24; `agent-browser` requires 24+)
+- **pnpm 12.14.0**, pinned in `package.json` via Corepack — run `corepack enable`, or prefix commands with `corepack pnpm`
+- **Chrome / Chromium** _(optional)_ — for Playwright e2e tests and browser-driving skills
+- **`uv`** _(optional)_ — for the `browser-use` runtime and Python 3.12 skill scripts (`skill-creator`, `transparent-background`)
+- **`gh` CLI** _(optional)_ — for GitHub workflows and PR reviews
 
-## Getting Started
+## 🚀 Getting Started
 
 ```bash
+git clone https://github.com/shino369/kyoten.git
+cd kyoten
 corepack enable
-pnpm workspace:setup   # install deps + third-party skills, link skills, enable git hooks, memory init
-pnpm workspace:check   # verify; every failure prints its Fix command
+pnpm workspace:setup   # install deps + pinned skills, link skills, enable git hooks, init memory
+pnpm workspace:check   # verify setup; every failure prints a Fix command
 ```
 
-Add `--with-browsers` for agent-browser and Playwright Chromium, `--skip-skills` when offline, or
-`--target <dir>` to link skills into another harness's skill folder. The `workspace-setup` skill
-(`.agents/skills/workspace-setup/SKILL.md`) covers troubleshooting.
+Optional setup flags:
 
-Quality gate (typecheck, lint, format check, tests at 100% coverage):
+- `--with-browsers` — install `agent-browser` and Playwright Chromium
+- `--skip-skills` — skip external skill downloads when offline
+- `--target <dir>` — link skills into another harness's skill folder
+
+See `.agents/skills/workspace-setup/SKILL.md` for troubleshooting.
+
+Run the full quality gate (typecheck, lint, format check, tests at 100% coverage):
 
 ```bash
 pnpm check
 ```
 
-Then simply run the agent inside this workspace.
+Then simply start your coding agent (Claude Code, Codex, `agy`, or DSH) inside this directory! 🎉
 
-## Repository Layout
+## 🗂️ Repository Layout
 
 ```text
 .
-├── .agents/skills/          # Skills: project-owned (tracked) + third-party (ignored)
+├── .agents/
+│   ├── agents/              # Generated Antigravity role prompts (pnpm harness sync)
+│   ├── hooks.json           # Generated Antigravity hooks config
+│   └── skills/              # Skills: project-owned (tracked) + external (git-ignored)
 ├── .claude/
-│   ├── agents/              # Role prompts / subagents
-│   ├── hooks/               # Resume brief, context monitor, audit logger, formatter
+│   ├── agents/              # Canonical role prompts / subagents
+│   ├── hooks/               # Hook entry points (task brief, context monitor, audit, format)
 │   ├── rules/               # Path-scoped rules (scripts, tests)
-│   ├── skills/              # Links into .agents/skills (generated, ignored)
+│   ├── skills/              # Links into .agents/skills (generated, git-ignored)
 │   └── workflows/           # Saved Claude Code workflows (review, implement-plan, research)
+├── .codex/                  # Generated Codex hooks, rules, and role prompts
+├── .dsh/                    # Generated DSH hooks and workspace patch overlay
 ├── .githooks/               # pre-commit + commit-msg (all harnesses)
-├── docs/harness.md          # How the harness works (tasks, loops, review), with examples
-├── docs/testing/            # Deep testing guides
+├── docs/
+│   ├── cli.md               # Generated CLI reference (pnpm docs:cli)
+│   ├── harness.md           # Full harness architecture & worked examples
+│   └── testing/             # Deep testing & mocking guides
 ├── e2e/                     # Playwright e2e tests
-├── tasks/                   # Generated task outputs (git-ignored)
-├── templates/task/          # plan/NOTES/REVIEW/STUDIES templates for pnpm task
-├── tools/                   # catalog.json (tracked) + local.json (this machine, ignored)
-├── utils/                   # Shared Node utilities (task/, loop/, swarm/, agent/, tools/ CLIs)
-├── AGENTS.md                # Instructions for every agent
-├── CLAUDE.md                # @AGENTS.md + Claude Code notes
-├── skills-lock.json         # skills.sh lockfile
+├── tasks/                   # Machine-local task folders (git-ignored)
+├── templates/task/          # plan / NOTES / REVIEW / STUDIES templates for pnpm task
+├── tools/                   # catalog.json (tracked) + local.json (this machine, git-ignored)
+├── utils/                   # Shared Node ESM utilities (task, memory, harness, loop, swarm, agent, tools)
+├── AGENTS.md                # Canonical instructions for every agent harness
+├── CLAUDE.md                # @AGENTS.md + Claude-Code-only notes
+├── skills-lock.json         # Pinned external skills lockfile (skills.sh)
 └── ...
 ```
 
-Third-party skills are not committed. `pnpm skills:install` installs the recommended set from
-`skills-lock.json` into `.agents/skills/` (git-ignored), so each user chooses what to install.
+External skills are not committed to git. `pnpm skills:install` installs the recommended set from `skills-lock.json` into `.agents/skills/` (git-ignored), so you stay in control of what lands on your machine.
 
-### Tasks
+## 🤖 Supported Harnesses & Orchestration
 
-Generated work goes in `tasks/<task-name-yymmdd>/`, managed with the `pnpm task` CLI so any
-agent (or you) can stop and resume without losing the thread:
+| Harness                      | Instructions                                                | Skills & Integration                                                               |
+| ---------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| **Claude Code**              | `CLAUDE.md` → `@AGENTS.md`                                  | `.claude/skills/` links, `.claude/settings.json`, hooks, subagents                 |
+| **Codex**                    | `AGENTS.md`                                                 | `.agents/skills/` (native), `.codex/hooks.json`, `.codex/rules/`, `.codex/agents/` |
+| **Antigravity CLI (`agy`)**  | `AGENTS.md` (≤ 24,000 bytes)                                | `.agents/skills/` (native), `.agents/hooks.json` (6 events), `.agents/agents/`     |
+| **DeepSeek Harness (`dsh`)** | `AGENTS.md` (start with `--patch .dsh/workspace.patch.yml`) | `.agents/skills/`, `.dsh/hooks.json`, Claude hooks bridge _(partly tested)_        |
+
+Run `pnpm harness sync` to regenerate harness configs from the canonical sources and `pnpm harness check` to verify they match. The git hooks in `.githooks/` enforce formatting, linting, and Conventional Commits for every harness, and `pnpm task status` prints the same resume brief that `SessionStart` injects.
+
+### 🛠️ Tools & Calling Other Agents
+
+`pnpm tools scan` detects agents, CLIs, and runtimes installed on this machine and saves them to `tools/local.json` (git-ignored) against `tools/catalog.json`. `SessionStart` includes a one-line tool summary so every agent knows what it can delegate to.
+
+```bash
+pnpm tools list --all                                   # see installed tools and install hints
+pnpm tools add dsh --kind agent --command "npx -y @deepseek-ai/dsh"
+pnpm agent ask --agent codex "Review utils/task/loop.js for edge cases"   # read-only second opinion
+pnpm loop my-task --agent codex --max 3                 # unattended fix-until-green in a worktree
+pnpm loop my-task --agent codex --review --reviewer claude   # + independent review rounds & fixes
+pnpm swarm my-task --agent claude --workers 2           # parallel workers, one worktree per step
+```
+
+Every headless child runs with `MEMORY_EXTRACT=1` (keeping memory hooks silent and sessions out of the extraction queue), and `pnpm loop` / `pnpm swarm` worktrees omit `AGENTS.local.md` and `CLAUDE.local.md` so reviews and fixes always start with a clean context.
+
+## 📝 Tasks & Review Loop
+
+Generated work lives in `tasks/<task-name-yymmdd>/`, managed via `pnpm task` so any agent — or you — can pause, hand off, and resume without losing the thread:
 
 ```bash
 pnpm task new some-task --goal "Translate the X post" --step "Draft" --step "Proofread" --verify "pnpm check"
@@ -126,61 +135,55 @@ pnpm task status                   # resume brief: goal, next step, last note, v
 ```text
 tasks/some-task-260101/
 ├── plan.md                        # goal, acceptance, generated steps, decisions
-├── state.json                     # machine state (only via pnpm task)
-├── NOTES.md                       # append-only log
+├── state.json                     # machine state (managed only via pnpm task)
+├── NOTES.md                       # append-only progress log
 ├── reviews/REVIEW_some-task.md    # pnpm task template review
 ├── studies/STUDIES_some-task.md   # pnpm task template study
 └── scripts/ docs/ translated/ tmp/
 ```
 
-`tasks/.active` names the active task. In Claude Code, the `SessionStart` hook injects the brief
-after startup, `/clear`, and `/compact`; other harnesses run `pnpm task status` (AGENTS.md §2).
-The full procedure is in `AGENTS.md` §4; `pnpm task help` lists every command. How the pieces fit
-together, with a worked example: `docs/harness.md`. `tasks/` and
-`logs/` are git-ignored — tasks are personal to each machine.
+Each session binds its own active task (with `tasks/.active` as the default for new sessions). `SessionStart` injects the resume brief automatically across supported harnesses, and code tasks follow a structured quality loop: **plan → test-first build → clean-context review (`pnpm task review`) → independent triage → fix** (up to 2 rounds). Full details live in `AGENTS.md` §4 and [docs/harness.md](docs/harness.md). `tasks/` and `logs/` are git-ignored — tasks stay personal to each machine.
 
-### Memory
+## 🧠 Local Personal Memory & Personalization
 
-Agents remember lasting facts across sessions and harnesses, on this machine only (`memory/`,
-`AGENTS.local.md`, and `CLAUDE.local.md` are git-ignored; nothing is synced):
+Agents remember lasting preferences, machine workarounds, and repo facts across sessions and harnesses — strictly on your machine (`memory/`, `AGENTS.local.md`, and `CLAUDE.local.md` are git-ignored; nothing is ever pushed):
 
 ```bash
 pnpm memory init                    # once (pnpm workspace:setup runs it)
 pnpm memory                         # status: notes, core block, saving on/off, extraction queue
 pnpm memory add "The user prefers design first, then review." --scope user --type preference --tags design,review
-pnpm memory recall "how do I merge this PR"   # what the hooks would inject
-pnpm memory personalize --presets   # how agents talk to you (every message to you, nothing else)
-pnpm memory personalize --language "Japanese"   # keep it even when you write in English
-pnpm memory personalize --persona-file persona.md   # a longer persona, written in markdown
-# or keep it in memory/persona.md: pnpm memory init (and workspace:setup) apply your edits
-pnpm memory personalize --off       # pause applying the saved response settings
-pnpm memory personalize --on        # resume applying them in new sessions
-pnpm memory off --session           # an incognito session
-pnpm memory export                  # back up or move: a checksummed .tar.gz; import <file> --dry-run
+pnpm memory recall "how do I merge this PR"   # preview what the hooks would inject
+pnpm memory personalize --presets   # set how agents talk to you (chat only, never code/commits)
+pnpm memory personalize --language "Japanese"   # keep your reply language even when writing in English
+pnpm memory personalize --persona-file persona.md   # load a longer markdown persona
+# or edit memory/persona.md directly: pnpm memory init (and workspace:setup) apply your edits
+pnpm memory personalize --off       # pause saved response personalization
+pnpm memory personalize --on        # resume in new sessions
+pnpm memory off --session           # incognito session (no saving)
+pnpm memory export                  # checksummed .tar.gz backup; restore via import <file> --dry-run
 ```
 
-Agents save what they learn as they go and say so; in Claude Code a background job also extracts
-what they missed from each finished session. Every session loads a small core block (your
-settings, pinned notes, recent tasks), and hooks recall the notes that match each prompt or failed
-command. Agent rules: `AGENTS.md` §13; how it works: `docs/harness.md`.
+- **Multi-agent background jobs:** Extraction, weekly consolidation, and persona compact/audit run on the **session's own agent CLI** (`claude`, `codex`, `dsh`, or `agy`) by default — or on a chosen CLI via `pnpm memory set --extract-agent <agent>`.
+- **Zero-tool isolation:** Memory jobs run in an empty temp folder with tools disabled. Codex runs out of the box when zero MCP servers are configured (if you configure Codex MCP servers, it fails closed and prints a `Fix:` command to switch `--extract-agent`); Claude and Codex isolation flags avoid double quotes so Windows `.cmd` shims work cleanly.
+- **Pausing saves:** Running `pnpm memory off` pauses both extraction and weekly consolidation (manual `pnpm memory consolidate` refuses unless `--force` is passed; `--dry-run` is always allowed).
 
-## Skills
+See `AGENTS.md` §13 and [docs/harness.md](docs/harness.md) for the full memory lifecycle.
 
-### Project-owned skills
+## 🧩 Skills
+
+### 🏠 Project-owned skills
 
 | Skill             | What it does                                                                  |
 | ----------------- | ----------------------------------------------------------------------------- |
 | `workspace-setup` | Initialise or repair this workspace (deps, skills, links, hooks, memory).     |
-| `context-manager` | Context-degradation prevention and recovery alongside `.claude/hooks/`.       |
+| `context-manager` | Context-degradation prevention and recovery alongside the context monitor.    |
 | `web-browsing`    | Tool selection and workflows for web interaction, real-browser sessions, e2e. |
 
-### External skills (`skills-lock.json`)
+### 📦 External skills (`skills-lock.json`)
 
-These are not committed. Install the recommended set with `pnpm skills:install`; each skill is
-installed locally into the git-ignored `.agents/skills/`. Sources and hashes are pinned in
-`skills-lock.json`; each upstream repository ships its own license.
+External skills are not committed. Install the recommended set with `pnpm skills:install`; each skill is installed locally into the git-ignored `.agents/skills/`. Sources and hashes are pinned in `skills-lock.json`; each upstream repository ships its own license.
 
-#### Kyoten Skills ([shino369/kyoten-skills](https://github.com/shino369/kyoten-skills), MIT)
+#### ✨ Kyoten Skills ([shino369/kyoten-skills](https://github.com/shino369/kyoten-skills), MIT)
 
 | Skill                    | What it does                                                                                |
 | ------------------------ | ------------------------------------------------------------------------------------------- |
@@ -189,7 +192,7 @@ installed locally into the git-ignored `.agents/skills/`. Sources and hashes are
 | `transparent-background` | Flat-background image → transparent PNG with clean edges; specks and recolour.              |
 | `translation-expertise`  | EN ↔ JA ↔ zh-TW house styles, 1:1 structural parity, and Taiwan/JA terminology trap guards. |
 
-#### Browser & Web
+#### 🌐 Browser & Web
 
 | Skill            | What it does                                                                   | Source                                                                    | Credit      |
 | ---------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------- | ----------- |
@@ -197,11 +200,9 @@ installed locally into the git-ignored `.agents/skills/`. Sources and hashes are
 | `browser-use`    | Direct browser control over CDP: automation, scraping, screenshots.            | [browser-use/browser-use](https://github.com/browser-use/browser-use)     | Browser Use |
 | `playwright-cli` | Playwright browser automation and e2e test workflows.                          | [microsoft/playwright-cli](https://github.com/microsoft/playwright-cli)   | Microsoft   |
 
-> Browser-tool selection is defined in `AGENTS.md` §8: `agent-browser` is the
-> default for ad-hoc interaction, `browser-use` covers autonomous/Python/cloud work, and Playwright
-> is reserved for e2e tests.
+> Browser-tool selection is defined in `AGENTS.md` §8: `agent-browser` is the default for ad-hoc interaction, `browser-use` covers autonomous / Python / real-Chrome / cloud work, and Playwright is reserved for e2e tests.
 
-#### Engineering Workflow
+#### 🛠️ Engineering Workflow
 
 | Skill             | What it does                                                                | Source                                                    | Credit      |
 | ----------------- | --------------------------------------------------------------------------- | --------------------------------------------------------- | ----------- |
@@ -209,28 +210,21 @@ installed locally into the git-ignored `.agents/skills/`. Sources and hashes are
 | `diagnosing-bugs` | Structured diagnosis loop for hard bugs and performance regressions.        | [mattpocock/skills](https://github.com/mattpocock/skills) | Matt Pocock |
 | `tdd`             | Test-driven development with red-green-refactor.                            | [mattpocock/skills](https://github.com/mattpocock/skills) | Matt Pocock |
 
-#### Meta & Accessibility
+#### 🎨 Meta & Tooling
 
 | Skill           | What it does                                        | Source                                                    | Credit    |
 | --------------- | --------------------------------------------------- | --------------------------------------------------------- | --------- |
 | `skill-creator` | Create, edit, benchmark, and optimise agent skills. | [anthropics/skills](https://github.com/anthropics/skills) | Anthropic |
 
-Personal or optional skills (for example `i-have-adhd`) are not in the recommended lock. Install
-them individually with
-`pnpm dlx skills add ayghri/i-have-adhd --skill i-have-adhd --copy --agent claude-code`.
+Personal or optional skills (for example `i-have-adhd`) are not in the recommended lock. Install them individually with `pnpm dlx skills add ayghri/i-have-adhd --skill i-have-adhd --copy --agent claude-code`.
 
-> All third-party skills remain under their upstream licenses. Installed copies do not include
-> license files except `skill-creator`, which ships `LICENSE.txt` at
-> `.agents/skills/skill-creator/LICENSE.txt`; check the source repositories above for the others.
+> All third-party skills remain under their upstream licenses. Installed copies do not include license files except `skill-creator`, which ships `LICENSE.txt` at `.agents/skills/skill-creator/LICENSE.txt`; check the source repositories above for the others.
 
-### Managing skills
+### ⚙️ Managing skills
 
-Project-owned skills live in `.agents/skills/` and are committed to this repository. To add one,
-follow "Adding a project-owned skill" in `.agents/skills/workspace-setup/SKILL.md`.
+Project-owned skills live in `.agents/skills/` and are committed to this repository. To add one, follow "Adding a project-owned skill" in `.agents/skills/workspace-setup/SKILL.md`.
 
-Third-party skills are **not committed**. Install the recommended set from `skills-lock.json` with
-Vercel's [`skills` CLI](https://github.com/vercel-labs/skills) (the [skills.sh](https://skills.sh)
-ecosystem):
+External skills are **not committed**. Install the recommended set from `skills-lock.json` with Vercel's [`skills` CLI](https://github.com/vercel-labs/skills) (the [skills.sh](https://skills.sh) ecosystem):
 
 ```bash
 pnpm skills:install                      # install everything in skills-lock.json
@@ -241,22 +235,13 @@ pnpm skills:check                        # verify lock entries are installed
 pnpm skills:link                         # (re)link .agents/skills into .claude/skills
 ```
 
-Installation uses skills.sh's default layout with `--agent claude-code codex`: the real files land
-in `.agents/skills/<name>/` (read directly by Codex) and `.claude/skills/<name>` is a relative
-symlink to them. `skills:link` creates the same links for project-owned skills, migrates old copied
-installs, prunes stale links, and falls back to directory junctions on Windows. Third-party
-installs remain untracked. `skills-lock.json` pins sources and hashes;
-commit it when it changes. `skills:check` verifies every lock entry is installed with a matching
-frontmatter name.
-The lock's hash is a source snapshot hash, not reproducible from the installed copy, so content
-changes are reviewed via `git diff`. On Windows, `skills:update` may exit 127 after a successful
-update due to an upstream crash — verify the files changed before treating it as a failure.
+Installation uses skills.sh's default layout with `--agent claude-code codex`: the real files land in `.agents/skills/<name>/` (read natively by Codex and Antigravity) and `.claude/skills/<name>` is a relative symlink to them. `skills:link` creates the same links for project-owned skills, migrates old copied installs, prunes stale links, and falls back to directory junctions on Windows. External installs remain untracked; commit `skills-lock.json` whenever it changes. `skills:check` verifies every lock entry is installed with a matching frontmatter name.
 
-To add a skill manually, use
-`pnpm dlx skills add <owner/repo> --skill <name> --agent claude-code codex -y`, then
-`pnpm skills:link`; it is installed locally and remains untracked.
+The lock's hash is a source snapshot hash, not reproducible from the installed copy, so review content changes via `git diff`. On Windows, `skills:update` may exit 127 after a successful update due to an upstream crash — verify the files changed before treating it as a failure.
 
-### Skill runtime prerequisites
+To add a skill manually, run `pnpm dlx skills add <owner/repo> --skill <name> --agent claude-code codex -y`, then `pnpm skills:link`; it stays local and untracked.
+
+### 🔧 Skill runtime prerequisites
 
 Most skills are instructions only. These require a local runtime:
 
@@ -270,25 +255,17 @@ Most skills are instructions only. These require a local runtime:
 | `dependency-update`      | `gh` CLI                           | `gh --version`; install from <https://cli.github.com/> (also used for PR attachments)                                                     |
 | Playwright e2e           | Chromium                           | `pnpm exec playwright install chromium`                                                                                                   |
 
-`npm` commands are blocked in this workspace. Use `pnpm dlx` for one-off CLIs, `pnpm add -D` +
-`pnpm exec` for project-local binaries, and `uv tool` / `uvx` for Python CLIs. Avoid `pnpm add -g`:
-the global bin directory is not on `PATH`, and global installs bypass the workspace lockfile and
-supply-chain settings.
+`npm` commands are blocked in this workspace. Use `pnpm dlx` for one-off CLIs, `pnpm add -D` + `pnpm exec` for project-local binaries, and `uv tool` / `uvx` for Python CLIs. Avoid `pnpm add -g`: global installs bypass the workspace lockfile and supply-chain settings.
 
-The `browser-use` skill comes from
-[browser-use/browser-use](https://github.com/browser-use/browser-use) and requires its `browser-use`
-CLI. The package pulls in `browser-harness` as a pinned dependency, so install `browser-use` rather
-than `browser-harness` alone.
+The `browser-use` skill comes from [browser-use/browser-use](https://github.com/browser-use/browser-use) and requires its `browser-use` CLI (which pulls in `browser-harness` as a pinned dependency). The `agent-browser` skill is invoked via `pnpm exec agent-browser ...` because no global shim is installed.
 
-The vendored `agent-browser` skill invokes `agent-browser`; in this workspace call it as
-`pnpm exec agent-browser ...` because no global shim is installed.
+Browser skills that attach to local Chrome need its CDP endpoint: either enable `chrome://inspect/#remote-debugging`, or launch an isolated Chrome with `--remote-debugging-port=9222 --user-data-dir=<profile>` and set `BU_CDP_URL=http://127.0.0.1:9222` for `browser-use`.
 
-Browser skills that attach to local Chrome need its CDP endpoint. Either enable
-`chrome://inspect/#remote-debugging`, or launch an isolated Chrome with
-`--remote-debugging-port=9222 --user-data-dir=<profile>` and set
-`BU_CDP_URL=http://127.0.0.1:9222` for `browser-use`.
+## 🎭 Agents & Rules
 
-## Agents
+### Role Prompts (`.claude/agents/`)
+
+Canonical role prompts live in `.claude/agents/*.md` and sync to `.codex/agents/*.toml` and `.agents/agents/*.md` via `pnpm harness sync`:
 
 | Agent                   | Purpose                                                               |
 | ----------------------- | --------------------------------------------------------------------- |
@@ -297,168 +274,107 @@ Browser skills that attach to local Chrome need its CDP endpoint. Either enable
 | `reviewer`              | Clean-context review round from a brief; findings for triage.         |
 | `security-reviewer`     | Security-focused review: auth, injection, XSS, secrets, dependencies. |
 | `test-runner`           | Runs tests and reports failures and coverage.                         |
-| `trilingual-translator` | EN/JA/ZH translation in initial, proofread, and refine roles.         |
+| `trilingual-translator` | EN / JA / zh-TW translation in initial, proofread, and refine roles.  |
 
-## Rules
+### Path-Scoped Rules (`.claude/rules/`)
 
-Always-on guidance (safety rules, task procedure, git conventions, dependencies, browser tools,
-skills index) lives in `AGENTS.md`, so every harness sees it. `.claude/rules/` keeps only the
-path-scoped rules, which Claude Code loads for matching files and `AGENTS.md` tells other agents
-to read:
+Always-on guidance lives in `AGENTS.md` so every harness sees it. `.claude/rules/` keeps path-scoped rules that Claude Code auto-loads and `AGENTS.md` directs other agents to read:
 
 | Rule                  | Scope      | Purpose                                    |
 | --------------------- | ---------- | ------------------------------------------ |
 | `testing`             | Test files | Vitest, 100% coverage, mocking.            |
 | `working-with-script` | Scripts    | Node-first scripts, error handling, tests. |
 
-## Using other agents
+## 🪝 Hooks
 
-| Harness                     | Instructions                           | Skills                                                      |
-| --------------------------- | -------------------------------------- | ----------------------------------------------------------- |
-| Claude Code                 | `CLAUDE.md` → `@AGENTS.md`             | `.claude/skills/` links (created by `pnpm workspace:setup`) |
-| Codex                       | `AGENTS.md`                            | `.agents/skills/` (native)                                  |
-| Antigravity CLI (`agy`)     | `AGENTS.md` (≤ 24,000 bytes)           | `.agents/skills/` (native); hooks & roles under `.agents/`  |
-| DeepSeek harness and others | `AGENTS.md` (point it there if needed) | `.agents/skills/`, or `pnpm workspace:setup --target <dir>` |
+<p align="center">
+  <img src="./docs/images/kyoten-hooks.png" alt="Gemini-chan laughing off a Stop hook coverage-lock collision" width="400" />
+</p>
 
-Most of the Claude Code hooks work on other harness after the setup (but some don't). The git hooks in `.githooks/` (enabled by
-`pnpm workspace:setup`) enforce formatting, linting, and commit messages for everyone, and
-`pnpm task status` gives every harness the same resume brief the `SessionStart` hook injects.
+Shared hook logic lives in `utils/harness/hooks.js` and `.claude/hooks/`, wired into Claude Code, Codex, Antigravity CLI, and DSH via `pnpm harness sync`:
 
-### Tools and calling other agents
-
-`pnpm tools scan` records the agents, CLIs, and runtimes this machine has in `tools/local.json`
-(git-ignored), checking the list in `tools/catalog.json`. `pnpm tools list` shows them, and the
-`SessionStart` brief ends with a one-line summary so Claude knows what it can call. Tools the scan
-cannot find (an `npx`-only harness, a cloned reference repo) are recorded with `pnpm tools add`;
-source checkouts live outside the repo in `~/.cache/agent-tools/src/` (`pnpm tools sources`).
-
-```bash
-pnpm tools list --all                                   # what is here, and how to install the rest
-pnpm tools add dsh --kind agent --command "npx -y @deepseek-ai/dsh"
-pnpm agent ask --agent codex "Review utils/task/loop.js for edge cases"   # read-only second opinion
-pnpm loop my-task --agent codex --max 3                 # unattended fix-until-green, in a worktree
-pnpm loop my-task --agent codex --review --reviewer claude   # + review rounds and fixes (code tasks)
-pnpm swarm my-task --agent claude --workers 2           # parallel workers, one worktree per step
-```
-
-## Hooks
-
-| Hook                   | Event                                                                                | Purpose                                                       |
-| ---------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
-| `session_start.js`     | `SessionStart`                                                                       | Injects the active task's resume brief.                       |
-| `pre_compact.js`       | `PreCompact`                                                                         | Appends a checkpoint to the task's `NOTES.md`.                |
-| `task_loop.js`         | `Stop`, `UserPromptSubmit`                                                           | Inner loop: verify, then the review loop (code).              |
-| `context_monitor.js`   | `UserPromptSubmit`                                                                   | Warns at 20/40/60% of the context window.                     |
-| `audit_logger.js`      | `PostToolUse` (`*`)                                                                  | Logs tool use to `logs/<YYYYMMDD>/logging.jsonl`.             |
-| `auto_format.js`       | `PostToolUse` (`Edit\|Write`)                                                        | Runs Prettier on edited files.                                |
-| `utils/memory/hook.js` | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUseFailure`, `SessionEnd` | Memory: recall, announcements, extraction queue (also Codex). |
+| Hook                   | Event                                                                                | Purpose                                                                  |
+| ---------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| `session_start.js`     | `SessionStart`                                                                       | Injects the active task's resume brief and available tools summary.      |
+| `pre_compact.js`       | `PreCompact`                                                                         | Appends a checkpoint to the task's `NOTES.md`.                           |
+| `task_loop.js`         | `Stop`, `UserPromptSubmit`                                                           | Inner loop: verify, then guide through the clean-context review loop.    |
+| `context_monitor.js`   | `UserPromptSubmit`                                                                   | Warns at 20% / 40% / 60% of the context window.                          |
+| `audit_logger.js`      | `PostToolUse` (`*`)                                                                  | Logs tool use to `logs/<YYYYMMDD>/logging.jsonl`.                        |
+| `auto_format.js`       | `PostToolUse` (`Edit\|Write`)                                                        | Runs Prettier on edited files.                                           |
+| `guard.js`             | `PreToolUse`                                                                         | Blocks secret access, `rm`, `npm`, and destructive git commands.         |
+| `utils/memory/hook.js` | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUseFailure`, `SessionEnd` | Memory core block, prompt/failure recall, announcements, and extraction. |
 
 The context monitor defaults to a 1M window; set `CLAUDE_CONTEXT_WINDOW` to override it.
 
-## Translation
+## 🌍 Translation
 
-Ask Claude to translate, or invoke the `trilingual-translator` agent. `translation-expertise`
-supplies house styles, 1:1 structural parity rules, and JA/zh-TW terminology trap guards.
+Ask your agent to translate, or invoke the `trilingual-translator` subagent. The `translation-expertise` skill supplies house styles, 1:1 structural parity rules, and JA / zh-TW terminology trap guards:
 
-- English ↔ Japanese ↔ Traditional Chinese (Taiwan defaults)
-- Optional initial → proofread → refine workflow
-- File and URL sources: `WebFetch` for simple pages; `agent-browser` / `browser-use` for JS-heavy
-  pages
+- English ↔ Japanese (`日本語`) ↔ Traditional Chinese (`繁體中文`, Taiwan defaults)
+- Optional 3-stage **initial → proofread → refine** workflow writing drafts to the task's `translated/` folder
+- File and URL sources: fetch tools for static pages; `agent-browser` / `browser-use` for JS-heavy pages (Playwright stays reserved for e2e tests)
 
-Do not use Playwright for text extraction; it is reserved for e2e tests.
+## 🧪 Testing
 
-## Testing
-
-Unit and integration tests use **Vitest**:
+Unit and integration tests use **Vitest** with **100% coverage thresholds** on `utils/`, `.claude/hooks/`, and project-owned `.agents/skills/`:
 
 ```bash
 pnpm test
-pnpm test:coverage   # 100% thresholds
+pnpm test:coverage   # 100% statements, branches, functions, lines
 ```
 
-Test rules: `.claude/rules/testing.md`. Deep guides: `docs/testing/`.
+Test rules live in `.claude/rules/testing.md`, with deeper guides under `docs/testing/`.
 
-End-to-end tests use **Playwright** in `e2e/` (the scaffold passes with an empty suite until you add
-`*.e2e.*` tests):
+End-to-end tests use **Playwright** in `e2e/` (passes cleanly with an empty suite until `*.e2e.*` tests are added):
 
 ```bash
 pnpm exec playwright install chromium
 pnpm test:e2e
 ```
 
-Playwright is e2e-only. For normal browsing or text extraction, use `WebFetch` or
-`agent-browser` / `browser-use`.
+## 🛡️ Security & Configuration
 
-## Configuration
+### 📦 Package Management
 
-### Package Management
-
-pnpm **12.14.0** is pinned via `packageManager` and enforced by `engines.pnpm` / `engineStrict`.
-All current dependencies use the `dev` catalog.
+pnpm **12.14.0** is pinned via `packageManager` and enforced by `engines.pnpm` / `engineStrict`. All dev dependencies use the `dev` catalog:
 
 ```bash
 pnpm add -D some-package --save-catalog-name=dev
 ```
 
-`pnpm-workspace.yaml` hardening:
+`pnpm-workspace.yaml` supply-chain hardening:
 
-- `minimumReleaseAge: 10080` — wait 7 days before using a new package version
+- `minimumReleaseAge: 10080` — wait 7 days before adopting a new package version
 - `strictPeerDependencies: true`
 - `engineStrict: true`
-- `ignoreScripts: true` with `allowBuilds: { esbuild: true }`
+- `ignoreScripts: true` with explicit `allowBuilds` (`esbuild: true`, `agent-browser: false`)
 - `trustPolicy: no-downgrade`
-- `overrides` — bounded security pins for transitive dependencies
 
-### Permissions
+### 🔐 Permissions & Guardrails
 
-Workspace permissions are configured in `.claude/settings.json`:
+Workspace permissions are configured in `.claude/settings.json` and mirrored across harnesses by `utils/harness/hooks.js`:
 
-**Allowed operations:**
-
-- pnpm commands (including `pnpm task rm`, the undoable delete), git status/diff/log/add/commit,
-  creating a branch (`git switch -c`, `git checkout -b`), and read-only git (`rev-parse`, `show`)
-- `node` only for repo scripts (`utils/`, `.claude/hooks/`, `.agents/skills/`)
-- ls, dir, cd, pwd, echo, type, mkdir
-
-`python`, arbitrary `node`, `cat`, and `curl` are deliberately not pre-approved: each can run
-arbitrary code, read files the Read deny rules protect, or send data out.
-
-**Requires confirmation:**
-
-- git push, rebase, merge, cherry-pick
-- kill -9, pkill, killall
-
-**Denied operations:**
-
-- rm (agents delete with `pnpm task rm`, which moves files to `tasks/.trash/` for 7 days), sudo,
-  chmod, chown, dd, mount, systemctl, mkfs, fdisk, parted
-- npm commands (use pnpm instead)
-- PowerShell, cmd, Windows admin commands
-- destructive git operations (force push, hard reset, clean -fd, branch -D, tag -d)
-- pnpm publish
+- **Allowed operations:** `pnpm` commands (including undoable `pnpm task rm`), local git (`status`, `diff`, `log`, `add`, `commit`, `switch -c`, `checkout -b`, `rev-parse`, `show`), `node` only for repo scripts (`utils/`, `.claude/hooks/`, `.agents/skills/`), and basic directory inspection (`ls`, `dir`, `cd`, `pwd`, `echo`, `type`, `mkdir`). Arbitrary `python`, `node`, `cat`, and `curl` are not pre-approved.
+- **Requires confirmation:** `git push`, `rebase`, `merge`, `cherry-pick`, and force-kill signals (`kill -9`, `pkill`, `killall`).
+- **Denied operations:** secret files (`.env*`, `secrets/`, `*.pem`, `*.key`, `credentials.json`, `~/.ssh/`, `~/.aws/`), `rm` (use `pnpm task rm` instead — moves files to `tasks/.trash/` for 7 days), `npm`, `sudo` / admin commands, destructive git (`force push`, `reset --hard`, `clean -fd`, `branch -D`, `tag -d`), and `pnpm publish`.
 
 Local overrides belong in `.claude/settings.local.json` (git-ignored).
 
-### MCP Servers
+### 🔌 MCP Servers
 
-Local MCP configuration lives in `.mcp.json`, which is git-ignored. Copy `.mcp.json.example` and
-adjust the paths for your machine.
+Local MCP configuration lives in `.mcp.json` (git-ignored). Copy `.mcp.json.example` and adjust the paths for your machine.
 
-## Contributing
+## 🤝 Contributing
 
-This is a personal workspace, but forks and suggestions are welcome. Before opening a PR, run
-`pnpm check`.
+This is a personal workspace, but forks, ideas, and suggestions are always welcome! Before opening a PR, make sure `pnpm check` passes.
 
-Third-party skills are managed with skills.sh; project-owned skills live in `.agents/skills/`.
+External skills are managed with skills.sh (`skills-lock.json`); project-owned skills live in `.agents/skills/`.
 
-## Credits
+## 💖 Credits
 
-- **Third-party skills**: the [skills.sh](https://skills.sh) ecosystem, installed with
-  [vercel-labs/skills](https://github.com/vercel-labs/skills). Individual authors are credited in
-  the tables above.
-- **Built for**: [Claude Code](https://claude.com/claude-code).
+- **External skills:** the [skills.sh](https://skills.sh) ecosystem, installed with [vercel-labs/skills](https://github.com/vercel-labs/skills). Individual authors are credited in the tables above.
+- **Harnesses supported:** [Claude Code](https://claude.com/claude-code), [Codex](https://openai.com/codex/), [Antigravity CLI](https://antigravity.google/docs/cli/reference), and [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 
-## License
+## 📄 License
 
-The original contents of this repository are [ISC](./LICENSE). Third-party skills are not
-distributed here; when installed, they remain under their upstream licenses.
+The original contents of this repository are licensed under [ISC](./LICENSE). External skills are not distributed here; when installed, they remain under their upstream licenses.
