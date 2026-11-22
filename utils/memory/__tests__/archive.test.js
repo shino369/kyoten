@@ -1197,3 +1197,150 @@ describe('formatImport', () => {
     ]);
   });
 });
+
+describe('per-agent personas', () => {
+  /** @param {string} root @param {string} key @param {string} text */
+  const persona = (root, key, text) =>
+    write(root, `memory/persona.${key}.md`, `<!-- note -->\n${text}\n`);
+  const entry = (/** @type {string} */ key) =>
+    `personalization/persona.${key}.md`;
+
+  test('should export every persona.<key>.md with the personalization part', () => {
+    initLocal(source);
+    persona(source, 'codex', 'Cool codex.');
+    persona(source, 'agy', 'Calm agy.');
+
+    const { files } = collectExport(source, {
+      parts: ['personalization'],
+      tasks: [],
+    });
+
+    const paths = files.map((file) => file.path);
+    expect(paths).toContain(entry('codex'));
+    expect(paths).toContain(entry('agy'));
+    expect(paths).not.toContain(entry('claude'));
+  });
+
+  test('should set missing personas, keep different ones, and skip same ones', () => {
+    initLocal(source);
+    persona(source, 'codex', 'Cool codex.');
+    persona(source, 'claude', 'Proud claude.');
+    persona(source, 'ds', 'Same ds.');
+    const archive = readArchive(exportAll({ parts: ['personalization'] }).file);
+    initLocal(target);
+    persona(target, 'claude', 'My own claude.');
+    persona(target, 'ds', 'Same ds.');
+
+    const p = planImport(target, archive, { include: null, replace: false });
+    const lines = formatImport({
+      file: 'e.tar.gz',
+      manifest: archive.manifest,
+      plan: p,
+      result: null,
+    });
+    applyImport(target, archive, p, { now: NOW, detail: 'x' });
+
+    expect(p.personas).toMatchObject({ set: ['codex'], kept: ['claude'] });
+    expect(lines).toContain(
+      '  Agent personas: would set codex; kept claude (yours; --replace overwrites)'
+    );
+    const dir = memoryDir(target);
+    expect(fs.readFileSync(path.join(dir, 'persona.codex.md'), 'utf-8')).toBe(
+      '<!-- note -->\nCool codex.\n'
+    );
+    expect(fs.readFileSync(path.join(dir, 'persona.claude.md'), 'utf-8')).toBe(
+      '<!-- note -->\nMy own claude.\n'
+    );
+  });
+
+  test('should overwrite with --replace and report set after applying', () => {
+    initLocal(source);
+    persona(source, 'claude', 'Proud claude.');
+    const archive = readArchive(exportAll({ parts: ['personalization'] }).file);
+    initLocal(target);
+    persona(target, 'claude', 'My own claude.');
+
+    const p = planImport(target, archive, { include: null, replace: true });
+    const result = applyImport(target, archive, p, {
+      now: NOW,
+      detail: 'x',
+      replace: true,
+    });
+    const lines = formatImport({
+      file: 'e.tar.gz',
+      manifest: archive.manifest,
+      plan: p,
+      result,
+    });
+
+    expect(lines).toContain('  Agent personas: set claude');
+    expect(result.snapshot).not.toBeNull();
+    expect(
+      fs.readFileSync(
+        path.join(memoryDir(target), 'persona.claude.md'),
+        'utf-8'
+      )
+    ).toContain('Proud claude.');
+  });
+
+  test('should import an old archive without personas', () => {
+    initLocal(source);
+    const archive = readArchive(exportAll({ parts: ['personalization'] }).file);
+    initLocal(target);
+
+    const p = planImport(target, archive, { include: null, replace: false });
+
+    expect(p.personas).toBeNull();
+  });
+
+  test('should skip empty, secret, and oversized personas with a warning', () => {
+    const big = 'x'.repeat(5000);
+    const file = craft([
+      { path: entry('claude'), data: '<!-- only a comment -->\n' },
+      { path: entry('codex'), data: `token ${TOKEN}\n` },
+      { path: entry('agy'), data: `${big}\n` },
+    ]);
+    initLocal(target);
+
+    const p = planImport(target, readArchive(file), {
+      include: null,
+      replace: false,
+    });
+
+    expect(p.personas).toBeNull();
+    expect(p.warnings.join('\n')).toMatch(/codex persona looks like it holds/);
+    expect(p.warnings.join('\n')).toMatch(/agy persona skipped/);
+  });
+
+  test('should not plan personas when the part is not imported', () => {
+    const file = craft([{ path: entry('claude'), data: 'Cat.\n' }]);
+    const p = planImport(target, readArchive(file), {
+      include: ['memory'],
+      replace: false,
+    });
+
+    expect(p.personas).toBeNull();
+  });
+});
+
+describe('per-agent personas, kept only', () => {
+  test('should describe a dry run where every persona is kept', () => {
+    initLocal(source);
+    write(source, 'memory/persona.claude.md', 'Proud claude.\n');
+    const archive = readArchive(exportAll({ parts: ['personalization'] }).file);
+    initLocal(target);
+    write(target, 'memory/persona.claude.md', 'My own claude.\n');
+
+    const p = planImport(target, archive, { include: null, replace: false });
+    const lines = formatImport({
+      file: 'e.tar.gz',
+      manifest: archive.manifest,
+      plan: p,
+      result: null,
+    });
+
+    expect(lines).toContain(
+      '  Agent personas: kept claude (yours; --replace overwrites)'
+    );
+  });
+});

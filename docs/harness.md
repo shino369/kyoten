@@ -461,7 +461,9 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   the main checkout.
 - **Export and import** (`pnpm memory export` / `import`): one `.tar.gz` with a checksummed
   manifest, validated (paths, entry types, checksums) before anything is written; imports merge
-  and take a snapshot first.
+  and take a snapshot first. The personalization part carries the per-agent personas
+  (`memory/persona.<claude|codex|ds|agy>.md`); an import sets only the missing ones (`--replace`
+  overwrites, `--dry-run` lists them), and older archives without them still import.
 
 ## The quality loop (code tasks)
 
