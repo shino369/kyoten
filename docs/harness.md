@@ -410,7 +410,7 @@ digests, at most 3,000 characters) that every session loads. Rules for agents: A
   overrides, `default` restores), for ADD/UPDATE/DELETE ops on the related notes. `--extract-model`
   pairs with the configured agent (claude by default); otherwise the session's own model is used.
   Consolidation and `personalize --compact/--audit` follow the same agent choice (consolidation: the
-  last run's agent). Codex needs zero configured MCP servers; a missing CLI or failed check says
+  last run's agent, else the session's own CLI, else Claude). Codex needs zero configured MCP servers; a missing CLI or failed check says
   which `--extract-agent` to switch to. Secrets are refused, instruction-like ops
   wait in `memory/inbox.jsonl`, and the next session announces the saves.
   Memory jobs build their isolation arguments without a double quote, so they start through

@@ -382,7 +382,7 @@ describe('consolidate', () => {
       /** @type {any} */ (runAgent.mock.calls.at(-1))[0];
     const answering = () => agentReturning({ profile: [], ops: [] });
 
-    test('should default to claude without a journal', () => {
+    test('should default to claude without a journal or session harness', () => {
       seed();
       const runAgent = answering();
 
@@ -390,6 +390,18 @@ describe('consolidate', () => {
 
       expect(lastCall(runAgent).command.agent).toBe('claude');
       expect(run).toMatchObject({ agent: 'claude', model: null });
+    });
+
+    test('should use the session harness when there is no prior journal run', () => {
+      seed();
+      const runAgent = answering();
+
+      const run = consolidate(
+        deps({ runAgent, env: { DSH_SESSION_ID: 'dsh-1' } })
+      );
+
+      expect(lastCall(runAgent).command.agent).toBe('dsh');
+      expect(run).toMatchObject({ agent: 'dsh', model: null });
     });
 
     test('should treat an old journal line without agent as claude', () => {
@@ -540,6 +552,7 @@ describe('consolidateLocked', () => {
     const run = consolidateLocked(deps({ runAgent }));
 
     expect(run).toMatchObject({ job: 'consolidation', status: 'failed' });
+    expect(run?.error).toContain('the consolidation agent exited with code 1:');
     expect(run?.error).not.toContain(TOKEN);
     expect(readConsolidated(dir)).toEqual({ tried: NOW.toISOString() });
     expect(readJournal(dir).at(-1)?.status).toBe('failed');

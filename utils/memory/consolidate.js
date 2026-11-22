@@ -16,7 +16,7 @@ import fs from 'fs';
 import path from 'path';
 import { answerOf } from '../agent/cli.js';
 import { findSecrets, redactSecrets } from '../redact.js';
-import { writeFileAtomic } from '../task/store.js';
+import { sessionHarness, writeFileAtomic } from '../task/store.js';
 import { callAgent } from './agent-call.js';
 import { readConfig } from './config.js';
 import { looksLikeInstruction } from './instructions.js';
@@ -303,7 +303,8 @@ export function consolidate(deps) {
   const prompt = buildConsolidationPrompt({ shown, groups });
   const config = readConfig(dir);
   const last = lastRun(dir);
-  const agent = config.extractAgent ?? last?.agent ?? 'claude';
+  const agent =
+    config.extractAgent ?? last?.agent ?? sessionHarness(deps.env) ?? 'claude';
   const model = modelFor({
     agent,
     configured: config.extractAgent,
@@ -317,7 +318,7 @@ export function consolidate(deps) {
     model,
     rootDir: deps.rootDir,
   });
-  const result = callAgent(deps, command, prompt);
+  const result = callAgent(deps, command, prompt, { job: 'consolidation' });
   const answer = parseConsolidation(answerOf(result));
   /** @type {string[]} */
   const noAdds = [];

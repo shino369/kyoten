@@ -262,6 +262,34 @@ describe('callAgent', () => {
     expect(claude.args).toContain('{"disableAllHooks":true}');
   });
 
+  test('should rewrite the isolation --settings flag when the command already has one', () => {
+    const claude = headlessCommand({ agent: 'claude', rootDir: root });
+    const withPrefix = {
+      ...claude,
+      args: ['--settings', '/path/base.json', ...claude.args],
+    };
+    /** @type {string[]} */
+    let args = [];
+    let settings = '';
+    const runAgent = vi.fn((/** @type {any} */ input) => {
+      args = input.command.args;
+      settings = fs.readFileSync(
+        args[args.lastIndexOf('--settings') + 1],
+        'utf-8'
+      );
+      return { code: 0, signal: null, stdout: 'a', output: 'a', durationMs: 1 };
+    });
+
+    callAgent(deps(/** @type {any} */ (runAgent)), withPrefix, 'P');
+
+    expect(args.slice(0, 2)).toEqual(['--settings', '/path/base.json']);
+    expect(path.basename(args[args.lastIndexOf('--settings') + 1])).toBe(
+      CLAUDE_SETTINGS_FILE
+    );
+    expect(args.filter((arg) => arg.includes('"'))).toEqual([]);
+    expect(JSON.parse(settings)).toEqual({ disableAllHooks: true });
+  });
+
   test('should leave a claude command without --settings alone', () => {
     const runAgent = agentReturning();
     const bare = { ...command, args: ['-p'] };

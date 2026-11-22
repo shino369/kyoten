@@ -170,7 +170,7 @@ function switchFix(job, agent) {
  * @returns {import('../loop/adapters.js').AgentCommand}
  */
 function settingsAsFile(command, cwd) {
-  const at = command.args.indexOf('--settings');
+  const at = command.args.lastIndexOf('--settings');
   if (command.agent !== 'claude' || at === -1) return command;
   const file = path.join(cwd, CLAUDE_SETTINGS_FILE);
   fs.writeFileSync(file, command.args[at + 1]);
