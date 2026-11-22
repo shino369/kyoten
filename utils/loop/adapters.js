@@ -345,7 +345,9 @@ export function parseAgyStreamJson(raw) {
  * would act as the caller's session in `pnpm task` (`TASK_SESSION`, set on
  * purpose, is kept). It also gets EXTRACT_ENV, so the workspace's memory
  * hooks stay silent in it: nothing is injected from memory and the session
- * is never queued for extraction into it.
+ * is never queued for extraction into it. (A Claude or DSH child in the
+ * workspace root still loads AGENTS.local.md natively; loop and swarm
+ * worktrees do not have it.)
  *
  * @param {{ command: AgentCommand, cwd: string, prompt: string, timeoutMs: number, env: NodeJS.ProcessEnv, spawn?: AgentSpawn, now?: () => number, platform?: string }} options
  *   DSH refuses a cwd its hook commands cannot carry (dshDirProblem)

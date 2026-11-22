@@ -386,8 +386,8 @@ export function initLocal(rootDir) {
 
 /**
  * Copy AGENTS.local.md and CLAUDE.local.md from a checkout into a worktree
- * (`pnpm loop`, `pnpm swarm`), so headless agents there load the core block
- * too. Copies are derived files, so a stale copy is replaced.
+ * by hand. `pnpm loop` and `pnpm swarm` do not call it: their headless agents
+ * run clean. Copies are derived files, so a stale copy is replaced.
  *
  * @param {string} fromDir
  * @param {string} toDir

@@ -167,21 +167,14 @@ describe('prepareWorktree', () => {
     ).toBe('Goal: kept\n');
   });
 
-  test('should copy the local memory files and refresh them on reuse', () => {
+  test('should not copy the personal memory files', () => {
     fs.writeFileSync(path.join(repo, 'AGENTS.local.md'), 'core v1\n');
     fs.writeFileSync(path.join(repo, 'CLAUDE.local.md'), '@AGENTS.local.md\n');
-    const first = prepareWorktree({ rootDir: repo, task: TASK, spawn });
-    fs.mkdirSync(path.join(first.dir, 'node_modules'));
-    fs.writeFileSync(path.join(repo, 'AGENTS.local.md'), 'core v2\n');
 
-    prepareWorktree({ rootDir: repo, task: TASK, spawn });
+    const { dir } = prepareWorktree({ rootDir: repo, task: TASK, spawn });
 
-    expect(
-      fs.readFileSync(path.join(first.dir, 'AGENTS.local.md'), 'utf-8')
-    ).toBe('core v2\n');
-    expect(
-      fs.readFileSync(path.join(first.dir, 'CLAUDE.local.md'), 'utf-8')
-    ).toBe('@AGENTS.local.md\n');
+    expect(fs.existsSync(path.join(dir, 'AGENTS.local.md'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'CLAUDE.local.md'))).toBe(false);
   });
 
   test('should check out an existing loop branch', () => {

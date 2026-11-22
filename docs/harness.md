@@ -331,7 +331,9 @@ agent and saves the exchange in the task's `tmp/`. `pnpm loop`, `pnpm swarm`, an
 use the same adapters (`utils/loop/adapters.js`): fixed argument arrays, prompt on stdin, no shell.
 Every headless child gets `MEMORY_EXTRACT=1`, so the workspace's memory hooks stay silent in it: no
 injected core block, persona, or recalled notes, and its session is never queued for extraction into
-memory.
+memory. Claude Code and DSH still load `AGENTS.local.md` natively when they run in the workspace root
+(`pnpm agent ask`); `pnpm loop` and `pnpm swarm` worktrees have no such file, so reviews and fixes
+there start with a clean context.
 
 | Agent  | Write mode (fixers)                                                      | Read mode (reviewers, `agent ask`)                                        |
 | ------ | ------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
@@ -426,8 +428,9 @@ digests, at most 3,000 characters) that every session loads. Rules for agents: A
   `--dry-run` is always allowed).
 - **Safety:** every write path refuses text matching `utils/redact.js`; notes are framed as facts;
   `pnpm workspace:check` fails if a memory file is tracked.
-- **Worktrees:** `pnpm loop` and `pnpm swarm` copy `AGENTS.local.md` and `CLAUDE.local.md` into
-  their worktrees; the store stays in the main checkout.
+- **Worktrees:** `pnpm loop` and `pnpm swarm` do not copy `AGENTS.local.md` or `CLAUDE.local.md`
+  into their worktrees, so headless agents there start with a clean context; the store stays in
+  the main checkout.
 - **Export and import** (`pnpm memory export` / `import`): one `.tar.gz` with a checksummed
   manifest, validated (paths, entry types, checksums) before anything is written; imports merge
   and take a snapshot first.
