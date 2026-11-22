@@ -130,8 +130,10 @@ Extraction and consolidation
                                 be sent to the model and changes nothing
   inbox [--reset]               Changes extraction held back for you to review (they read
                                 like instructions); --reset clears the list
-  consolidate [--dry-run]       Tidy the notes and rewrite the profile now (normally weekly,
-                                in the background)
+  consolidate [--dry-run] [--force]
+                                Tidy the notes and rewrite the profile now (normally weekly,
+                                in the background; never while saving is off, --force
+                                overrides for a manual run)
   undo [--dry-run]              Revert the last extraction, consolidation, import, or persona
                                 compaction (notes saved since are kept)
 
