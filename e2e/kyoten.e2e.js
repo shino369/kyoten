@@ -440,3 +440,83 @@ test('reset --yes moves a home aside and prints the undo', () => {
   expect(result.stderr).toContain(moved[0]);
   expect(result.stderr).toMatch(/mv |Move-Item/);
 });
+
+test('init --memory on keeps automatic memory saving on in a new home', () => {
+  const other = path.join(tmp, 'memory-on-home');
+
+  const result = kyoten(['init', '--no-setup', '--memory', 'on'], {
+    env: { KYOTEN_HOME: other },
+  });
+
+  expect(result.status, result.stderr).toBe(0);
+  const config = path.join(other, 'memory', 'config.json');
+  // On is the default, so the file may be missing; it must not say off.
+  const saved = fs.existsSync(config)
+    ? JSON.parse(fs.readFileSync(config, 'utf-8'))
+    : {};
+  expect(saved.off).not.toBe(true);
+  expect(result.stderr).not.toContain('opt in with: kyoten run memory on');
+});
+
+test('doctor reports the agy and dsh web checks', () => {
+  const other = path.join(tmp, 'doctor-home');
+  kyoten(['init', '--no-setup'], { env: { KYOTEN_HOME: other } });
+
+  const result = kyoten(['doctor'], { env: { KYOTEN_HOME: other } });
+
+  // Each line's status depends on the machine, and doctor exits 1 here (the
+  // home has no node_modules), so assert only that the lines exist.
+  const output = result.stdout + result.stderr;
+  expect(output).toContain('agy-trust');
+  expect(output).toContain('dsh-web');
+});
+
+test('a per-agent persona reaches the SessionStart hook only for that agent', () => {
+  const other = path.join(tmp, 'persona-home');
+  const env = { KYOTEN_HOME: other };
+  kyoten(['init', '--no-setup', '--memory', 'on'], { env });
+  fs.symlinkSync(
+    path.join(ROOT, 'node_modules'),
+    path.join(other, 'node_modules'),
+    'junction'
+  );
+  // The local files Claude Code loads natively, so the hook adds the override.
+  must('pnpm', ['memory', 'init'], { cwd: other });
+  must(
+    'pnpm',
+    [
+      'memory',
+      'personalize',
+      '--for',
+      'claude',
+      '--persona',
+      'Speak like a pirate',
+    ],
+    { cwd: other }
+  );
+  const hook = (/** @type {Record<string, string>} */ extra) => {
+    const result = run(
+      process.execPath,
+      [path.join(other, 'utils', 'memory', 'hook.js'), '--harness', 'claude'],
+      {
+        cwd: other,
+        encoding: 'utf-8',
+        input: JSON.stringify({
+          hook_event_name: 'SessionStart',
+          session_id: 'e2e-persona',
+          source: 'startup',
+          cwd: other,
+        }),
+        env: { ...process.env, KYOTEN_AGENT: '', ...extra },
+      }
+    );
+    return String(result.stdout);
+  };
+
+  const own = hook({ KYOTEN_AGENT: 'claude' });
+  const none = hook({});
+
+  expect(own).toContain('[Persona] This claude session has its own persona');
+  expect(own).toContain('Speak like a pirate');
+  expect(none).not.toContain('has its own persona');
+});
