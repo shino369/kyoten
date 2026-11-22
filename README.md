@@ -13,7 +13,7 @@
 
 **Kyoten** (_拠点_, Japanese for "home base" or "operations hub") brings all of your AI-agent setup into one clean, portable repository. Instead of repeating rules, hooks, skills, and memory across every tool, you configure your home base once and work seamlessly with **Claude Code**, **Codex**, **Antigravity CLI (`agy`)**, and **DeepSeek Harness (`dsh`)**.
 
-It is deliberately lightweight: no monorepo, no build step, and no framework lock-in — just clone, run setup once, and launch your favorite coding agent inside the workspace. 🌿
+Everything runs on plain Node.js ESM with zero runtime dependencies, no monorepo, and no build step — just clone, run setup once, and launch your preferred coding agent inside the workspace. 🌿
 
 ## ✨ Why Kyoten?
 
