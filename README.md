@@ -287,6 +287,10 @@ Always-on guidance lives in `AGENTS.md` so every harness sees it. `.claude/rules
 
 ## 🪝 Hooks
 
+<p align="center">
+  <img src="./docs/images/kyoten-hooks.png" alt="Gemini-chan laughing off a Stop hook coverage-lock collision" width="400" />
+</p>
+
 Shared hook logic lives in `utils/harness/hooks.js` and `.claude/hooks/`, wired into Claude Code, Codex, Antigravity CLI, and DSH via `pnpm harness sync`:
 
 | Hook                   | Event                                                                                | Purpose                                                                  |

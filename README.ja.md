@@ -287,6 +287,10 @@ pnpm skills:link                         # (re)link .agents/skills into .claude/
 
 ## 🪝 フック
 
+<p align="center">
+  <img src="./docs/images/kyoten-hooks.png" alt="Stop フックとバックグラウンドの vitest --coverage のロック衝突を笑顔で説明するキャラクター" width="400" />
+</p>
+
 共通のフックロジックは `utils/harness/hooks.js` と `.claude/hooks/` に配置されており、`pnpm harness sync` を通じて Claude Code、Codex、Antigravity CLI、DSH に組み込まれます：
 
 | フック                 | イベント                                                                             | 目的                                                                         |

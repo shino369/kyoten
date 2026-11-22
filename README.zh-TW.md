@@ -287,6 +287,10 @@ pnpm skills:link                         # (re)link .agents/skills into .claude/
 
 ## 🪝 Hooks
 
+<p align="center">
+  <img src="./docs/images/kyoten-hooks.png" alt="笑著說明 Stop Hook 與背景 vitest --coverage 發生鎖定衝突的角色" width="400" />
+</p>
+
 共用 Hook 邏輯位於 `utils/harness/hooks.js` 與 `.claude/hooks/`，透過 `pnpm harness sync` 串接至 Claude Code、Codex、Antigravity CLI 與 DSH：
 
 | Hook                   | 事件                                                                                 | 用途                                                 |
