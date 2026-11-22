@@ -177,27 +177,28 @@ const ADAPTERS = {
       write: [
         '--profile',
         'headless',
+        // The workspace's hooks through the Claude hooks bridge (pnpm harness
+        // sync writes it; relative to the cwd, as DSH resolves it). DSH stops
+        // reading launcher options at the app's first flag, so --patch must
+        // stay before --permission-mode or the app rejects it.
+        '--patch',
+        DSH_PATCH,
         '--permission-mode',
         'workspace-write',
         '--approval-policy',
         'never',
-        // The workspace's hooks through the Claude hooks bridge (pnpm harness
-        // sync writes it; relative to the cwd, as DSH resolves it).
-        '--patch',
-        DSH_PATCH,
         '-',
       ],
       read: [
         '--profile',
         'headless',
+        // See write: a launcher option after the app flags is an app error.
+        '--patch',
+        DSH_PATCH,
         '--permission-mode',
         'read-only',
         '--approval-policy',
         'never',
-        // The workspace's hooks through the Claude hooks bridge (pnpm harness
-        // sync writes it; relative to the cwd, as DSH resolves it).
-        '--patch',
-        DSH_PATCH,
         '-',
       ],
     },
