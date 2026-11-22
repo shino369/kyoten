@@ -1,6 +1,6 @@
 {
   "name": "kyoten",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Kyoten (拠点) — a multi-agent personal workspace with shared hooks, tasks, local memory, skills, and quality gates",
   "type": "module",
