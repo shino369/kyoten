@@ -91,7 +91,12 @@ const CODEX_EMPTY_MCP_LIST =
 export function headlessCommand({ agent, model = null, rootDir }) {
   if (!CALL_AGENTS.includes(/** @type {CallAgent} */ (agent))) {
     throw new Error(
-      `Memory jobs run on ${CALL_AGENTS.join(', ')} (got ${agent}).\nFix: use --agent ${CALL_AGENTS.join('|')}`
+      `Memory jobs run on ${CALL_AGENTS.join(', ')} (got ${agent}).\nFix: use ${CALL_AGENTS.map((name) => `--agent ${name}`).join(' or ')}`
+    );
+  }
+  if (model && agent === 'dsh') {
+    throw new Error(
+      'DSH selects its model in its profile, not with --model.\nFix: drop --extract-model, or choose another memory agent'
     );
   }
   const command = buildCommand({
@@ -154,16 +159,19 @@ export function headlessCommand({ agent, model = null, rootDir }) {
  * @returns {string}
  */
 function switchFix(job, agent) {
-  const others = CALL_AGENTS.filter((name) => name !== agent).join('|');
+  const others = CALL_AGENTS.filter((name) => name !== agent);
   return job.startsWith('persona')
-    ? `use --agent ${others}`
-    : `pnpm memory set --extract-agent ${others}`;
+    ? `use ${others.map((name) => `--agent ${name}`).join(' or ')}`
+    : others
+        .map((name) => `pnpm memory set --extract-agent ${name}`)
+        .join(' or ');
 }
 
 /**
  * Claude takes `--settings <file-or-json>`: pass the JSON as a file in the
- * job's folder, so the command line holds no double quote (Windows .cmd
- * shims refuse one).
+ * job's folder using its relative name, so the command line holds neither a
+ * double quote nor temp-path characters (`!`, `%`) that Windows .cmd shims
+ * refuse.
  *
  * @param {import('../loop/adapters.js').AgentCommand} command
  * @param {string} cwd
@@ -172,10 +180,9 @@ function switchFix(job, agent) {
 function settingsAsFile(command, cwd) {
   const at = command.args.lastIndexOf('--settings');
   if (command.agent !== 'claude' || at === -1) return command;
-  const file = path.join(cwd, CLAUDE_SETTINGS_FILE);
-  fs.writeFileSync(file, command.args[at + 1]);
+  fs.writeFileSync(path.join(cwd, CLAUDE_SETTINGS_FILE), command.args[at + 1]);
   const args = [...command.args];
-  args[at + 1] = file;
+  args[at + 1] = CLAUDE_SETTINGS_FILE;
   return { ...command, args };
 }
 

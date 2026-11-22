@@ -64,6 +64,10 @@ describe('normalizeConfig', () => {
     [{ extractModel: 7 }, 'Invalid model name'],
     [{ extractAgent: 'gemini' }, 'claude, codex, dsh, agy'],
     [{ extractAgent: 7 }, 'Invalid agent 7'],
+    [
+      { extractAgent: 'dsh', extractModel: 'deepseek-v4' },
+      'DSH selects its model in its profile',
+    ],
     [{ budget: 1.5 }, 'The budget must be a whole number'],
     [{ budget: BUDGET_RANGE.min - 1 }, 'The budget must be a whole number'],
     [{ budget: BUDGET_RANGE.max + 1 }, 'The budget must be a whole number'],

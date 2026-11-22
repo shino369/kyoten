@@ -438,20 +438,40 @@ describe('consolidate', () => {
       appendJournal(dir, {
         at: 'x',
         status: 'applied',
-        agent: 'dsh',
-        model: 'deepseek-v4',
+        agent: 'agy',
+        model: 'gemini-3.8-flash-low',
       });
       appendJournal(dir, { at: 'y', status: 'failed', error: 'boom' });
       const runAgent = answering();
 
       const run = consolidate(deps({ runAgent }));
 
-      expect(lastCall(runAgent).command.agent).toBe('dsh');
+      expect(lastCall(runAgent).command.agent).toBe('agy');
       expect(lastCall(runAgent).command.args.slice(-2)).toEqual([
         '--model',
-        'deepseek-v4',
+        'gemini-3.8-flash-low',
       ]);
-      expect(run).toMatchObject({ agent: 'dsh', model: 'deepseek-v4' });
+      expect(run).toMatchObject({
+        agent: 'agy',
+        model: 'gemini-3.8-flash-low',
+      });
+    });
+
+    test('should omit any legacy journal model when following a dsh run', () => {
+      seed();
+      appendJournal(dir, {
+        at: 'x',
+        status: 'applied',
+        agent: 'dsh',
+        model: 'deepseek-v4',
+      });
+      const runAgent = answering();
+
+      const run = consolidate(deps({ runAgent }));
+
+      expect(lastCall(runAgent).command.agent).toBe('dsh');
+      expect(lastCall(runAgent).command.args).not.toContain('--model');
+      expect(run).toMatchObject({ agent: 'dsh', model: null });
     });
 
     test('should not pair extractModel with the last run on another agent', () => {
@@ -493,13 +513,16 @@ describe('consolidate', () => {
       seed();
       writeConfig(dir, {
         ...DEFAULT_CONFIG,
-        extractAgent: 'dsh',
-        extractModel: 'deepseek-v4',
+        extractAgent: 'agy',
+        extractModel: 'gemini-3.8-flash-low',
       });
 
       const run = consolidate(deps({ runAgent: answering() }));
 
-      expect(run).toMatchObject({ agent: 'dsh', model: 'deepseek-v4' });
+      expect(run).toMatchObject({
+        agent: 'agy',
+        model: 'gemini-3.8-flash-low',
+      });
     });
 
     test('should report the agent on a dry run', () => {
@@ -548,6 +571,23 @@ describe('consolidate', () => {
     expect(run.prompt).toContain('Groups of similar notes');
     expect(runAgent).not.toHaveBeenCalled();
     expect(readConsolidated(dir)).toBeNull();
+  });
+
+  test('should return off without calling the agent when saving is off before dispatch', () => {
+    seed();
+    writeConfig(dir, { ...DEFAULT_CONFIG, off: true });
+    const runAgent = agentReturning({
+      profile: ['Should not run.'],
+      ops: [],
+    });
+
+    const run = consolidate(deps({ runAgent }));
+
+    expect(run).toMatchObject({ status: 'off', job: 'consolidation' });
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(dir, PROFILE_FILE))).toBe(false);
+    expect(readConsolidated(dir)).toBeNull();
+    expect(readJournal(dir).at(-1)?.status).toBe('off');
   });
 
   test('should not write when saving is turned off while the agent runs', () => {

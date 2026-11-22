@@ -304,6 +304,13 @@ export function consolidate(deps) {
   const now = deps.now();
   const at = now.toISOString();
   const base = { at, job: 'consolidation', session: 'consolidation' };
+  const config = readConfig(dir);
+  const session = sessionFromEnv(deps.env);
+  if (!deps.dryRun && !deps.force && savingOff(config, session)) {
+    const run = { ...base, status: 'off' };
+    appendJournal(dir, run);
+    return run;
+  }
   const { shown, groups } = consolidationInput(loadNotes(dir).notes);
   if (shown.length === 0) {
     const run = { ...base, status: 'nothing' };
@@ -313,7 +320,6 @@ export function consolidate(deps) {
     return run;
   }
   const prompt = buildConsolidationPrompt({ shown, groups });
-  const config = readConfig(dir);
   const last = lastRun(dir);
   const agent =
     config.extractAgent ?? last?.agent ?? sessionHarness(deps.env) ?? 'claude';
@@ -333,7 +339,7 @@ export function consolidate(deps) {
   const result = callAgent(deps, command, prompt, { job: 'consolidation' });
   const answer = parseConsolidation(answerOf(result));
   // Saving may have been turned off while the agent ran.
-  if (!deps.force && savingOff(readConfig(dir), sessionFromEnv(deps.env))) {
+  if (!deps.force && savingOff(readConfig(dir), session)) {
     const run = {
       ...base,
       status: 'off',

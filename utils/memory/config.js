@@ -108,6 +108,11 @@ export function normalizeConfig(input) {
       `Invalid agent ${JSON.stringify(extractAgent)}: use ${CALL_AGENTS.join(', ')}, or default.`
     );
   }
+  if (extractAgent === 'dsh' && extractModel !== null) {
+    invalid(
+      'DSH selects its model in its profile, not with --extract-model.\nFix: drop --extract-model, or pick another --extract-agent'
+    );
+  }
   const { budget } = config;
   if (
     budget !== null &&

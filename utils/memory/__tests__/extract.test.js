@@ -1224,7 +1224,9 @@ describe('extractEntry', () => {
 
       expect(() =>
         extractEntry(queued({ harness: 'codex' }), deps({ runAgent }))
-      ).toThrow(/Fix: pnpm memory set --extract-agent claude\|dsh\|agy$/);
+      ).toThrow(
+        /Fix: pnpm memory set --extract-agent claude or pnpm memory set --extract-agent dsh or pnpm memory set --extract-agent agy$/
+      );
     });
 
     test('should name a replacement agent when the Codex check fails', () => {
@@ -1234,7 +1236,7 @@ describe('extractEntry', () => {
       expect(() =>
         extractEntry(queued({ harness: 'codex' }), deps({ runAgent }))
       ).toThrow(
-        /Cannot verify Codex persona isolation[\s\S]*Fix: pnpm memory set --extract-agent claude\|dsh\|agy$/
+        /Cannot verify Codex persona isolation[\s\S]*Fix: pnpm memory set --extract-agent claude or pnpm memory set --extract-agent dsh or pnpm memory set --extract-agent agy$/
       );
     });
 

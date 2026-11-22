@@ -1045,8 +1045,28 @@ describe('personalize --compact and --audit', () => {
     run(['personalize', '--persona', 'Stored persona.']);
 
     expect(() => run(['personalize', '--audit'], { runAgent })).toThrow(
-      /Fix: use --agent codex\|dsh\|agy$/
+      /Fix: use --agent codex or --agent dsh or --agent agy$/
     );
+  });
+
+  test('should pass configured extractModel to persona jobs only when the agent matches', () => {
+    const runAgent = fakeAgent();
+    run(['personalize', '--persona', 'Stored persona.']);
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      extractAgent: 'codex',
+      extractModel: 'gpt-5.4-mini',
+    });
+
+    run(['personalize', '--audit'], { runAgent });
+    expect(
+      /** @type {any} */ (runAgent.mock.calls.at(-1))[0].command.args
+    ).toContain('gpt-5.4-mini');
+
+    run(['personalize', '--audit', '--agent', 'agy'], { runAgent });
+    expect(
+      /** @type {any} */ (runAgent.mock.calls.at(-1))[0].command.args
+    ).not.toContain('gpt-5.4-mini');
   });
 
   test('should use memory/persona.md before the stored persona and only write a dry-run candidate', () => {
@@ -2683,6 +2703,37 @@ describe('set', () => {
     expect(() => run(['set', '--extract-agent', 'gemini'])).toThrow(
       /claude, codex, dsh, agy/
     );
+  });
+
+  test('should clear the stored model when switching only --extract-agent, and refuse --extract-model for dsh', () => {
+    run(['set', '--extract-model', 'claude-haiku-5-5']);
+    expect(readConfig(dir).extractModel).toBe('claude-haiku-5-5');
+
+    run(['set', '--extract-agent', 'codex']);
+    expect(readConfig(dir)).toMatchObject({
+      extractAgent: 'codex',
+      extractModel: null,
+    });
+
+    run(['set', '--extract-agent', 'codex', '--extract-model', 'gpt-5.4']);
+    expect(readConfig(dir)).toMatchObject({
+      extractAgent: 'codex',
+      extractModel: 'gpt-5.4',
+    });
+
+    // Re-setting the same agent keeps its model.
+    run(['set', '--extract-agent', 'codex']);
+    expect(readConfig(dir).extractModel).toBe('gpt-5.4');
+
+    // Switching to dsh clears the old model cleanly, while pairing them fails.
+    run(['set', '--extract-agent', 'dsh']);
+    expect(readConfig(dir)).toMatchObject({
+      extractAgent: 'dsh',
+      extractModel: null,
+    });
+    expect(() =>
+      run(['set', '--extract-agent', 'dsh', '--extract-model', 'deepseek-v4'])
+    ).toThrow(/DSH selects its model in its profile/);
   });
 
   test('should show the memory agent in status', () => {

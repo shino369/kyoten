@@ -534,6 +534,7 @@ export function extractCommand({ agent, model, rootDir }) {
  * @returns {string | null}
  */
 export function modelFor({ agent, configured, extractModel, ownModel }) {
+  if (agent === 'dsh') return null;
   if (extractModel && agent === (configured ?? 'claude')) return extractModel;
   return ownModel;
 }

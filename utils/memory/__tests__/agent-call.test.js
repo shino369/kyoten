@@ -117,18 +117,27 @@ describe('headlessCommand', () => {
     });
   });
 
-  test.each(['codex', 'dsh'])(
+  test.each([
+    ['codex', 'm'],
+    ['dsh', null],
+  ])(
     'should keep double quotes out of the %s command line (Windows .cmd shims)',
-    (agent) => {
-      const command = headlessCommand({ agent, model: 'm', rootDir: root });
+    (agent, model) => {
+      const command = headlessCommand({ agent, model, rootDir: root });
 
       expect(command.args.filter((arg) => arg.includes('"'))).toEqual([]);
     }
   );
 
+  test('should refuse --model for dsh (DSH selects its model in its profile)', () => {
+    expect(() =>
+      headlessCommand({ agent: 'dsh', model: 'deepseek-v4', rootDir: root })
+    ).toThrow(/DSH selects its model in its profile/);
+  });
+
   test('should refuse an agent memory jobs cannot call', () => {
     expect(() => headlessCommand({ agent: 'gemini', rootDir: root })).toThrow(
-      `Memory jobs run on claude, codex, dsh, agy (got gemini).\nFix: use --agent ${CALL_AGENTS.join('|')}`
+      `Memory jobs run on claude, codex, dsh, agy (got gemini).\nFix: use ${CALL_AGENTS.map((name) => `--agent ${name}`).join(' or ')}`
     );
   });
 });
@@ -220,14 +229,17 @@ describe('callAgent', () => {
   );
 
   test.each([
-    ['persona-audit', 'use --agent claude|dsh|agy'],
-    ['extraction', 'pnpm memory set --extract-agent claude|dsh|agy'],
+    ['persona-audit', 'use --agent claude or --agent dsh or --agent agy'],
+    [
+      'extraction',
+      'pnpm memory set --extract-agent claude or pnpm memory set --extract-agent dsh or pnpm memory set --extract-agent agy',
+    ],
   ])('should point a failed Codex check of %s at another agent', (job, fix) => {
     const codex = headlessCommand({ agent: 'codex', rootDir: root });
     const runAgent = agentReturning({ code: 1, stdout: 'x' });
 
     expect(() => callAgent(deps(runAgent), codex, 'P', { job })).toThrow(
-      new RegExp(`Fix: ${fix.replace(/\|/g, '\\|')}$`)
+      new RegExp(`Fix: ${fix}$`)
     );
   });
 
@@ -237,28 +249,39 @@ describe('callAgent', () => {
     });
 
     expect(() => callAgent(deps(runAgent), command, 'P')).toThrow(
-      /Fix: install\nFix: pnpm memory set --extract-agent codex\|dsh\|agy$/
+      /Fix: install\nFix: pnpm memory set --extract-agent codex or pnpm memory set --extract-agent dsh or pnpm memory set --extract-agent agy$/
     );
   });
 
-  test('should pass claude settings as a quote-free file path', () => {
+  test('should pass claude settings as a quote-free relative filename', () => {
+    const trickyTmp = path.join(root, 'a!b%c');
+    fs.mkdirSync(trickyTmp);
     const claude = headlessCommand({ agent: 'claude', rootDir: root });
     /** @type {string[]} */
     let args = [];
+    let jobDir = '';
     let settings = '';
     const runAgent = vi.fn((/** @type {any} */ input) => {
       args = input.command.args;
-      settings = fs.readFileSync(args[args.indexOf('--settings') + 1], 'utf-8');
+      jobDir = input.cwd;
+      settings = fs.readFileSync(
+        path.join(input.cwd, args[args.indexOf('--settings') + 1]),
+        'utf-8'
+      );
       return { code: 0, signal: null, stdout: 'a', output: 'a', durationMs: 1 };
     });
 
-    callAgent(deps(/** @type {any} */ (runAgent)), claude, 'P');
+    callAgent(
+      { ...deps(/** @type {any} */ (runAgent)), tmpdir: () => trickyTmp },
+      claude,
+      'P'
+    );
 
     const file = args[args.indexOf('--settings') + 1];
-    expect(path.basename(file)).toBe(CLAUDE_SETTINGS_FILE);
-    expect(args.filter((arg) => arg.includes('"'))).toEqual([]);
+    expect(file).toBe(CLAUDE_SETTINGS_FILE);
+    expect(args.filter((arg) => /["!%]/.test(arg))).toEqual([]);
     expect(JSON.parse(settings)).toEqual({ disableAllHooks: true });
-    expect(fs.existsSync(file)).toBe(false);
+    expect(fs.existsSync(path.join(jobDir, file))).toBe(false);
     expect(claude.args).toContain('{"disableAllHooks":true}');
   });
 
@@ -274,7 +297,7 @@ describe('callAgent', () => {
     const runAgent = vi.fn((/** @type {any} */ input) => {
       args = input.command.args;
       settings = fs.readFileSync(
-        args[args.lastIndexOf('--settings') + 1],
+        path.join(input.cwd, args[args.lastIndexOf('--settings') + 1]),
         'utf-8'
       );
       return { code: 0, signal: null, stdout: 'a', output: 'a', durationMs: 1 };
@@ -283,9 +306,7 @@ describe('callAgent', () => {
     callAgent(deps(/** @type {any} */ (runAgent)), withPrefix, 'P');
 
     expect(args.slice(0, 2)).toEqual(['--settings', '/path/base.json']);
-    expect(path.basename(args[args.lastIndexOf('--settings') + 1])).toBe(
-      CLAUDE_SETTINGS_FILE
-    );
+    expect(args[args.lastIndexOf('--settings') + 1]).toBe(CLAUDE_SETTINGS_FILE);
     expect(args.filter((arg) => arg.includes('"'))).toEqual([]);
     expect(JSON.parse(settings)).toEqual({ disableAllHooks: true });
   });
@@ -310,7 +331,7 @@ describe('callAgent', () => {
     const agy = headlessCommand({ agent: 'agy', rootDir: root });
 
     expect(() => callAgent(deps(runAgent), agy, 'P')).toThrow(
-      /Fix: pnpm memory set --extract-agent claude\|codex\|dsh \(agy runs only through a native agy.exe/
+      /Fix: pnpm memory set --extract-agent claude or pnpm memory set --extract-agent codex or pnpm memory set --extract-agent dsh \(agy runs only through a native agy.exe/
     );
   });
 
