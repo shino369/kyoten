@@ -237,7 +237,7 @@ holds:
 
 | File            | What                                                                                            |
 | --------------- | ----------------------------------------------------------------------------------------------- |
-| `memory.tar.gz` | `pnpm memory export` of the home: notes and personalization                                     |
+| `memory.tar.gz` | `pnpm memory export` of the home: notes, personalization, tasks, and `resources/`               |
 | `config.json`   | kyoten's config file, when there is one                                                         |
 | `home.json`     | `.kyoten/home.json`, for a home kyoten created                                                  |
 | `local.bundle`  | a `git bundle` of `main` and `kyoten/upstream`, only for a home kyoten created with own commits |

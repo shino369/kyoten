@@ -158,7 +158,7 @@ async function run(
     if (file === 'pnpm') {
       pnpm.push(args);
       if (args[0] === 'memory' && args[1] === 'export') {
-        fs.writeFileSync(args[3], 'TAR');
+        fs.writeFileSync(args[args.indexOf('--out') + 1], 'TAR');
       }
       return { status: pnpmStatus, stdout: '12.14.0\n' };
     }

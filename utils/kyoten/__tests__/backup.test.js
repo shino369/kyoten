@@ -113,7 +113,7 @@ function makeRun({ exportStatus = 0, dryStatus = 0, importStatus = 0 } = {}) {
       pnpm.push({ args, cwd: opts.cwd });
       if (args[1] === 'export') {
         if (exportStatus) return { status: exportStatus, stderr: 'no export' };
-        fs.writeFileSync(args[3], 'TARBALL');
+        fs.writeFileSync(args[args.indexOf('--out') + 1], 'TARBALL');
         return { status: 0, stdout: '' };
       }
       const status = args.includes('--dry-run') ? dryStatus : importStatus;
@@ -188,7 +188,13 @@ describe('backupHome', () => {
       crypto.createHash('sha256').update('TARBALL').digest('hex')
     );
     expect(fs.existsSync(path.join(folder, 'dscc.env'))).toBe(false);
-    expect(pnpm[0].args.slice(0, 3)).toEqual(['memory', 'export', '--out']);
+    expect(pnpm[0].args.slice(0, 5)).toEqual([
+      'memory',
+      'export',
+      '--include',
+      'memory,personalization,tasks,resources',
+      '--out',
+    ]);
     expect(pnpm[0].cwd).toBe(path.join(tmp, 'home'));
     expect(
       git(

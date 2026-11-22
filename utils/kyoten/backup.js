@@ -2,7 +2,8 @@
  * `kyoten backup` and `kyoten restore`: a folder (not an archive) that holds
  * what is personal in a home:
  *
- *   memory.tar.gz   `pnpm memory export` (notes and personalization)
+ *   memory.tar.gz   `pnpm memory export` of everything it can hold: notes,
+ *                   personalization, tasks, and resources/
  *   config.json     kyoten's config file
  *   home.json       `.kyoten/home.json` (managed homes)
  *   local.bundle    `git bundle` of main and kyoten/upstream (managed homes
@@ -35,6 +36,8 @@ import { stamp } from './reset.js';
 
 /** @typedef {import('../spawn.js').Spawn} Spawn */
 
+/** Every part `pnpm memory export` can hold: a backup is the whole personal state. */
+export const BACKUP_PARTS = 'memory,personalization,tasks,resources';
 export const MANIFEST = 'manifest.json';
 /** The only file names a backup may hold besides the manifest. */
 export const BACKUP_FILES = [
@@ -186,7 +189,14 @@ function writeBackup({
   must(
     run,
     'pnpm',
-    ['memory', 'export', '--out', path.join(target, 'memory.tar.gz')],
+    [
+      'memory',
+      'export',
+      '--include',
+      BACKUP_PARTS,
+      '--out',
+      path.join(target, 'memory.tar.gz'),
+    ],
     { cwd: home, env },
     `fix what pnpm memory export reports in ${home} (run: pnpm memory export), then run kyoten backup again`
   );
