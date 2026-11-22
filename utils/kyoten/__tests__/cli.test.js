@@ -395,7 +395,7 @@ describe('main: init and update', () => {
     expect(readMemory(home)).toEqual({ off: true });
     expect(questions).toEqual([]);
     expect(err.join('\n')).toContain(
-      'memory saving is off (recall and pnpm memory add still work); opt in with: kyoten run memory on'
+      'memory saving is off (recall works; save a note by hand with: kyoten run memory add "…" --force); opt in with: kyoten run memory on'
     );
   });
 

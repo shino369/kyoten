@@ -370,7 +370,7 @@ async function createHome(ctx, dir, setup, memory) {
       }
       pauseSaving(home);
       deps.err(
-        'kyoten: memory saving is off (recall and pnpm memory add still work); opt in with: kyoten run memory on'
+        'kyoten: memory saving is off (recall works; save a note by hand with: kyoten run memory add "…" --force); opt in with: kyoten run memory on'
       );
     },
   });

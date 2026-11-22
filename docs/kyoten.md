@@ -208,7 +208,7 @@ A home is the full workspace, so its hooks run in every agent session started th
 The Stop loop is per task: `kyoten run task set --loop off` turns it off for the current one.
 
 Memory saving starts off in a new home. `kyoten run memory on` turns it on, `kyoten run memory off`
-pauses it (recall and `pnpm memory add` keep working), and `kyoten doctor` shows the state. The
+pauses it (recall keeps working; save a note by hand with `kyoten run memory add "…" --force`), and `kyoten doctor` shows the state. The
 extraction runs on the CLI the session used (Claude Code, Codex, or Antigravity CLI); `kyoten run
 memory set --extract-agent <claude|codex|dsh|agy>` picks one for every job, for example on a
 machine where Codex has MCP servers (Codex extraction needs none configured).
