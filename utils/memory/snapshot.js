@@ -34,6 +34,18 @@ const REASON_RE = /^[a-z][a-z-]*$/;
 const snapshotsDir = (rootDir) => path.join(rootDir, MEMORY_DIR, SNAPSHOTS_DIR);
 
 /**
+ * Whether memory/snapshots is missing or a real folder. A restored backup
+ * could track it as a link, and following one would copy notes to, and
+ * prune folders at, the link's target.
+ *
+ * @param {string} rootDir
+ */
+const usableSnapshotsDir = (rootDir) => {
+  const stat = fs.lstatSync(snapshotsDir(rootDir), { throwIfNoEntry: false });
+  return !stat || (stat.isDirectory() && !stat.isSymbolicLink());
+};
+
+/**
  * @param {string} rootDir
  * @param {string} id
  */
@@ -59,6 +71,11 @@ export function takeSnapshot(
 ) {
   if (!REASON_RE.test(reason)) {
     throw new Error(`Invalid snapshot reason "${reason}".`);
+  }
+  if (!usableSnapshotsDir(rootDir)) {
+    throw new Error(
+      `${snapshotsDir(rootDir)} is not a folder (a link?), so no snapshot is taken and nothing is changed.\nFix: move it out of memory/ (check where it points first), then run the command again`
+    );
   }
   const base = `${stamp(now)}-${reason}`;
   let id = base;
@@ -99,20 +116,26 @@ export function takeSnapshot(
 
 /**
  * @param {string} rootDir
- * @returns {SnapshotMeta[]} newest first; folders without a meta.json are skipped
+ * @returns {SnapshotMeta[]} newest first. Skipped: links, folders without a
+ *   meta.json, and a meta.json whose id is not its folder's name (pruning and
+ *   undo use the id as a path, so it must stay inside memory/snapshots/).
  */
 export function listSnapshots(rootDir) {
   const dir = snapshotsDir(rootDir);
-  if (!fs.existsSync(dir)) return [];
+  if (!fs.existsSync(dir) || !usableSnapshotsDir(rootDir)) return [];
   return fs
-    .readdirSync(dir)
-    .map(
-      (name) =>
-        /** @type {any} */ (readJsonOrNull(path.join(dir, name, 'meta.json')))
-    )
+    .readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => ({
+      name: entry.name,
+      meta: /** @type {any} */ (
+        readJsonOrNull(path.join(dir, entry.name, 'meta.json'))
+      ),
+    }))
     .filter(
-      (meta) => typeof meta?.id === 'string' && typeof meta.at === 'string'
+      ({ name, meta }) => meta?.id === name && typeof meta.at === 'string'
     )
+    .map(({ meta }) => meta)
     .sort((a, b) => b.at.localeCompare(a.at));
 }
 
