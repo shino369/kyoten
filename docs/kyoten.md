@@ -120,7 +120,9 @@ Started inside a git repository that is not the home (found by walking up for `.
 so it can read and edit that repository while its hooks, tasks, and memory stay in the home. The
 launch line says so (`kyoten: claude in <home> (default); --add-dir=<repository>`). `dsh` has no
 verified flag for this; the session brief still mentions the repository. For multi-step work on it,
-start a task: `pnpm task new <name> --repo <path>`.
+start a task: `pnpm task new <name> --repo <path>`. The home's formatter hook leaves edits in that
+repository unformatted until a task names it with `--repo`: Prettier loads the repository's own
+config, which can be code.
 
 Turn it off for one launch with `kyoten --no-add-dir …`, or always with `"addDir": false` in the
 config. A repository that is your home folder itself or above it (a dotfiles repository at `~`) is
