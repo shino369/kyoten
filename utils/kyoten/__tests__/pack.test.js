@@ -427,7 +427,11 @@ describe('checkTarball', () => {
 
 describe('packageManifest', () => {
   test('should take the metadata from HEAD package.json', () => {
-    const manifest = packageManifest(PKG);
+    const manifest = packageManifest({
+      ...PKG,
+      homepage: 'https://example.com#readme',
+      bugs: { url: 'https://example.com/issues' },
+    });
 
     expect(manifest).toMatchObject({
       name: 'kyoten',
@@ -436,9 +440,24 @@ describe('packageManifest', () => {
       author: 'a',
       license: 'ISC',
       repository: PKG.repository,
+      homepage: 'https://example.com#readme',
+      bugs: { url: 'https://example.com/issues' },
+      keywords: expect.arrayContaining([
+        'claude-code',
+        'codex',
+        'deepseek',
+        'antigravity',
+      ]),
       bin: { kyoten: 'bin/kyoten.js' },
       files: ['bin', 'runtime', BUNDLE_FILE],
     });
+  });
+
+  test('should omit optional homepage and bugs when absent', () => {
+    const manifest = packageManifest(PKG);
+
+    expect(manifest).not.toHaveProperty('homepage');
+    expect(manifest).not.toHaveProperty('bugs');
   });
 });
 

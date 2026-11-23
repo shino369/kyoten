@@ -13,7 +13,7 @@
 
 **Kyoten**（_拠点_，日語意為「據點」或「作戰基地」）將你所有的 AI 代理設定整合到單一乾淨、可攜的儲存庫中。你不需要在每個工具間重複設定規則、Hooks、技能與記憶，只需設定一次據點，就能無縫搭配 **Claude Code**、**Codex**、**Antigravity CLI（`agy`）** 與 **DeepSeek Harness（`dsh`）** 運作。
 
-所有工具皆以純 Node.js ESM 執行，零執行期相依套件、不需要 Monorepo、也沒有建置步驟——只需 clone 下來、執行一次初始化設定，就能在工作區內啟動你偏好的程式開發代理。🌿
+所有工具皆以純 Node.js ESM 執行，零執行期相依套件且無需建置步驟。你可以透過 kyoten 啟動器使用，或直接從 clone 的儲存庫中作業。
 
 ## ✨ 為什麼選擇 Kyoten？
 
@@ -35,6 +35,15 @@
 - **`gh` CLI**（_選用_）——用於 GitHub 工作流程與 PR 審查
 
 ## 🚀 快速開始
+
+只要環境中具備 Node.js、Git 與 pnpm，即可初始化受管據點並啟動代理。
+
+```bash
+npx kyoten init
+npx kyoten codex
+```
+
+若想直接從 clone 的儲存庫中作業，請於儲存庫內執行初始化設定。
 
 ```bash
 git clone https://github.com/shino369/kyoten.git
@@ -58,7 +67,28 @@ pnpm workspace:check   # verify setup; every failure prints a Fix command
 pnpm check
 ```
 
-接著只要在此目錄中啟動你的程式開發代理（Claude Code、Codex、`agy` 或 DSH）即可！🎉
+接著只要在此目錄中啟動代理，或執行 `pnpm kyoten [<agent>]` 從 clone 啟動即可。
+
+## kyoten 啟動器
+
+`kyoten` 會在**據點（home）**（kyoten 工作區：`~/.kyoten`，或你註冊的既有 clone）中啟動代理，因此無論你從哪個資料夾執行，Hooks、任務、記憶、技能與角色都會和在 clone 內一樣運作。代理名稱之後的所有參數都會原封不動傳給代理，且 `kyoten` 絕不會自行加上權限略過旗標。完整指南：[docs/kyoten.md](docs/kyoten.md)。
+
+| 指令                                             | 說明                                                                                            |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `kyoten [claude\|codex\|dsh\|dscc\|agy] [args…]` | 在據點中啟動代理（預設為 `claude`；`kyoten -c` 等同於 `claude -c`）                             |
+| `kyoten init [<dir>] [--memory on\|off]`         | 建立據點並完成安裝；指定 `<dir>` 時同時設為預設據點（既有的 clone 不會被複製，直接註冊使用）    |
+| `kyoten update`                                  | 將較新的快照合併至由 `kyoten` 建立的據點，保留你自己的提交（clone 請使用 `git pull`）           |
+| `kyoten doctor`                                  | 檢查系統需求、各代理、信任狀態、記憶儲存開關、DSH 與 dscc 金鑰，接著執行 `pnpm workspace:check` |
+| `kyoten run <script> [args…]`                    | 從任意資料夾在據點內執行工作區腳本：`kyoten run task status`                                    |
+| `kyoten where` · `kyoten config …`               | 顯示據點路徑與選取規則 · 檢視或修改設定（`home`、`args.<agent>`、`addDir`）                     |
+| `kyoten reset [--all]`                           | 將由 `kyoten` 建立的據點移至一旁（僅重新命名，不會刪除，並顯示復原指令）                        |
+| `kyoten backup` · `kyoten restore <dir>`         | 將記憶、任務、設定與本機提交備份至資料夾 · 還原備份（採用合併，絕不覆寫）                       |
+| `kyoten dscc --set-key` · `--show`               | 將 DeepSeek API 金鑰儲存於工作區外部 · 顯示遮蔽金鑰後的設定檔                                   |
+
+- **在據點外的專案作業**：於其他 Git 儲存庫內啟動時，`kyoten`、`kyoten codex`、`kyoten dscc` 與 `kyoten agy` 會自動加上 `--add-dir=<repository>`，讓代理在維持據點 Hooks、任務與記憶的同時也能編輯該儲存庫（可透過 `--no-add-dir` 或設定中的 `"addDir": false` 關閉；位於或高於使用者家目錄 `~` 的儲存庫絕不會自動加入）。若需進行多步驟工作，請使用 `pnpm task new … --repo <path>`。
+- **DSH**：在 Web UI 中點擊 **Choose workspace** 並選擇據點（`kyoten dsh` 會輸出路徑）；若工作階段開啟於其他工作區，啟動時會收到提示。
+- **執行成本**：Hooks、稽核日誌與格式化工具皆僅於本機執行。Stop 循環會在程式碼任務上執行測試、審查輪次會使用方案內的子代理，而記憶擷取（僅在開啟自動儲存時）則於每次工作階段結束後在背景呼叫一次。
+- **更新絕不覆寫**：由 `kyoten` 建立的據點本身即為 Git 儲存庫：`kyoten/upstream` 存放上游快照，`main` 保留快照與你自己的提交，而 `kyoten update` 會以合併方式整合更新。
 
 ## 🗂️ 儲存庫目錄結構
 
@@ -80,6 +110,7 @@ pnpm check
 ├── docs/
 │   ├── cli.md               # Generated CLI reference (pnpm docs:cli)
 │   ├── harness.md           # Full harness architecture & worked examples
+│   ├── kyoten.md            # Launcher and managed-home guide
 │   └── testing/             # Deep testing & mocking guides
 ├── e2e/                     # Playwright e2e tests
 ├── tasks/                   # Machine-local task folders (git-ignored)
@@ -164,8 +195,10 @@ pnpm memory export                  # checksummed .tar.gz backup; restore via im
 ```
 
 - **多代理背景作業**：擷取、每週彙整，以及角色設定精簡／稽核作業預設會使用**該工作階段所屬的代理 CLI**（`claude`、`codex`、`dsh` 或 `agy`）執行——也可透過 `pnpm memory set --extract-agent <agent>` 指定固定使用的 CLI。
-- **零工具隔離**：記憶作業會在停用工具的空白暫存資料夾中執行。Codex 在未設定任何 MCP 伺服器時可直接使用（若你有設定 Codex MCP 伺服器，系統會基於安全考量直接中止並顯示 `Fix:` 指令，引導你切換 `--extract-agent`）；Claude 與 Codex 的隔離參數均避免使用雙引號，確保 Windows `.cmd` shim 運作正常。
+- **零工具隔離**：記憶作業會在停用工具的空白暫存資料夾中執行。Codex 在未設定任何 MCP 伺服器時可直接使用（若你有設定 Codex MCP 伺服器，系統會基於安全考量直接中止並顯示 `Fix:` 指令，引導你切換 `--extract-agent`）；Claude、Codex 與 Antigravity 的隔離參數均避免使用雙引號，確保 Windows `.cmd` shim 運作正常。
 - **暫停儲存**：執行 `pnpm memory off` 會同時暫停擷取與每週彙整（手動執行 `pnpm memory consolidate` 時除非加上 `--force`，否則會拒絕執行；`--dry-run` 則隨時可用）。
+- **受管據點**：新建的據點預設關閉自動儲存，除非你在初始化設定時主動選擇開啟；之後可透過 `kyoten run memory on` 啟用。
+- **各代理專屬角色設定**：透過 `pnpm memory personalize --for <claude|codex|ds|agy> --persona-file persona.md` 設定，啟動器的 Hooks 會依工作階段自動套用對應角色。`ds` 角色同時適用於 DSH 與 dscc。
 
 完整的記憶生命週期說明請參閱 `AGENTS.md` §13 與 [docs/harness.md](docs/harness.md)。
 
@@ -325,12 +358,7 @@ pnpm test:coverage   # enforces the 95% coverage floor
 
 測試規範位於 `.claude/rules/testing.md`，進階指南則存放於 `docs/testing/`。
 
-端對端（e2e）測試在 `e2e/` 中使用 **Playwright**（在新增 `*.e2e.*` 測試前，空白測試套件也能順利通過）：
-
-```bash
-pnpm exec playwright install chromium
-pnpm test:e2e
-```
+執行 `pnpm test:e2e` 會封裝目前提交，並搭配模擬的代理 CLI 測試啟動器。啟動器測試套件採用 **Playwright** 測試執行器，且不需瀏覽器即可執行。
 
 ## 🛡️ 安全性與設定
 
