@@ -40,7 +40,7 @@ Node.js・Git・pnpm が揃っていれば、管理ホームを初期化して�
 
 ```bash
 npx kyoten init
-npx kyoten codex
+npx kyoten            # Claude Code (default), or: codex | dsh | dscc | agy
 ```
 
 クローンしたリポジトリから直接作業する場合は、リポジトリ内でセットアップを実行してください。
@@ -390,7 +390,11 @@ pnpm add -D some-package --save-catalog-name=dev
 
 ### 🔌 MCP サーバー
 
-ローカルの MCP 設定は `.mcp.json`（git 管理外）に配置します。`.mcp.json.example` をコピーし、お使いのマシンに合わせてパスを調整してください。
+MCP サーバー設定にはマシン固有のパスや認証情報が含まれやすいため、`pnpm harness sync` では同期せず、エージェントごとに管理します：
+
+- **Claude Code (`claude` / `dscc`)**：ワークスペースローカルの MCP 設定は `.mcp.json`（git 管理外、npm パッケージからも除外）に配置します。`.mcp.json.example` をコピーし、お使いのマシンに合わせてパスを調整してください。
+- **Codex (`codex`)**：Codex 自身の MCP 設定（`codex mcp add …` / `~/.codex/config.toml`）を使用します。※ Codex に MCP サーバーが 1 つでも設定されている場合、ツール隔離のため Codex 上のバックグラウンドメモリジョブは安全に停止します。`pnpm memory set --extract-agent claude`（または `agy` / `dsh`）で別エージェントへ切り替えてください。
+- **Antigravity CLI (`agy`) / DeepSeek Harness (`dsh`)**：それぞれのツール固有のユーザー設定またはプロファイル設定で MCP サーバーを構成してください。
 
 ## 🤝 コントリビューション
 
