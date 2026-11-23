@@ -347,4 +347,55 @@ describe('pruneTrash', () => {
   test('should do nothing without a trash folder', () => {
     expect(pruneTrash(root, NOW.getTime())).toBe(0);
   });
+
+  /** An aged folder in `repo`, the target a planted link points to. */
+  const agedTarget = () => {
+    touch(path.join(repo, 'old', 'f'));
+    const old = new Date(NOW.getTime() - TRASH_KEEP_MS - 1000);
+    fs.utimesSync(path.join(repo, 'old'), old, old);
+  };
+
+  test('should not prune through a tasks/.trash that is a link', () => {
+    agedTarget();
+    fs.mkdirSync(path.join(root, 'tasks'));
+    fs.symlinkSync(repo, path.join(root, 'tasks', '.trash'), 'junction');
+
+    expect(pruneTrash(root, NOW.getTime())).toBe(0);
+    expect(fs.existsSync(path.join(repo, 'old', 'f'))).toBe(true);
+  });
+
+  test('should not prune through a tasks/ that is a link', () => {
+    touch(path.join(repo, '.trash', 'old', 'f'));
+    const old = new Date(NOW.getTime() - TRASH_KEEP_MS - 1000);
+    fs.utimesSync(path.join(repo, '.trash', 'old'), old, old);
+    fs.symlinkSync(repo, path.join(root, 'tasks'), 'junction');
+
+    expect(pruneTrash(root, NOW.getTime())).toBe(0);
+    expect(fs.existsSync(path.join(repo, '.trash', 'old', 'f'))).toBe(true);
+  });
+
+  test('should not prune a tasks/.trash that is a file', () => {
+    touch(path.join(root, 'tasks', '.trash'));
+
+    expect(pruneTrash(root, NOW.getTime())).toBe(0);
+  });
+
+  test('should refuse to move anything into a tasks/.trash that is a link', () => {
+    agedTarget();
+    touch(path.join(root, 'a.txt'));
+    fs.mkdirSync(path.join(root, 'tasks'));
+    fs.symlinkSync(repo, path.join(root, 'tasks', '.trash'), 'junction');
+
+    expect(() =>
+      trashPaths({
+        rootDir: root,
+        scopes: [root],
+        paths: ['a.txt'],
+        cwd: root,
+        now: NOW,
+      })
+    ).toThrow(/tasks[\\/]\.trash is not a folder[\s\S]*Fix:/);
+    expect(fs.existsSync(path.join(root, 'a.txt'))).toBe(true);
+    expect(fs.readdirSync(repo)).toEqual(['old']);
+  });
 });
