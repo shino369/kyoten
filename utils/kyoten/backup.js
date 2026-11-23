@@ -525,7 +525,11 @@ async function restoreBundle({
     lines(['diff', '--no-renames', '--name-only', '-z', base, RESTORED], '\0')
   );
   const risky = [...new Set(changed)].filter((file) =>
-    CODE_PATHS.some((p) => (p.endsWith('/') ? file.startsWith(p) : file === p))
+    CODE_PATHS.some((p) =>
+      p.endsWith('/')
+        ? file.startsWith(p) || file === p.slice(0, -1)
+        : file === p
+    )
   );
   for (const line of restoreSummary({ commits, risky })) err(line);
   const answer = yes

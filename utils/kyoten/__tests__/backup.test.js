@@ -876,6 +876,34 @@ describe('restoreBackup', () => {
     }
   );
 
+  test.each(['tasks', 'memory'])(
+    'should warn when the backup commits track %s itself as a symlink',
+    async (name) => {
+      const source = sourceHome();
+      const target = path.join(tmp, 'link-target.txt');
+      fs.writeFileSync(target, '../outside');
+      const blob = git(source, 'hash-object', '-w', target);
+      git(
+        source,
+        'update-index',
+        '--add',
+        '--cacheinfo',
+        `120000,${blob},${name}`
+      );
+      git(source, 'commit', '-q', '--no-gpg-sign', '-m', `chore: link ${name}`);
+      backupHome(backupInput({ dir: 'bk' }));
+      err = [];
+
+      await restoreBackup(
+        restoreInput({ yes: false, interactive: true, ask: async () => 'n' })
+      );
+
+      expect(err.join('\n')).toContain(
+        `configure the agents: ${name}; restore only`
+      );
+    }
+  );
+
   test('should refuse a bundle whose main shares no history with its kyoten/upstream', async () => {
     const source = sourceHome();
     git(source, 'switch', '-q', '--orphan', 'other');
