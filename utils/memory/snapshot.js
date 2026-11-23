@@ -34,15 +34,22 @@ const REASON_RE = /^[a-z][a-z-]*$/;
 const snapshotsDir = (rootDir) => path.join(rootDir, MEMORY_DIR, SNAPSHOTS_DIR);
 
 /**
- * Whether memory/snapshots is missing or a real folder. A restored backup
- * could track it as a link, and following one would copy notes to, and
- * prune folders at, the link's target.
+ * The first of memory/ and memory/snapshots that exists but is not a real
+ * folder (a link, or a file), or null. A restored backup could track either as
+ * a link, and following one would copy notes to, and prune folders at, the
+ * link's target.
  *
  * @param {string} rootDir
+ * @returns {string | null} the path relative to rootDir
  */
-const usableSnapshotsDir = (rootDir) => {
-  const stat = fs.lstatSync(snapshotsDir(rootDir), { throwIfNoEntry: false });
-  return !stat || (stat.isDirectory() && !stat.isSymbolicLink());
+const unusableSnapshotsDir = (rootDir) => {
+  for (const rel of [MEMORY_DIR, path.join(MEMORY_DIR, SNAPSHOTS_DIR)]) {
+    const stat = fs.lstatSync(path.join(rootDir, rel), {
+      throwIfNoEntry: false,
+    });
+    if (stat && (stat.isSymbolicLink() || !stat.isDirectory())) return rel;
+  }
+  return null;
 };
 
 /**
@@ -72,9 +79,10 @@ export function takeSnapshot(
   if (!REASON_RE.test(reason)) {
     throw new Error(`Invalid snapshot reason "${reason}".`);
   }
-  if (!usableSnapshotsDir(rootDir)) {
+  const unusable = unusableSnapshotsDir(rootDir);
+  if (unusable) {
     throw new Error(
-      `${snapshotsDir(rootDir)} is not a folder (a link?), so no snapshot is taken and nothing is changed.\nFix: move it out of memory/ (check where it points first), then run the command again`
+      `${path.join(rootDir, unusable)} is not a folder (a link?), so no snapshot is taken and nothing is changed.\nFix: move it out of the workspace (check where it points first), then run the command again`
     );
   }
   const base = `${stamp(now)}-${reason}`;
@@ -122,7 +130,7 @@ export function takeSnapshot(
  */
 export function listSnapshots(rootDir) {
   const dir = snapshotsDir(rootDir);
-  if (!fs.existsSync(dir) || !usableSnapshotsDir(rootDir)) return [];
+  if (unusableSnapshotsDir(rootDir) || !fs.existsSync(dir)) return [];
   return fs
     .readdirSync(dir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
