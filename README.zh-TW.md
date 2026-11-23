@@ -390,7 +390,11 @@ pnpm add -D some-package --save-catalog-name=dev
 
 ### 🔌 MCP 伺服器
 
-本機 MCP 設定檔位於 `.mcp.json`（由 Git 忽略）。請複製 `.mcp.json.example` 並依本機環境調整路徑。
+由於 MCP 伺服器設定常包含本機路徑與憑證，因此不會由 `pnpm harness sync` 統一同步，而是依各代理分別管理：
+
+- **Claude Code（`claude`／`dscc`）**：工作區本機 MCP 設定檔位於 `.mcp.json`（由 Git 忽略，且不會封裝進 npm 套件）。請複製 `.mcp.json.example` 並依本機環境調整路徑。
+- **Codex（`codex`）**：請使用 Codex 自身的 MCP 設定（`codex mcp add …`／`~/.codex/config.toml`）。注意：只要 Codex 設定了任何 MCP 伺服器，Codex 上的背景記憶作業會基於工具隔離原則中止執行——請透過 `pnpm memory set --extract-agent claude`（或 `agy`／`dsh`）切換執行代理。
+- **Antigravity CLI（`agy`）與 DeepSeek Harness（`dsh`）**：請於各工具原生的使用者設定或設定檔（profile）中配置 MCP 伺服器。
 
 ## 🤝 參與貢獻
 

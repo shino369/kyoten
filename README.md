@@ -401,7 +401,11 @@ Local overrides belong in `.claude/settings.local.json` (git-ignored).
 
 ### 🔌 MCP Servers
 
-Local MCP configuration lives in `.mcp.json` (git-ignored). Copy `.mcp.json.example` and adjust the paths for your machine.
+MCP servers are configured per agent rather than synced by `pnpm harness sync`, because server entries often hold machine-local paths and credentials:
+
+- **Claude Code (`claude` / `dscc`):** place project-local MCP servers in `.mcp.json` (git-ignored and excluded from npm packages). Copy `.mcp.json.example` and adjust the paths for your machine.
+- **Codex (`codex`):** use Codex's own MCP config (`codex mcp add …` / `~/.codex/config.toml`). Note: if any Codex MCP server is configured, background memory jobs on Codex fail closed for tool isolation — switch them with `pnpm memory set --extract-agent claude` (or `agy` / `dsh`).
+- **Antigravity CLI (`agy`) & DeepSeek Harness (`dsh`):** configure MCP servers in each tool's native user or profile settings.
 
 ## 🤝 Contributing
 
