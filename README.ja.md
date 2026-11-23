@@ -13,7 +13,7 @@
 
 **Kyoten（拠点）** は、AI エージェント関連の設定をすべて 1 つのクリーンでポータブルなリポジトリにまとめるワークスペースです。ツールごとにルール、フック、スキル、メモリを重複設定する必要はありません。この拠点を一度セットアップするだけで、**Claude Code**、**Codex**、**Antigravity CLI (`agy`)**、**DeepSeek Harness (`dsh`)** をシームレスに使い分けられます。
 
-すべてプレーンな Node.js ESM で動作し、ランタイム依存ゼロ・モノレポ不要・ビルドステップ不要のシンプルな構成です。リポジトリをクローンして初回セットアップを実行したら、あとはお好みのコーディングエージェントをこのワークスペース内で起動するだけです。🌿
+すべてプレーンな Node.js ESM で動作し、ランタイム依存ゼロ・ビルドステップ不要のシンプルな構成です。kyoten ランチャーを使うことも、リポジトリをクローンして直接作業することもできます。
 
 ## ✨ なぜ Kyoten なのか？
 
@@ -35,6 +35,15 @@
 - **`gh` CLI** _（任意）_ — GitHub ワークフローおよび PR レビューで使用します
 
 ## 🚀 はじめに
+
+Node.js・Git・pnpm が揃っていれば、管理ホームを初期化してすぐにエージェントを起動できます。
+
+```bash
+npx kyoten init
+npx kyoten codex
+```
+
+クローンしたリポジトリから直接作業する場合は、リポジトリ内でセットアップを実行してください。
 
 ```bash
 git clone https://github.com/shino369/kyoten.git
@@ -58,7 +67,28 @@ pnpm workspace:check   # verify setup; every failure prints a Fix command
 pnpm check
 ```
 
-あとは、このディレクトリ内でコーディングエージェント（Claude Code、Codex、`agy`、または DSH）を起動するだけです！🎉
+このディレクトリ内でエージェントを起動するか、`pnpm kyoten [<agent>]` を使ってクローンから起動してください。
+
+## kyoten ランチャー
+
+`kyoten` は、**ホーム**（kyoten ワークスペース：`~/.kyoten`、または登録済みのクローン）の中でエージェントを起動します。そのため、どのフォルダから起動しても、クローン内とまったく同じようにフック、タスク、メモリ、スキル、ロールが動作します。エージェント名の後ろに渡した引数はそのままエージェントへ渡され、`kyoten` が権限バイパスフラグを勝手に追加することはありません。完全なガイド：[docs/kyoten.md](docs/kyoten.md)。
+
+| コマンド                                         | 内容                                                                                                               |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `kyoten [claude\|codex\|dsh\|dscc\|agy] [args…]` | ホーム内でエージェントを起動（デフォルトは `claude`。`kyoten -c` は `claude -c`）                                  |
+| `kyoten init [<dir>] [--memory on\|off]`         | ホームを作成してセットアップ。`<dir>` を指定するとデフォルトホームに設定（既存のクローンはコピーせずそのまま登録） |
+| `kyoten update`                                  | `kyoten` が作成したホームへ新しいスナップショットをマージ。自分のコミットは保持（クローンは `git pull` を使用）    |
+| `kyoten doctor`                                  | 前提条件、エージェント、信頼設定、メモリ保存状態、DSH、dscc キーを確認し、最後に `pnpm workspace:check` を実行     |
+| `kyoten run <script> [args…]`                    | どのフォルダからでもホーム内のワークスペーススクリプトを実行：`kyoten run task status`                             |
+| `kyoten where` · `kyoten config …`               | ホームのパスと選択ルールを表示 · 設定を表示または変更（`home`, `args.<agent>`, `addDir`）                          |
+| `kyoten reset [--all]`                           | `kyoten` が作成したホームを退避（削除ではなくリネーム。元に戻すコマンドを表示）                                    |
+| `kyoten backup` · `kyoten restore <dir>`         | メモリ、タスク、設定、ローカルコミットをフォルダへバックアップ · バックアップを取り込み（上書きせずマージ）        |
+| `kyoten dscc --set-key` · `--show`               | DeepSeek API キーをワークスペース外へ安全に保存 · キーをマスクした状態でプロファイルを表示                         |
+
+- **ホーム外のプロジェクトでの作業**：別の git リポジトリ内で起動すると、`kyoten`、`kyoten codex`、`kyoten dscc`、`kyoten agy` は自動的に `--add-dir=<repository>` を付与します。これにより、フック・タスク・メモリはホーム側に保ったまま、そのリポジトリを編集できます（`--no-add-dir` または設定の `"addDir": false` で無効化可能。ユーザーホーム `~` 以上にあるリポジトリは自動付与されません）。複数ステップの作業には `pnpm task new … --repo <path>` を使用してください。
+- **DSH**：Web UI で **Choose workspace** をクリックし、ホームを選択してください（パスは `kyoten dsh` が出力します）。別のワークスペースで開始されたセッションには、開始時にその旨が通知されます。
+- **実行コスト**：フック、監査ログ、フォーマッターはローカルのみで動作します。Stop ループはコードタスクでテストを実行し、レビューラウンドは契約プラン上でサブエージェントを使用します。メモリ抽出（保存がオンのときのみ）はセッション終了ごとにバックグラウンドで 1 回呼び出されます。
+- **更新で上書きしない設計**：`kyoten` が作成したホームは git リポジトリになっており、`kyoten/upstream` ブランチにスナップショット、`main` ブランチに自分のコミットを含む状態を保持します。`kyoten update` は通常の git マージとして取り込みます。
 
 ## 🗂️ リポジトリ構成
 
@@ -80,6 +110,7 @@ pnpm check
 ├── docs/
 │   ├── cli.md               # Generated CLI reference (pnpm docs:cli)
 │   ├── harness.md           # Full harness architecture & worked examples
+│   ├── kyoten.md            # Launcher and managed-home guide
 │   └── testing/             # Deep testing & mocking guides
 ├── e2e/                     # Playwright e2e tests
 ├── tasks/                   # Machine-local task folders (git-ignored)
@@ -164,8 +195,10 @@ pnpm memory export                  # checksummed .tar.gz backup; restore via im
 ```
 
 - **マルチエージェントによるバックグラウンドジョブ**：メモリの抽出、週次の統合、ペルソナの圧縮・監査は、デフォルトで**そのセッション自身のエージェント CLI** (`claude`, `codex`, `dsh`, `agy`) で実行されます。`pnpm memory set --extract-agent <agent>` で任意の CLI を指定することも可能です。
-- **ツール無効化の分離環境**：メモリジョブはツールを無効化した空の一時フォルダ内で実行されます。Codex は MCP サーバーが未設定であればそのまま動作します（Codex の MCP サーバーを設定している場合はフェイルクローズで安全に停止し、`--extract-agent` を切り替えるための `Fix:` コマンドを表示します）。また、Claude および Codex の分離フラグではダブルクォートを避けることで、Windows の `.cmd` シムでも問題なく動作するようにしています。
+- **ツール無効化の分離環境**：メモリジョブはツールを無効化した空の一時フォルダ内で実行されます。Codex は MCP サーバーが未設定であればそのまま動作します（Codex の MCP サーバーを設定している場合はフェイルクローズで安全に停止し、`--extract-agent` を切り替えるための `Fix:` コマンドを表示します）。また、Claude・Codex・Antigravity の分離フラグではダブルクォートを避けることで、Windows の `.cmd` シムでも問題なく動作するようにしています。
 - **保存の一時停止**：`pnpm memory off` を実行すると、自動抽出と週次統合の両方が一時停止します（手動での `pnpm memory consolidate` は `--force` を指定しない限り拒否されますが、`--dry-run` は常に実行できます）。
+- **管理ホーム**：新しく作成したホームでは、セットアップ時にオプトインしない限り自動保存はオフの状態で開始されます。あとから有効にするには `kyoten run memory on` を実行してください。
+- **エージェント別ペルソナ**：`pnpm memory personalize --for <claude|codex|ds|agy> --persona-file persona.md` で設定できます。ランチャーのフックがセッションごとに選択されたペルソナを適用します。`ds` ペルソナは DSH と dscc の両方で共有されます。
 
 メモリライフサイクルの詳細は `AGENTS.md` §13 および [docs/harness.md](docs/harness.md) を参照してください。
 
@@ -325,12 +358,7 @@ pnpm test:coverage   # enforces the 95% coverage floor
 
 テスト規約は `.claude/rules/testing.md` に、より詳しいガイドは `docs/testing/` にまとめています。
 
-E2E テストには `e2e/` 配下の **Playwright** を使用します（`*.e2e.*` テストが追加されるまでは、空のスイートとして正常終了します）：
-
-```bash
-pnpm exec playwright install chromium
-pnpm test:e2e
-```
+現在のコミットをパックして、モックのエージェント CLI でランチャーを検証するには `pnpm test:e2e` を実行します。ランチャーのテストスイートは **Playwright** テストランナーを使用しますが、ブラウザなしで動作します。
 
 ## 🛡️ セキュリティと設定
 

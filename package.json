@@ -7,6 +7,10 @@
     "type": "git",
     "url": "git+https://github.com/shino369/kyoten.git"
   },
+  "homepage": "https://github.com/shino369/kyoten#readme",
+  "bugs": {
+    "url": "https://github.com/shino369/kyoten/issues"
+  },
   "type": "module",
   "imports": {
     "#utils/*": "./utils/*"

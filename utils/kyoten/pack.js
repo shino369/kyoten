@@ -179,10 +179,19 @@ export function packageManifest(pkg) {
     bin: { kyoten: 'bin/kyoten.js' },
     files: ['bin', 'runtime', BUNDLE_FILE],
     engines: { node: '>=24' },
-    keywords: ['claude-code', 'codex', 'deepseek', 'coding-agent', 'workspace'],
+    keywords: [
+      'claude-code',
+      'codex',
+      'deepseek',
+      'antigravity',
+      'coding-agent',
+      'workspace',
+    ],
     author: pkg.author,
     license: pkg.license,
     repository: pkg.repository,
+    ...(pkg.homepage ? { homepage: pkg.homepage } : {}),
+    ...(pkg.bugs ? { bugs: pkg.bugs } : {}),
   };
 }
 
