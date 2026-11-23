@@ -206,7 +206,7 @@ describe('auto_format', () => {
       );
       fs.writeFileSync(path.join(outside, 'r.js'), 'x');
       const link = path.join(testDir, 'linked');
-      fs.symlinkSync(outside, link);
+      fs.symlinkSync(outside, link, 'junction');
 
       const result = claude({
         tool_name: 'Write',
