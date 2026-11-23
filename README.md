@@ -13,7 +13,7 @@
 
 **Kyoten** (_拠点_, Japanese for "home base" or "operations hub") brings all of your AI-agent setup into one clean, portable repository. Instead of repeating rules, hooks, skills, and memory across every tool, you configure your home base once and work seamlessly with **Claude Code**, **Codex**, **Antigravity CLI (`agy`)**, and **DeepSeek Harness (`dsh`)**.
 
-Everything runs on plain Node.js ESM with zero runtime dependencies, no monorepo, and no build step — just clone, run setup once, and launch your preferred coding agent inside the workspace. 🌿
+Everything runs on plain Node.js ESM with zero runtime dependencies and no build step. Use the kyoten launcher or work directly from a clone.
 
 ## ✨ Why Kyoten?
 
@@ -35,6 +35,15 @@ Everything runs on plain Node.js ESM with zero runtime dependencies, no monorepo
 - **`gh` CLI** _(optional)_ — for GitHub workflows and PR reviews
 
 ## 🚀 Getting Started
+
+With Node.js, Git, and pnpm available, initialize a managed home and launch your agent.
+
+```bash
+npx kyoten init
+npx kyoten codex
+```
+
+To work directly from a clone, run setup in the repository.
 
 ```bash
 git clone https://github.com/shino369/kyoten.git
@@ -58,7 +67,39 @@ Run the full quality gate for typechecking, linting, format checks, and tests wi
 pnpm check
 ```
 
-Then simply start your coding agent (Claude Code, Codex, `agy`, or DSH) inside this directory! 🎉
+Start the agent inside this directory or use `pnpm kyoten [<agent>]` to launch from the clone.
+
+## The kyoten launcher
+
+`kyoten` starts an agent **in the home** (a kyoten workspace: `~/.kyoten`, or a clone you register),
+so the hooks, tasks, memory, skills, and roles work exactly as in a clone, whatever folder you start
+it from. Everything after the agent word goes to the agent unchanged, and kyoten never adds a
+permission-bypass flag. Full guide: [docs/kyoten.md](docs/kyoten.md).
+
+| Command                                          | Does                                                                                                     |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `kyoten [claude\|codex\|dsh\|dscc\|agy] [args…]` | Start the agent in the home (`claude` by default; `kyoten -c` is `claude -c`)                            |
+| `kyoten init [<dir>] [--memory on\|off]`         | Create a home and install it; with `<dir>`, make it the default home (an existing clone is not copied)   |
+| `kyoten update`                                  | Merge a newer snapshot into a home kyoten created; your own commits are kept (a clone uses `git pull`)   |
+| `kyoten doctor`                                  | Check prerequisites, agents, trust, memory saving, DSH, the dscc key, then `pnpm workspace:check`        |
+| `kyoten run <script> [args…]`                    | Run a workspace script in the home from any folder: `kyoten run task status`                             |
+| `kyoten where` · `kyoten config …`               | Print the home and the rule that chose it · show or change the config (`home`, `args.<agent>`, `addDir`) |
+| `kyoten reset [--all]`                           | Move a home kyoten created aside (renamed, never deleted; the undo is printed)                           |
+| `kyoten backup` · `kyoten restore <dir>`         | A backup folder of memory, tasks, config, and local commits · bring it back, merging, never overwriting  |
+| `kyoten dscc --set-key` · `--show`               | Save the DeepSeek API key outside every workspace · print the profile with the key masked                |
+
+- **Projects outside the home.** Started inside another git repository, `kyoten`, `kyoten codex`,
+  `kyoten dscc`, and `kyoten agy` add `--add-dir=<repository>` so the agent can edit it while its
+  hooks, tasks, and memory stay in the home (`--no-add-dir` or `"addDir": false` turns it off; a
+  repository at or above your user folder `~` is never added). For multi-step work there:
+  `pnpm task new … --repo <path>`.
+- **DSH:** in the Web UI, click **Choose workspace** and select the home (`kyoten dsh` prints it); a
+  session in another workspace is told so at its start.
+- **What it costs.** Hooks, the audit log, and the formatter are local. The Stop loop runs your
+  tests on code tasks, review rounds use subagents on your plan, and memory extraction (only when
+  saving is on) is one background call per session end.
+- **Updates never overwrite.** A home kyoten created is a git repository: `kyoten/upstream` holds
+  the snapshots, `main` holds them plus your commits, and `kyoten update` merges.
 
 ## 🗂️ Repository Layout
 
@@ -80,6 +121,7 @@ Then simply start your coding agent (Claude Code, Codex, `agy`, or DSH) inside t
 ├── docs/
 │   ├── cli.md               # Generated CLI reference (pnpm docs:cli)
 │   ├── harness.md           # Full harness architecture & worked examples
+│   ├── kyoten.md            # Launcher and managed-home guide
 │   └── testing/             # Deep testing & mocking guides
 ├── e2e/                     # Playwright e2e tests
 ├── tasks/                   # Machine-local task folders (git-ignored)
@@ -164,8 +206,10 @@ pnpm memory export                  # checksummed .tar.gz backup; restore via im
 ```
 
 - **Multi-agent background jobs:** Extraction, weekly consolidation, and persona compact/audit run on the **session's own agent CLI** (`claude`, `codex`, `dsh`, or `agy`) by default — or on a chosen CLI via `pnpm memory set --extract-agent <agent>`.
-- **Zero-tool isolation:** Memory jobs run in an empty temp folder with tools disabled. Codex runs out of the box when zero MCP servers are configured (if you configure Codex MCP servers, it fails closed and prints a `Fix:` command to switch `--extract-agent`); Claude and Codex isolation flags avoid double quotes so Windows `.cmd` shims work cleanly.
+- **Zero-tool isolation:** Memory jobs run in an empty temp folder with tools disabled. Codex runs out of the box when zero MCP servers are configured (if you configure Codex MCP servers, it fails closed and prints a `Fix:` command to switch `--extract-agent`); Claude, Codex, and Antigravity isolation flags avoid double quotes so Windows `.cmd` shims work cleanly.
 - **Pausing saves:** Running `pnpm memory off` pauses both extraction and weekly consolidation (manual `pnpm memory consolidate` refuses unless `--force` is passed; `--dry-run` is always allowed).
+- **Managed homes:** A new home starts with automatic saving off unless you opt in at setup. Enable it later with `kyoten run memory on`.
+- **Per-agent personas:** Set one with `pnpm memory personalize --for <claude|codex|ds|agy> --persona-file persona.md`. The launcher's hooks apply the selected persona per session. The `ds` persona serves both DSH and dscc.
 
 See `AGENTS.md` §13 and [docs/harness.md](docs/harness.md) for the full memory lifecycle.
 
@@ -325,12 +369,7 @@ pnpm test:coverage   # enforces the 95% coverage floor
 
 Test rules live in `.claude/rules/testing.md`, with deeper guides under `docs/testing/`.
 
-End-to-end tests use **Playwright** in `e2e/` (passes cleanly with an empty suite until `*.e2e.*` tests are added):
-
-```bash
-pnpm exec playwright install chromium
-pnpm test:e2e
-```
+Run `pnpm test:e2e` to pack the current commit and test the launcher with fake agent CLIs. The launcher suite uses the **Playwright** test runner and runs without a browser.
 
 ## 🛡️ Security & Configuration
 

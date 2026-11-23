@@ -663,6 +663,85 @@ describe('consolidate', () => {
   });
 });
 
+describe('consolidation on dscc', () => {
+  test('should defer the claude call from a dscc worker, leaving it due', () => {
+    seed();
+    const runAgent = agentReturning({ profile: [], ops: [] });
+
+    const run = consolidate(deps({ runAgent, env: { KYOTEN_AGENT: 'dscc' } }));
+
+    expect(run).toMatchObject({ job: 'consolidation', status: 'deferred' });
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(readConsolidated(dir)).toBeNull();
+    expect(readJournal(dir)).toEqual([]);
+  });
+
+  test('should consolidate on a dscc worker when every run was dscc', () => {
+    seed();
+    appendJournal(dir, { status: 'applied', side: 'dscc' });
+    const runAgent = agentReturning({ profile: [], ops: [] });
+
+    const run = consolidate(deps({ runAgent, env: { KYOTEN_AGENT: 'dscc' } }));
+
+    expect(run.status).toBe('consolidated');
+    expect(runAgent).toHaveBeenCalled();
+  });
+
+  test('should defer on a dscc worker when a run was not dscc', () => {
+    seed();
+    appendJournal(dir, { status: 'applied', side: 'dscc' });
+    appendJournal(dir, { status: 'applied' });
+
+    const run = consolidate(deps({ env: { KYOTEN_AGENT: 'dscc' } }));
+
+    expect(run.status).toBe('deferred');
+  });
+
+  test('should consolidate on a normal worker after dscc runs', () => {
+    seed();
+    appendJournal(dir, { status: 'applied', side: 'dscc' });
+
+    expect(consolidate(deps()).status).toBe('consolidated');
+  });
+
+  test('should not reuse a dscc run model on a normal worker', () => {
+    seed();
+    appendJournal(dir, {
+      status: 'applied',
+      agent: 'claude',
+      model: 'deepseek-v4',
+      side: 'dscc',
+    });
+
+    const run = consolidate(deps());
+
+    expect(run).toMatchObject({ model: null, side: 'normal' });
+  });
+
+  test('should reuse a dscc run model on a dscc worker', () => {
+    seed();
+    appendJournal(dir, {
+      status: 'applied',
+      agent: 'claude',
+      model: 'deepseek-v4',
+      side: 'dscc',
+    });
+
+    const run = consolidate(deps({ env: { KYOTEN_AGENT: 'dscc' } }));
+
+    expect(run).toMatchObject({ model: 'deepseek-v4', side: 'dscc' });
+  });
+
+  test('should still run an agy consolidation on a dscc worker', () => {
+    seed();
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });
+
+    expect(consolidate(deps({ env: { KYOTEN_AGENT: 'dscc' } })).status).toBe(
+      'consolidated'
+    );
+  });
+});
+
 describe('consolidateLocked', () => {
   test('should run under the worker lock', () => {
     seed();

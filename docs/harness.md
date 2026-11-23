@@ -117,6 +117,19 @@ Notes:
   the root's id, so a subagent's `pnpm task` command acts on the default task unless it passes
   `--task`.
 
+### Starting an agent: kyoten
+
+`kyoten [claude|codex|dsh|dscc|agy]` (`pnpm kyoten …` in a clone, `npx kyoten …` without one)
+starts the agent with the workspace root as its working directory and adds what each harness
+needs: dsh gets its profile and `--patch .dsh/workspace.patch.yml`, `dscc` runs Claude Code on the
+DeepSeek API from a profile kept outside the workspace, and claude, dscc, codex, and agy get
+`--add-dir=<repo>` when kyoten was started inside another git repository. It sets
+`KYOTEN_AGENT`, `KYOTEN_HOME`, and `KYOTEN_CALLER_DIR` (and `KYOTEN_ADD_DIR`) for the hooks, and
+never adds permission flags. `kyoten run <script>` runs a workspace script from any folder. Without a
+clone it creates a workspace from the snapshot of one commit shipped in the npm package
+(`~/.kyoten`, a git repository that `kyoten update` merges new snapshots into). Details:
+`docs/kyoten.md`.
+
 ### Setup per harness
 
 | Harness         | Once                                                                                                                                                                                     | After a change                                                                                |
@@ -378,6 +391,23 @@ digests, at most 3,000 characters) that every session loads. Rules for agents: A
   and at each typed prompt. You can still edit, audit, and compact the saved persona while it
   is paused. Run `pnpm memory personalize --on` and start a new session to load the saved settings
   again. `pnpm memory status` shows both the personalization and automatic saving states.
+- **Per-agent personas.** Each agent kyoten starts can have its own persona:
+  `pnpm memory personalize --for <claude|codex|ds|agy> --persona "…"` (or `--persona-file`) writes
+  `memory/persona.<agent>.md` (`ds` serves dsh and dscc), in the format of `memory/persona.md`.
+  Only the persona differs: the call-me, language, tone, and other settings stay the default
+  ones, and the same 1,500-character limit applies to the whole. `--for` also takes `--show`,
+  `--compact [--dry-run]`, and `--audit` (same checks and agent choice as the default persona),
+  and `--reset`, which removes the file (kept in `tasks/.trash/` and a snapshot; `pnpm memory
+undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in the agent's
+  environment, and the hook reads it, so no shared file is rewritten at launch and a second
+  session of another agent in the same home is unaffected. At SessionStart, when personalization
+  is on and the agent's file exists: Codex and Antigravity (core block injected by the hook) get
+  the core with that persona; Claude Code, dscc, and DSH (core block loaded natively) get a
+  `[Persona] This <agent> session has its own persona: …` line and the rendered
+  personalization. The per-prompt `[Persona]` line names it. Without the variable (a plain clone,
+  or an agent not started by kyoten), without the file, or with `personalize --off`, nothing
+  changes: the default persona applies, or none when paused. The `AGENTS.local.md` core block always
+  shows the default persona. `pnpm memory` lists the agent personas.
 - **Persona compaction and audit.** `pnpm memory personalize --compact` shortens a persona
   to fit, then audits the result in a second fresh session. `--audit` checks the original
   persona without writing files. The persona comes from `--persona` or `--persona-file`,
@@ -416,18 +446,24 @@ digests, at most 3,000 characters) that every session loads. Rules for agents: A
   pairs with the configured agent (claude by default; cleared when switching `--extract-agent`
   alone, and not accepted for DSH, which chooses its model in its profile); otherwise the session's
   own model is used.
-  Consolidation and `personalize --compact/--audit` follow the same agent and model choice (consolidation: the
-  last run's agent, else the session's own CLI, else Claude). Codex needs zero configured MCP servers; a missing CLI or failed check says
-  which `--extract-agent` to switch to. Secrets are refused, instruction-like ops
-  wait in `memory/inbox.jsonl`, and the next session announces the saves.
+  Consolidation uses the configured agent, falling back to the last applied run's agent,
+  the current session's CLI, and then Claude. Persona compaction and audit accept an explicit
+  `--agent` and otherwise follow the memory configuration and session. Codex needs zero configured
+  MCP servers. A missing CLI or failed check prints commands for switching agents. The next session
+  announces saved notes and shows when instruction-like changes are waiting in `memory/inbox.jsonl`.
+  Secrets are refused.
+  The queue records each session's `KYOTEN_AGENT`. The `claude` CLI sends a transcript to the
+  provider its environment names. When extraction uses the Claude CLI, dscc sessions are extracted
+  by dscc workers and other sessions by workers outside dscc. A mismatching entry stays queued for
+  a matching worker without recording an attempt. A dscc worker defers Claude consolidation until
+  every applied extraction run in the journal is marked as dscc. Consolidation is paused while saving is off
+  everywhere (`pnpm memory off`; it stays due and runs once saving is back on); a manual
+  `pnpm memory consolidate` then refuses with a Fix line unless `--force` (a `--dry-run` is always
+  allowed). Consolidation reuses the last run's model only from a run on the same provider side
+  (dscc or not) as the worker.
   Memory jobs build their isolation arguments without a double quote, so they start through
-  Windows `.cmd` shims (which refuse `"`): Codex gets bare or single-quoted TOML values, Claude gets
-  its settings as a file in the job's temporary folder. Antigravity takes its settings as JSON on
-  the command line, so it needs a native `agy.exe`; behind a `.cmd` shim the job fails with a Fix
-  line naming another `--extract-agent`. Not verified on a real Windows machine. Consolidation never
-  runs while saving is off everywhere (`pnpm memory off`; it stays due and runs once saving is back
-  on); a manual `pnpm memory consolidate` then refuses with a Fix line unless `--force` (a
-  `--dry-run` is always allowed).
+  Windows `.cmd` shims (which refuse `"`): Codex gets bare or single-quoted TOML values, and Claude
+  and Antigravity each get a relative path to their settings file in the job's temporary folder.
 - **Safety:** every write path refuses text matching `utils/redact.js`; notes are framed as facts;
   `pnpm workspace:check` fails if a memory file is tracked.
 - **Worktrees:** `pnpm loop` and `pnpm swarm` do not copy `AGENTS.local.md` or `CLAUDE.local.md`
@@ -435,7 +471,9 @@ digests, at most 3,000 characters) that every session loads. Rules for agents: A
   agents there start with a clean context; the store stays in the main checkout.
 - **Export and import** (`pnpm memory export` / `import`): one `.tar.gz` with a checksummed
   manifest, validated (paths, entry types, checksums) before anything is written; imports merge
-  and take a snapshot first.
+  and take a snapshot first. The personalization part carries the per-agent personas
+  (`memory/persona.<claude|codex|ds|agy>.md`); an import sets only the missing ones (`--replace`
+  overwrites, `--dry-run` lists them), and older archives without them still import.
 
 ## The quality loop (code tasks)
 

@@ -16,7 +16,13 @@ import {
   normalizePersonalization,
   PERSONA_FILE,
   PERSONA_PLACEHOLDER,
+  PERSONA_KEYS,
+  agentPersonaFile,
+  agentPersonalization,
   applyPersonaFile,
+  listAgentPersonas,
+  personaKeyFor,
+  readAgentPersona,
   personaMarkdown,
   personaRoom,
   personaSize,
@@ -535,5 +541,81 @@ describe('memory/persona.md', () => {
     fs.writeFileSync(path.join(mem, 'personalization.json'), '{oops');
 
     expect(storedPersona(mem)).toBeUndefined();
+  });
+});
+
+describe('per-agent personas', () => {
+  /** @type {string} */
+  let dir;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-agent-persona-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test.each([
+    ['claude', 'claude'],
+    ['codex', 'codex'],
+    ['dsh', 'ds'],
+    ['dscc', 'ds'],
+    ['agy', 'agy'],
+  ])('should map the agent %s to the persona file key %s', (agent, key) => {
+    expect(personaKeyFor(agent)).toBe(key);
+    expect(agentPersonaFile(/** @type {any} */ (key))).toBe(
+      `persona.${key}.md`
+    );
+  });
+
+  test.each([undefined, '', 'gpt', 'toString', '__proto__'])(
+    'should map %j to no persona',
+    (agent) => {
+      expect(personaKeyFor(agent)).toBeNull();
+    }
+  );
+
+  test('should read the text of an agent file and list those that have text', () => {
+    fs.writeFileSync(
+      path.join(dir, 'persona.ds.md'),
+      '<!-- n -->\n# Hi\nThere\n'
+    );
+    fs.writeFileSync(
+      path.join(dir, 'persona.agy.md'),
+      '<!-- only a note -->\n'
+    );
+    fs.writeFileSync(path.join(dir, 'persona.claude.md'), 'Calm.\n');
+
+    expect(readAgentPersona(dir, 'ds')).toBe('Hi\nThere');
+    expect(readAgentPersona(dir, 'agy')).toBeNull();
+    expect(readAgentPersona(dir, 'codex')).toBeNull();
+    expect(listAgentPersonas(dir)).toEqual(['claude', 'ds']);
+    expect(PERSONA_KEYS).toEqual(['claude', 'codex', 'ds', 'agy']);
+  });
+
+  test('should combine the agent persona with the default settings', () => {
+    writePersonalization(dir, { persona: 'Default.', language: 'English' });
+    fs.writeFileSync(path.join(dir, 'persona.codex.md'), 'Own.\n');
+
+    expect(agentPersonalization(dir, 'codex')).toEqual({
+      persona: 'Own.',
+      language: 'English',
+    });
+    expect(agentPersonalization(dir, 'ds')).toBeNull();
+    expect(agentPersonalization(dir, null)).toBeNull();
+  });
+
+  test('should be null for a refused persona or broken settings', () => {
+    fs.writeFileSync(
+      path.join(dir, 'persona.codex.md'),
+      `${'x'.repeat(2000)}\n`
+    );
+    fs.writeFileSync(path.join(dir, 'persona.ds.md'), 'Own.\n');
+    expect(agentPersonalization(dir, 'codex')).toBeNull();
+
+    fs.writeFileSync(path.join(dir, PERSONALIZATION_FILE), '{bad');
+
+    expect(agentPersonalization(dir, 'ds')).toBeNull();
   });
 });

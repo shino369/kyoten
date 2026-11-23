@@ -12,7 +12,9 @@ import {
   PERSONA_FILE,
   PERSONA_LANGUAGE_RULE,
   PERSONA_SCOPE_RULES,
+  agentPersonaFile,
   normalizePersonalization,
+  personaMarkdown,
   personaRoom,
   personaFromMarkdown,
   personaSize,
@@ -374,39 +376,48 @@ export function compactPersona({
 const dateOf = (now) => now.toISOString().slice(0, 10);
 
 /**
+ * Apply a compacted persona: to memory/persona.md and the stored settings,
+ * or, with `key`, to memory/persona.<key>.md alone (a kyoten agent's
+ * persona; the stored settings are only read for the checks).
+ *
  * @param {string} rootDir
- * @param {{ settings: Personalization, markdown?: string | null, persona: string, before: number, agent: string, now: Date }} options
+ * @param {{ settings: Personalization, markdown?: string | null, persona: string, before: number, agent: string, now: Date, key?: import('./personalize.js').PersonaKey }} options
  */
 export function applyCompaction(
   rootDir,
-  { settings, markdown, persona, before, agent, now }
+  { settings, markdown, persona, before, agent, now, key }
 ) {
   const dir = memoryDir(rootDir);
   const normalized = normalizePersonalization({ ...settings, persona });
+  const file = path.join(dir, key ? agentPersonaFile(key) : PERSONA_FILE);
   fs.mkdirSync(dir, { recursive: true });
   return withLock(
     dir,
     () => {
       if (
         !isDeepStrictEqual(settings, readPersonalization(dir)) ||
-        (markdown !== undefined &&
-          markdown !== readIfExists(path.join(dir, PERSONA_FILE)))
+        (markdown !== undefined && markdown !== readIfExists(file))
       ) {
         throw new MemoryError(
           'invalid',
-          'The personalization or persona.md changed during compaction. Run the command again to use the latest version.'
+          `The personalization or ${path.basename(file)} changed during compaction. Run the command again to use the latest version.`
         );
       }
       const detail = `${before} → ${personaSize(persona)} characters`;
       const snapshot = takeSnapshot(rootDir, {
-        reason: 'compact',
+        reason: key ? `persona-${key}` : 'compact',
         detail,
         now,
       }).id;
-      syncPersonaFile(dir, persona, {
-        create: true,
-        note: `Compacted ${dateOf(now)}: ${detail} by ${agent}; before: memory/${SNAPSHOTS_DIR}/${snapshot}/ (pnpm memory undo)`,
-      });
+      const note = `Compacted ${dateOf(now)}: ${detail} by ${agent}; before: memory/${SNAPSHOTS_DIR}/${snapshot}/ (pnpm memory undo)`;
+      if (key) {
+        writeFileAtomic(
+          file,
+          personaMarkdown(readIfExists(file), persona, { note })
+        );
+        return { snapshot, warnings: /** @type {string[]} */ ([]) };
+      }
+      syncPersonaFile(dir, persona, { create: true, note });
       writePersonalization(dir, normalized);
       const warnings = refreshAfterWrite(rootDir, { lockHeld: true });
       return { snapshot, warnings };
@@ -432,9 +443,12 @@ const removalLines = (removed) =>
 
 /**
  * @param {string} rootDir
- * @param {{ persona: string, findings: Finding[], removed: Removal[], now: Date }} options
+ * @param {{ persona: string, findings: Finding[], removed: Removal[], now: Date, key?: string }} options
  */
-export function writeCandidate(rootDir, { persona, findings, removed, now }) {
+export function writeCandidate(
+  rootDir,
+  { persona, findings, removed, now, key }
+) {
   const dir = memoryDir(rootDir);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, CANDIDATE_FILE);
@@ -444,7 +458,7 @@ export function writeCandidate(rootDir, { persona, findings, removed, now }) {
       ? ['Findings:', ...findings.map(findingLine)]
       : ['Findings: none']),
     ...removalLines(removed),
-    `Edit the text below, then: pnpm memory personalize --persona-file memory/${CANDIDATE_FILE}`,
+    `Edit the text below, then: pnpm memory personalize${key ? ` --for ${key}` : ''} --persona-file memory/${CANDIDATE_FILE}`,
   ]
     .join('\n')
     .replaceAll('-->', '-- >')
@@ -464,9 +478,9 @@ const auditLines = (findings) =>
 
 /**
  * @param {Compaction} result
- * @param {{ snapshot: string | null, candidate: string | null }} outcome
+ * @param {{ snapshot: string | null, candidate: string | null, key?: import('./personalize.js').PersonaKey }} outcome
  */
-export function formatCompaction(result, { snapshot, candidate }) {
+export function formatCompaction(result, { snapshot, candidate, key }) {
   const { before, after, room, target, removed, findings, blocked } = result;
   return [
     `Compacted the persona: ${before} → ${after} characters (target ${target}, room ${room}).`,
@@ -474,7 +488,9 @@ export function formatCompaction(result, { snapshot, candidate }) {
     ...auditLines(findings),
     ...(snapshot
       ? [
-          `Written: memory/${PERSONA_FILE}, memory/personalization.json, AGENTS.local.md (snapshot ${snapshot}).`,
+          key
+            ? `Written: memory/${agentPersonaFile(key)} (snapshot ${snapshot}).`
+            : `Written: memory/${PERSONA_FILE}, memory/personalization.json, AGENTS.local.md (snapshot ${snapshot}).`,
           'Undo: pnpm memory undo',
         ]
       : [

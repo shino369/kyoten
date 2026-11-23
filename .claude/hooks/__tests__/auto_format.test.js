@@ -22,18 +22,20 @@ const { queueFiles, takeQueue } = await import('#utils/harness/format.js');
 const BIN = /** @type {string} */ (prettierBin());
 
 describe('auto_format', () => {
-  const testDir = 'test_format_files';
+  /** @type {string} the Claude project the tests edit in */
+  let testDir;
+  /** @param {Parameters<typeof processHookInput>[0]} input */
+  const claude = (input) =>
+    processHookInput(input, { rootDir: testDir, env: {} });
 
   beforeAll(() => {
-    if (!fs.existsSync(testDir)) {
-      fs.mkdirSync(testDir, { recursive: true });
-    }
+    testDir = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'fmt-claude-'))
+    );
   });
 
   afterAll(() => {
-    if (fs.existsSync(testDir)) {
-      fs.rmSync(testDir, { recursive: true, force: true });
-    }
+    fs.rmSync(testDir, { recursive: true, force: true });
   });
 
   beforeEach(() => {
@@ -49,7 +51,7 @@ describe('auto_format', () => {
         tool_input: { file_path: 'test.js' },
       };
 
-      const result = processHookInput(input);
+      const result = claude(input);
 
       expect(result).toBe(false);
       expect(spawnSync).not.toHaveBeenCalled();
@@ -61,7 +63,7 @@ describe('auto_format', () => {
         tool_input: {},
       };
 
-      const result = processHookInput(input);
+      const result = claude(input);
 
       expect(result).toBe(false);
       expect(spawnSync).not.toHaveBeenCalled();
@@ -76,7 +78,7 @@ describe('auto_format', () => {
         tool_input: { file_path: testFile },
       };
 
-      const result = processHookInput(input);
+      const result = claude(input);
 
       expect(result).toBe(false);
       expect(spawnSync).not.toHaveBeenCalled();
@@ -88,7 +90,7 @@ describe('auto_format', () => {
         tool_input: { file_path: path.join(testDir, 'nonexistent.js') },
       };
 
-      const result = processHookInput(input);
+      const result = claude(input);
 
       expect(result).toBe(false);
       expect(spawnSync).not.toHaveBeenCalled();
@@ -107,7 +109,7 @@ describe('auto_format', () => {
         tool_input: { file_path: testFile },
       };
 
-      const result = processHookInput(input);
+      const result = claude(input);
 
       expect(result).toBe(true);
       expect(spawnSync).toHaveBeenCalledWith(
@@ -143,7 +145,7 @@ describe('auto_format', () => {
           tool_input: { file_path: testFile },
         };
 
-        const result = processHookInput(input);
+        const result = claude(input);
         expect(result).toBe(true);
       });
     });
@@ -168,7 +170,7 @@ describe('auto_format', () => {
         tool_input: { file_path: testFile },
       };
 
-      const result = processHookInput(input);
+      const result = claude(input);
 
       expect(result).toBe(false);
       expect(consoleErrorSpy).toHaveBeenCalledWith(
@@ -176,6 +178,93 @@ describe('auto_format', () => {
       );
 
       consoleErrorSpy.mockRestore();
+    });
+
+    test('should leave alone an edit outside the project and the task repo', () => {
+      // e.g. the repository kyoten passes with --add-dir: its Prettier
+      // config can be code, so it must not run outside the sandbox.
+      const outside = fs.realpathSync(
+        fs.mkdtempSync(path.join(os.tmpdir(), 'fmt-claude-out-'))
+      );
+      const file = path.join(outside, 'README.md');
+      fs.writeFileSync(file, '# x');
+
+      const result = claude({
+        tool_name: 'Edit',
+        session_id: 'c-1',
+        tool_input: { file_path: file },
+      });
+
+      expect(result).toBe(false);
+      expect(spawnSync).not.toHaveBeenCalled();
+      fs.rmSync(outside, { recursive: true, force: true });
+    });
+
+    test('should not follow a symlink out of the project', () => {
+      const outside = fs.realpathSync(
+        fs.mkdtempSync(path.join(os.tmpdir(), 'fmt-claude-out-'))
+      );
+      fs.writeFileSync(path.join(outside, 'r.js'), 'x');
+      const link = path.join(testDir, 'linked');
+      fs.symlinkSync(outside, link, 'junction');
+
+      const result = claude({
+        tool_name: 'Write',
+        tool_input: { file_path: path.join(link, 'r.js') },
+      });
+
+      expect(result).toBe(false);
+      expect(spawnSync).not.toHaveBeenCalled();
+      fs.rmSync(link);
+      fs.rmSync(outside, { recursive: true, force: true });
+    });
+
+    test('should run Prettier in the project root, for a path relative to the cwd', () => {
+      fs.mkdirSync(path.join(testDir, 'sub'), { recursive: true });
+      const file = path.join(testDir, 'sub', 'rel.js');
+      fs.writeFileSync(file, 'x');
+
+      const result = claude({
+        tool_name: 'Edit',
+        cwd: path.join(testDir, 'sub'),
+        tool_input: { file_path: 'rel.js' },
+      });
+
+      expect(result).toBe(true);
+      expect(spawnSync).toHaveBeenCalledWith(
+        process.execPath,
+        [BIN, '--write', file],
+        expect.objectContaining({ cwd: testDir })
+      );
+    });
+
+    test("should format an edit in the session task's --repo", async () => {
+      const { saveState, writeSession } = await import('#utils/task/store.js');
+      const { createState } = await import('#utils/task/state.js');
+      const repo = fs.realpathSync(
+        fs.mkdtempSync(path.join(os.tmpdir(), 'fmt-claude-repo-'))
+      );
+      fs.writeFileSync(path.join(repo, 'r.js'), 'x');
+      const dir = path.join(testDir, 'tasks', 'demo-261123');
+      fs.mkdirSync(dir, { recursive: true });
+      saveState(dir, createState({ name: 'demo-261123', goal: 'G', repo }));
+      writeSession(testDir, 'cl-1', { task: 'demo-261123', engaged: true });
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      const result = claude({
+        tool_name: 'Edit',
+        session_id: 'cl-1',
+        tool_input: { file_path: path.join(repo, 'r.js') },
+      });
+
+      expect(result).toBe(true);
+      expect(spawnSync).toHaveBeenCalledWith(
+        process.execPath,
+        [BIN, '--write', path.join(repo, 'r.js')],
+        expect.objectContaining({ cwd: repo })
+      );
+      vi.restoreAllMocks();
+      fs.rmSync(repo, { recursive: true, force: true });
     });
   });
 

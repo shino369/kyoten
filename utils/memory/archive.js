@@ -2,8 +2,8 @@
  * Export and import (design §12): one `.tar.gz` with a manifest.json
  * (format, date, source machine, parts, counts, a SHA-256 per file).
  *
- * Parts: `memory` (the note log), `personalization` (the settings and the
- * user's part of AGENTS.local.md), `tasks` (task folders, without hidden
+ * Parts: `memory` (the note log), `personalization` (the settings, the
+ * per-agent personas, and the user's part of AGENTS.local.md), `tasks` (task folders, without hidden
  * ones such as .trash and .sessions), `resources` (the gitignored
  * resources/ folder). Only regular files are exported; links are skipped.
  *
@@ -22,7 +22,11 @@ import { formatLocal } from '../task/markdown.js';
 import { TASKS_DIR, readIfExists, writeFileAtomic } from '../task/store.js';
 import { refreshAfterWrite } from './context.js';
 import {
+  PERSONA_KEYS,
+  agentPersonaFile,
   normalizePersonalization,
+  personaFromMarkdown,
+  readAgentPersona,
   readPersonalization,
   storedPersona,
   syncPersonaFile,
@@ -62,6 +66,8 @@ export const MAX_UNPACKED_BYTES = 1024 ** 3;
 const LOG_PATH = `memory/${LOG_FILE}`;
 const SETTINGS_PATH = 'personalization/personalization.json';
 const INSTRUCTIONS_PATH = 'personalization/instructions.md';
+/** @param {import('./personalize.js').PersonaKey} key */
+const personaPath = (key) => `personalization/${agentPersonaFile(key)}`;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 
 /**
@@ -77,6 +83,7 @@ const SHA256_RE = /^[0-9a-f]{64}$/;
  * @property {string[]} warnings
  * @property {{ add: NoteInput[], duplicates: number, refused: number, invalid: string[] } | null} notes
  * @property {{ set: string[], kept: string[], settings: Personalization } | null} personalization
+ * @property {{ set: string[], kept: string[], texts: Record<string, string> } | null} personas per-agent personas (persona.<key>.md)
  * @property {'set' | 'kept' | 'same' | null} instructions
  * @property {string | null} instructionsText
  * @property {{ add: string[], skip: string[] } | null} tasks
@@ -188,6 +195,9 @@ export function collectExport(rootDir, { parts, tasks }) {
   }
   if (parts.includes('personalization')) {
     take(path.join(dir, 'personalization.json'), SETTINGS_PATH);
+    for (const key of PERSONA_KEYS) {
+      take(path.join(dir, agentPersonaFile(key)), personaPath(key));
+    }
     const agents = readIfExists(path.join(rootDir, AGENTS_LOCAL_FILE));
     if (agents !== null) {
       files.push({
@@ -563,6 +573,54 @@ function planPersonalization(rootDir, archive, replace, warnings) {
 }
 
 /**
+ * The per-agent personas of the archive: a key is set when it has no local
+ * persona (or with --replace), kept when yours differs.
+ *
+ * @param {string} rootDir
+ * @param {Archive} archive
+ * @param {boolean} replace
+ * @param {string[]} warnings
+ * @returns {ImportPlan['personas']}
+ */
+function planPersonas(rootDir, archive, replace, warnings) {
+  /** @type {string[]} */
+  const set = [];
+  /** @type {string[]} */
+  const kept = [];
+  /** @type {Record<string, string>} */
+  const texts = {};
+  for (const key of PERSONA_KEYS) {
+    const data = archive.files.get(personaPath(key));
+    if (!data) continue;
+    const text = data.toString('utf-8');
+    const persona = personaFromMarkdown(text);
+    if (!persona) continue;
+    const rules = findSecrets(text);
+    if (rules.length > 0) {
+      warnings.push(
+        `The imported ${key} persona looks like it holds a secret (${[...new Set(rules)].join(', ')}); skipped.`
+      );
+      continue;
+    }
+    try {
+      normalizePersonalization({ persona });
+    } catch (error) {
+      warnings.push(
+        `The imported ${key} persona skipped: ${/** @type {Error} */ (error).message}`
+      );
+      continue;
+    }
+    const local = readAgentPersona(memoryDir(rootDir), key);
+    if (local === persona) continue;
+    if (replace || local === null) {
+      set.push(key);
+      texts[key] = text;
+    } else kept.push(key);
+  }
+  return set.length > 0 || kept.length > 0 ? { set, kept, texts } : null;
+}
+
+/**
  * @param {string} rootDir
  * @param {Archive} archive
  * @param {boolean} replace
@@ -669,6 +727,9 @@ export function planImport(rootDir, archive, { include, replace }) {
     personalization: has('personalization')
       ? planPersonalization(rootDir, archive, replace, warnings)
       : null,
+    personas: has('personalization')
+      ? planPersonas(rootDir, archive, replace, warnings)
+      : null,
     ...personal,
     tasks: has('tasks') ? planTasks(rootDir, archive, warnings) : null,
     resources,
@@ -725,13 +786,20 @@ export function applyImport(
     : null;
   const instructions =
     plan.instructions === 'set' ? plan.instructionsText : null;
+  const personas = plan.personas?.set ?? [];
   const storeChanges =
     notes.length > 0 ||
     settings !== null ||
+    personas.length > 0 ||
     instructions !== null ||
     (replace && plan.notes !== null);
   const snapshot = storeChanges
-    ? takeSnapshot(rootDir, { reason: 'import', now, detail }).id
+    ? takeSnapshot(rootDir, {
+        reason: 'import',
+        now,
+        detail,
+        importedPersonas: personas,
+      }).id
     : null;
   /** @type {string[]} */
   const warnings = [];
@@ -747,6 +815,14 @@ export function applyImport(
     const written = writePersonalization(dir, settings.settings);
     // memory/persona.md follows the imported persona, so init keeps it.
     if (written.persona !== before) syncPersonaFile(dir, written.persona);
+  }
+  for (const key of personas) {
+    writeFileAtomic(
+      path.join(dir, agentPersonaFile(/** @type {any} */ (key))),
+      /** @type {NonNullable<ImportPlan['personas']>} */ (plan.personas).texts[
+        key
+      ]
+    );
   }
   if (instructions !== null) {
     const file = path.join(rootDir, AGENTS_LOCAL_FILE);
@@ -843,6 +919,19 @@ export function formatImport({ file, manifest, plan, result }) {
     lines.push(
       `  Personalization: ${parts.length > 0 ? parts.join('; ') : 'nothing to set'}`
     );
+  }
+  if (plan.personas) {
+    const parts = [
+      ...(plan.personas.set.length > 0
+        ? [`${dry ? 'would set' : 'set'} ${plan.personas.set.join(', ')}`]
+        : []),
+      ...(plan.personas.kept.length > 0
+        ? [
+            `kept ${plan.personas.kept.join(', ')} (yours; --replace overwrites)`,
+          ]
+        : []),
+    ];
+    lines.push(`  Agent personas: ${parts.join('; ')}`);
   }
   if (plan.instructions) {
     /** @type {Record<string, string>} */

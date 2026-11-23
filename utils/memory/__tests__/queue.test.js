@@ -23,6 +23,7 @@ import {
   catchUp,
   clearInbox,
   enqueue,
+  sameProviderSide,
   finishEntry,
   kickWorker,
   normalizeEntry,
@@ -74,15 +75,45 @@ const fileOf = (sub, session) =>
 
 describe('normalizeEntry', () => {
   test('should keep a valid entry', () => {
-    expect(normalizeEntry(entry())).toEqual({ ...entry(), attempts: 0 });
+    expect(normalizeEntry(entry())).toEqual({
+      ...entry(),
+      kyotenAgent: null,
+      attempts: 0,
+    });
   });
 
   test('should keep attempts and the last error', () => {
     expect(normalizeEntry(entry({ attempts: 2, error: 'timeout' }))).toEqual({
       ...entry(),
+      kyotenAgent: null,
       attempts: 2,
       error: 'timeout',
     });
+  });
+
+  test('should keep the KYOTEN_AGENT side, and read old entries as null', () => {
+    expect(normalizeEntry(entry({ kyotenAgent: 'dscc' }))?.kyotenAgent).toBe(
+      'dscc'
+    );
+    expect(normalizeEntry(entry({ kyotenAgent: 5 }))?.kyotenAgent).toBeNull();
+    expect(normalizeEntry(entry())?.kyotenAgent).toBeNull();
+  });
+
+  test('should record kyotenAgent on a queued entry', () => {
+    enqueue(dir, entry({ kyotenAgent: 'dscc' }));
+
+    expect(readQueue(dir)[0].kyotenAgent).toBe('dscc');
+  });
+
+  test.each([
+    [null, {}, true],
+    ['claude', { KYOTEN_AGENT: 'codex' }, true],
+    ['dscc', { KYOTEN_AGENT: 'dscc' }, true],
+    ['dscc', {}, false],
+    [null, { KYOTEN_AGENT: 'dscc' }, false],
+    [undefined, { KYOTEN_AGENT: 'dscc' }, false],
+  ])('sameProviderSide(%s, %j) is %s', (side, env, expected) => {
+    expect(sameProviderSide(side, env)).toBe(expected);
   });
 
   test('should default a missing working directory to null', () => {
@@ -105,7 +136,9 @@ describe('registerOpen and enqueue', () => {
   test('should record an open session', () => {
     expect(registerOpen(dir, entry())).toBe(true);
 
-    expect(readOpen(dir)).toEqual([{ ...entry(), attempts: 0 }]);
+    expect(readOpen(dir)).toEqual([
+      { ...entry(), kyotenAgent: null, attempts: 0 },
+    ]);
   });
 
   test('should refuse an invalid entry', () => {
@@ -121,7 +154,11 @@ describe('registerOpen and enqueue', () => {
 
     expect(readOpen(dir)).toEqual([]);
     expect(readQueue(dir)).toEqual([
-      { ...entry({ at: '2026-11-20T13:00:00.000Z' }), attempts: 0 },
+      {
+        ...entry({ at: '2026-11-20T13:00:00.000Z' }),
+        kyotenAgent: null,
+        attempts: 0,
+      },
     ]);
   });
 
@@ -195,7 +232,11 @@ describe('finishEntry and retryEntry', () => {
     const retry = retryEntry(dir, first, 'boom');
 
     expect(readQueue(dir)).toEqual([
-      { ...entry({ at: '2026-11-20T14:00:00.000Z' }), attempts: 0 },
+      {
+        ...entry({ at: '2026-11-20T14:00:00.000Z' }),
+        kyotenAgent: null,
+        attempts: 0,
+      },
     ]);
     expect(retry).toEqual({ attempts: 1, gaveUp: false });
   });

@@ -25,7 +25,13 @@ import { callAgent } from './agent-call.js';
 import { readConfig, savingOff } from './config.js';
 import { looksLikeInstruction } from './instructions.js';
 import { kindLabel, refreshAfterWrite, shorten } from './context.js';
-import { applyOps, extractCommand, modelFor, validateOps } from './extract.js';
+import {
+  applyOps,
+  deferredRun,
+  extractCommand,
+  modelFor,
+  validateOps,
+} from './extract.js';
 import {
   EXTRACT_DIR,
   appendInbox,
@@ -273,11 +279,11 @@ export function cleanProfile(lines) {
 }
 
 /**
- * The agent and model of the latest applied journal run. Old runs have no
- * `agent` field; they ran on claude.
+ * The agent, model, and provider side of the latest applied journal run. Old
+ * runs have no `agent` field (they ran on claude) and no `side` (not dscc).
  *
  * @param {string} dir
- * @returns {{ agent: string, model: string | null } | null}
+ * @returns {{ agent: string, model: string | null, side: 'dscc' | 'normal' } | null}
  */
 function lastRun(dir) {
   const run = readJournal(dir)
@@ -289,7 +295,19 @@ function lastRun(dir) {
   return {
     agent: typeof run.agent === 'string' ? run.agent : 'claude',
     model: typeof run.model === 'string' ? run.model : null,
+    side: run.side === 'dscc' ? 'dscc' : 'normal',
   };
+}
+
+/**
+ * Whether the journal has applied extraction runs and all came from dscc.
+ *
+ * @param {string} dir
+ * @returns {boolean}
+ */
+function onlyDsccRuns(dir) {
+  const runs = readJournal(dir).filter((item) => item.status === 'applied');
+  return runs.length > 0 && runs.every((item) => item.side === 'dscc');
 }
 
 /**
@@ -321,14 +339,31 @@ export function consolidate(deps) {
   }
   const prompt = buildConsolidationPrompt({ shown, groups });
   const last = lastRun(dir);
+  const side = deps.env.KYOTEN_AGENT === 'dscc' ? 'dscc' : 'normal';
   const agent =
     config.extractAgent ?? last?.agent ?? sessionHarness(deps.env) ?? 'claude';
   const model = modelFor({
     agent,
     configured: config.extractAgent,
     extractModel: config.extractModel,
-    ownModel: last?.agent === agent ? last.model : null,
+    // A model name only fits the provider it ran on: never from the other side.
+    ownModel: last?.agent === agent && last.side === side ? last.model : null,
   });
+  // The claude CLI sends the notes to the provider its environment names. A
+  // dscc worker may therefore consolidate with claude only when every applied
+  // extraction run came from the dscc side (runs without a `side`, and a
+  // journal without any run, count as not dscc), so a dscc-only user is
+  // consolidated while notes that came from normal sessions never go to
+  // DeepSeek; otherwise the call waits for a normal worker (still due). A
+  // normal worker always consolidates: notes from dscc sessions were already
+  // extracted on DeepSeek, and the user also uses Anthropic.
+  const deferred = deferredRun(
+    agent,
+    deps.env.KYOTEN_AGENT === 'dscc' && onlyDsccRuns(dir) ? 'dscc' : null,
+    deps.env,
+    base
+  );
+  if (deferred) return deferred;
   if (deps.dryRun) return { ...base, status: 'dry-run', agent, model, prompt };
 
   const command = extractCommand({
@@ -393,6 +428,7 @@ export function consolidate(deps) {
     status: 'consolidated',
     agent,
     model,
+    side,
     changes,
     profile: profile.lines.length,
     quarantined: checked.quarantined.length,

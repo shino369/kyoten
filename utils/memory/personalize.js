@@ -431,3 +431,82 @@ export function applyPersonaFile(dir) {
     };
   }
 }
+
+/**
+ * Per-agent personas (kyoten): memory/persona.<key>.md holds the persona of
+ * one agent, in the format of persona.md, and is the only place it is
+ * stored. The other settings (call-me, language, tone, ...) stay the default
+ * ones. Keys: dsh and dscc share `ds`.
+ */
+export const PERSONA_KEYS = /** @type {const} */ ([
+  'claude',
+  'codex',
+  'ds',
+  'agy',
+]);
+/** @typedef {typeof PERSONA_KEYS[number]} PersonaKey */
+/** Set by kyoten: the agent it started. */
+export const AGENT_ENV = 'KYOTEN_AGENT';
+/** @type {Record<string, PersonaKey>} */
+const AGENT_PERSONA_KEY = {
+  claude: 'claude',
+  codex: 'codex',
+  dsh: 'ds',
+  dscc: 'ds',
+  agy: 'agy',
+};
+
+/**
+ * @param {string | undefined} agent a KYOTEN_AGENT value
+ * @returns {PersonaKey | null} null for an unknown agent or none
+ */
+export const personaKeyFor = (agent) =>
+  agent !== undefined && Object.hasOwn(AGENT_PERSONA_KEY, agent)
+    ? AGENT_PERSONA_KEY[agent]
+    : null;
+
+/** @param {PersonaKey} key */
+export const agentPersonaFile = (key) => `persona.${key}.md`;
+
+/**
+ * The persona text of memory/persona.<key>.md, or null when the file is
+ * missing or holds only comments.
+ *
+ * @param {string} dir the memory directory
+ * @param {PersonaKey} key
+ * @returns {string | null}
+ */
+export const readAgentPersona = (dir, key) =>
+  personaFromMarkdown(
+    readIfExists(path.join(dir, agentPersonaFile(key))) ?? ''
+  ) || null;
+
+/**
+ * The keys that have a persona file with text, in PERSONA_KEYS order.
+ *
+ * @param {string} dir the memory directory
+ * @returns {PersonaKey[]}
+ */
+export const listAgentPersonas = (dir) =>
+  PERSONA_KEYS.filter((key) => readAgentPersona(dir, key) !== null);
+
+/**
+ * The settings an agent session uses: the default ones with the agent's
+ * persona, checked like any persona (budget, secrets). Null without a
+ * persona file, and when the settings or the persona are refused (the
+ * session then falls back to the default persona).
+ *
+ * @param {string} dir the memory directory
+ * @param {PersonaKey | null} key
+ * @returns {Personalization | null}
+ */
+export function agentPersonalization(dir, key) {
+  if (!key) return null;
+  const persona = readAgentPersona(dir, key);
+  if (persona === null) return null;
+  try {
+    return normalizePersonalization({ ...readPersonalization(dir), persona });
+  } catch {
+    return null;
+  }
+}

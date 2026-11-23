@@ -141,7 +141,27 @@ export function planRemoval({ rootDir, scopes, target, cwd }) {
 }
 
 /**
- * Remove trash batches older than TRASH_KEEP_MS.
+ * The first of tasks/ and tasks/.trash that exists but is not a real folder
+ * (a link, or a file), or null. A restored backup could track either as a
+ * link, and following one would move files to, and prune folders at, the
+ * link's target.
+ *
+ * @param {string} rootDir
+ * @returns {string | null} the path relative to rootDir
+ */
+function unusableTrash(rootDir) {
+  for (const rel of [path.dirname(TRASH_DIR), TRASH_DIR]) {
+    const stat = fs.lstatSync(path.join(rootDir, rel), {
+      throwIfNoEntry: false,
+    });
+    if (stat && (stat.isSymbolicLink() || !stat.isDirectory())) return rel;
+  }
+  return null;
+}
+
+/**
+ * Remove trash batches older than TRASH_KEEP_MS. Does nothing when tasks/ or
+ * tasks/.trash is not a real folder.
  *
  * @param {string} rootDir
  * @param {number} nowMs
@@ -149,7 +169,7 @@ export function planRemoval({ rootDir, scopes, target, cwd }) {
  */
 export function pruneTrash(rootDir, nowMs) {
   const trash = path.join(rootDir, TRASH_DIR);
-  if (!fs.existsSync(trash)) return 0;
+  if (!fs.existsSync(trash) || unusableTrash(rootDir)) return 0;
   let removed = 0;
   for (const entry of fs.readdirSync(trash, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
@@ -203,6 +223,12 @@ export function trashPaths({ rootDir, scopes, paths, cwd, now }) {
   const plans = paths.map((target) =>
     planRemoval({ rootDir, scopes, target, cwd })
   );
+  const unusable = unusableTrash(rootDir);
+  if (unusable) {
+    throw new Error(
+      `${unusable} is not a folder (a link?), so nothing was moved.\nFix: ask the user to check ${path.join(rootDir, unusable)} (where it points) and make it a plain folder`
+    );
+  }
   pruneTrash(rootDir, now.getTime());
   const base = path.join(rootDir, TRASH_DIR, stamp(now));
   let batch = base;

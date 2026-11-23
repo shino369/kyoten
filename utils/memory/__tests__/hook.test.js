@@ -761,6 +761,23 @@ describe('extraction hooks', () => {
     expect(kick).not.toHaveBeenCalled();
   });
 
+  test('should record the KYOTEN_AGENT side on open and queued entries', () => {
+    lifecycle('SessionStart', {}, { env: { KYOTEN_AGENT: 'dscc' } });
+
+    expect(readOpen(dir)[0].kyotenAgent).toBe('dscc');
+
+    lifecycle('SessionEnd', {}, { env: { KYOTEN_AGENT: 'dscc' } });
+
+    expect(readQueue(dir)[0].kyotenAgent).toBe('dscc');
+  });
+
+  test('should record no side for a session without KYOTEN_AGENT', () => {
+    lifecycle('SessionStart');
+    lifecycle('SessionEnd');
+
+    expect(readQueue(dir)[0].kyotenAgent).toBeNull();
+  });
+
   test('should register and queue a Codex session with its rollout', () => {
     lifecycle('SessionStart', {}, { harness: 'codex' });
 
@@ -1157,4 +1174,219 @@ test('a warm recall on 1,000 notes should take well under 100 ms', () => {
   const elapsed = performance.now() - started;
 
   expect(elapsed).toBeLessThan(100);
+});
+
+describe('per-agent personas', () => {
+  const PERSONAS = {
+    claude: 'claude',
+    codex: 'codex',
+    dsh: 'ds',
+    dscc: 'ds',
+    agy: 'agy',
+  };
+  const HARNESS = {
+    claude: 'claude',
+    codex: 'codex',
+    dsh: 'dsh',
+    dscc: 'claude',
+    agy: 'agy',
+  };
+  const OVERRIDE = (/** @type {string} */ agent) =>
+    `[Persona] This ${agent} session has its own persona: apply the personalization below instead of the Personalization section.`;
+  const keyOf = (/** @type {string} */ agent) =>
+    PERSONAS[/** @type {keyof typeof PERSONAS} */ (agent)];
+  const harnessOf = (/** @type {string} */ agent) =>
+    /** @type {any} */ (HARNESS[/** @type {keyof typeof HARNESS} */ (agent)]);
+
+  /** @param {string} agent */
+  const startAs = (agent, source = 'startup') =>
+    context(
+      hook(
+        { hook_event_name: 'SessionStart', source },
+        { harness: harnessOf(agent), env: { KYOTEN_AGENT: agent } }
+      )
+    );
+  /** @param {string} agent */
+  const promptAs = (agent) =>
+    context(
+      hook(
+        {
+          hook_event_name: 'UserPromptSubmit',
+          prompt: 'what a lovely morning',
+        },
+        { harness: harnessOf(agent), env: { KYOTEN_AGENT: agent } }
+      )
+    );
+  /** @param {string} key @param {string} text */
+  const persona = (key, text) =>
+    fs.writeFileSync(
+      path.join(dir, `persona.${key}.md`),
+      `<!-- note -->\n${text}\n`
+    );
+
+  beforeEach(() => {
+    writePersonalization(dir, {
+      persona: 'Default persona.',
+      language: '日本語',
+    });
+    initLocal(root);
+  });
+
+  test.each(['codex', 'agy'])(
+    'should render the %s persona in the injected core instead of the default',
+    (agent) => {
+      persona(keyOf(agent), 'Own persona.');
+
+      const text = startAs(agent);
+
+      expect(text).toContain('- Persona: Own persona.');
+      expect(text).toContain('- Language: 日本語');
+      expect(text).not.toContain('Default persona.');
+      expect(text).toContain('## Memory');
+    }
+  );
+
+  test.each(['claude', 'dscc', 'dsh'])(
+    'should add the %s persona on top of the native core',
+    (agent) => {
+      persona(keyOf(agent), 'Own persona.');
+
+      const text = startAs(agent);
+
+      expect(text.startsWith(OVERRIDE(agent))).toBe(true);
+      expect(text).toContain('- Persona: Own persona.');
+      expect(text).not.toContain('## Memory');
+    }
+  );
+
+  test('should share one file between dsh and dscc', () => {
+    persona('ds', 'Shared.');
+
+    expect(startAs('dsh')).toContain('- Persona: Shared.');
+    expect(startAs('dscc')).toContain('- Persona: Shared.');
+    expect(startAs('claude')).toBe('');
+  });
+
+  test.each(Object.keys(PERSONAS))(
+    'should leave %s on the default persona without its file',
+    (agent) => {
+      persona('other', 'Not an agent file.');
+
+      const text = startAs(agent);
+
+      expect(text).not.toContain('has its own persona');
+      if (['codex', 'agy'].includes(agent)) {
+        expect(text).toContain('- Persona: Default persona.');
+      } else {
+        expect(text).toBe('');
+      }
+    }
+  );
+
+  test('should ignore a file with only comments', () => {
+    fs.writeFileSync(path.join(dir, 'persona.codex.md'), '<!-- nothing -->\n');
+
+    expect(startAs('codex')).toContain('- Persona: Default persona.');
+  });
+
+  test('should fall back to the default when the persona exceeds the budget', () => {
+    persona('codex', 'x'.repeat(2000));
+
+    expect(startAs('codex')).toContain('- Persona: Default persona.');
+  });
+
+  test('should ignore an unknown KYOTEN_AGENT and a missing one', () => {
+    persona('claude', 'Own persona.');
+    const start = (/** @type {NodeJS.ProcessEnv} */ env) =>
+      context(
+        hook(
+          { hook_event_name: 'SessionStart', source: 'startup' },
+          { harness: 'codex', env }
+        )
+      );
+
+    expect(start({ KYOTEN_AGENT: 'toString' })).toContain(
+      '- Persona: Default persona.'
+    );
+    expect(start({})).toContain('- Persona: Default persona.');
+    expect(startAs('claude')).toContain('Own persona.');
+  });
+
+  test.each(['claude', 'codex', 'dsh'])(
+    'should inject nothing persona-related for %s while personalization is off',
+    (agent) => {
+      persona(keyOf(agent), 'Own persona.');
+      writeConfig(dir, { ...DEFAULT_CONFIG, personalizationEnabled: false });
+
+      const text = startAs(agent);
+
+      expect(text).toMatch(/personalization is off/i);
+      expect(text).not.toContain('Own persona.');
+      expect(text).not.toContain('has its own persona');
+      expect(promptAs(agent)).not.toContain('Own persona');
+      expect(promptAs(agent)).toMatch(/personalization is off/i);
+    }
+  );
+
+  test('should name the agent persona in the prompt line', () => {
+    persona('ds', 'Shared.');
+
+    expect(promptAs('dscc')).toBe(
+      "[Persona] Every message to the user, progress notes between tool calls included, follows this session's dscc persona from the session start context. Language: 日本語"
+    );
+    expect(promptAs('claude')).toBe(`${PERSONA_REMINDER} Language: 日本語`);
+  });
+
+  test('should remind of the agent persona without a language and without default settings', () => {
+    writePersonalization(dir, {});
+    persona('agy', 'Own persona.');
+
+    expect(promptAs('agy')).toBe(
+      "[Persona] Every message to the user, progress notes between tool calls included, follows this session's agy persona from the session start context."
+    );
+  });
+
+  test('should use the main core for a linked worktree without a core block', () => {
+    persona('claude', 'Own persona.');
+    const gitDir = path.join(root, '.git', 'worktrees', 'linked');
+    fs.mkdirSync(gitDir, { recursive: true });
+    fs.writeFileSync(path.join(gitDir, 'commondir'), '../..\n');
+    const worktree = path.join(root, 'linked');
+    fs.mkdirSync(worktree);
+    fs.writeFileSync(path.join(worktree, '.git'), `gitdir: ${gitDir}\n`);
+    fs.writeFileSync(
+      path.join(worktree, CLAUDE_LOCAL_FILE),
+      '@AGENTS.local.md\n'
+    );
+    const start = () =>
+      context(
+        handleHook(
+          { hook_event_name: 'SessionStart', source: 'startup', cwd: worktree },
+          {
+            rootDir: worktree,
+            harness: 'claude',
+            env: { KYOTEN_AGENT: 'claude' },
+            now: NOW,
+            kick,
+          }
+        )
+      );
+
+    const text = start();
+    copyLocalFiles(root, worktree);
+
+    expect(text).toContain('## Memory');
+    expect(text).toContain('- Persona: Own persona.');
+    expect(start()).toContain(OVERRIDE('claude'));
+  });
+
+  test('should use the main core when CLAUDE.local.md is missing', () => {
+    persona('claude', 'Own persona.');
+    fs.rmSync(path.join(root, CLAUDE_LOCAL_FILE));
+
+    const text = startAs('claude');
+
+    expect(text).toContain('## Memory');
+    expect(text).toContain('- Persona: Own persona.');
+  });
 });

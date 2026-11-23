@@ -261,9 +261,10 @@ export function applyCoreBlock(text, block) {
  *
  * @param {string} rootDir
  * @param {import('./config.js').MemoryConfig} [knownConfig] the caller's config snapshot
+ * @param {Personalization | null} [agentSettings] a kyoten agent's settings (its own persona), rendered instead of the default ones; the returned `personalization` stays the default
  * @returns {{ block: string, budget: number, personalization: Personalization, config: import('./config.js').MemoryConfig, warnings: string[] }}
  */
-export function renderStored(rootDir, knownConfig) {
+export function renderStored(rootDir, knownConfig, agentSettings = null) {
   const dir = memoryDir(rootDir);
   /** @type {string[]} */
   const warnings = [];
@@ -295,7 +296,9 @@ export function renderStored(rootDir, knownConfig) {
   const budget = config.budget ?? CORE_BUDGET;
   const rendered = renderCore({
     notes: loadNotes(dir).notes,
-    personalization: config.personalizationEnabled ? personalization : {},
+    personalization: config.personalizationEnabled
+      ? (agentSettings ?? personalization)
+      : {},
     profile: readIfExists(path.join(dir, PROFILE_FILE)),
     budget,
   });

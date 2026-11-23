@@ -9,7 +9,12 @@ import { sessionFile as memorySessionFile } from '#utils/memory/hook.js';
 import { readOpen } from '#utils/memory/queue.js';
 import { memoryDir } from '#utils/memory/store.js';
 import { readSession, writeSession } from '#utils/task/store.js';
-import { processHookInput, registryLine } from '../session_start.js';
+import {
+  callerLine,
+  processHookInput,
+  registryLine,
+  workspaceLine,
+} from '../session_start.js';
 
 /** @type {string} */
 let root;
@@ -320,6 +325,185 @@ describe('session_start processHookInput', () => {
 
     expect(output?.hookSpecificOutput.additionalContext).toContain(
       'Could not read the active task — Error: state.json is not valid JSON'
+    );
+  });
+});
+
+describe('session_start callerLine', () => {
+  /** @param {string} dir */
+  const gitRepo = (dir) => {
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+    return dir;
+  };
+
+  test('should point at the git repository kyoten was started from', () => {
+    const repo = gitRepo(path.join(root, 'project'));
+    const nested = path.join(repo, 'src');
+    fs.mkdirSync(nested);
+
+    const line = callerLine(path.join(root, 'home'), {
+      KYOTEN_CALLER_DIR: nested,
+    });
+
+    expect(line).toContain(`[kyoten] Started from ${path.resolve(repo)}`);
+    expect(line).toContain(`--repo "${path.resolve(repo)}"`);
+  });
+
+  test('should say the repository is already added when kyoten added it', () => {
+    const repo = gitRepo(path.join(root, 'project'));
+
+    const line = callerLine(path.join(root, 'home'), {
+      KYOTEN_CALLER_DIR: repo,
+      KYOTEN_ADD_DIR: repo,
+    });
+
+    expect(line).toContain('readable and writable');
+    expect(line).toContain(`--repo "${path.resolve(repo)}"`);
+  });
+
+  test('should keep the plain text when KYOTEN_ADD_DIR names another folder', () => {
+    const repo = gitRepo(path.join(root, 'project'));
+
+    const line = callerLine(path.join(root, 'home'), {
+      KYOTEN_CALLER_DIR: repo,
+      KYOTEN_ADD_DIR: path.join(root, 'elsewhere'),
+    });
+
+    expect(line).not.toContain('readable and writable');
+    expect(line).toContain('work on it through a task');
+  });
+
+  test('should stay quiet without KYOTEN_CALLER_DIR', () => {
+    expect(callerLine(root, {})).toBeNull();
+  });
+
+  test('should stay quiet outside a git repository', () => {
+    const plain = path.join(root, 'plain');
+    fs.mkdirSync(plain);
+
+    expect(
+      callerLine(path.join(root, 'home'), { KYOTEN_CALLER_DIR: plain })
+    ).toBeNull();
+  });
+
+  test('should stay quiet when started from the workspace itself', () => {
+    const home = gitRepo(path.join(root, 'home'));
+
+    expect(callerLine(home, { KYOTEN_CALLER_DIR: home })).toBeNull();
+  });
+
+  test.runIf(process.platform === 'win32' || process.platform === 'darwin')(
+    'should match workspace and KYOTEN_ADD_DIR case-insensitively on Windows and macOS',
+    () => {
+      const home = gitRepo(path.join(root, 'MyHome'));
+      expect(
+        callerLine(home.toLowerCase(), {
+          KYOTEN_CALLER_DIR: home.toUpperCase(),
+        })
+      ).toBeNull();
+
+      const repo = gitRepo(path.join(root, 'MyProject'));
+      const line = callerLine(home, {
+        KYOTEN_CALLER_DIR: repo.toLowerCase(),
+        KYOTEN_ADD_DIR: repo.toUpperCase(),
+      });
+      expect(line).toContain('readable and writable');
+    }
+  );
+
+  test('should stay quiet when the lookup fails', () => {
+    vi.spyOn(fs, 'statSync').mockImplementation(() => {
+      throw new Error('EACCES');
+    });
+
+    expect(callerLine(root, { KYOTEN_CALLER_DIR: root })).toBeNull();
+    vi.restoreAllMocks();
+  });
+
+  test('should default to the process environment', () => {
+    expect(callerLine(root)).toBeNull();
+  });
+
+  test('should add the hint to the session context', () => {
+    const output = processHookInput(
+      {},
+      {
+        rootDir: root,
+        brief: () => '',
+        tools: () => null,
+        caller: () => '[kyoten] hint',
+      }
+    );
+
+    expect(output?.hookSpecificOutput.additionalContext).toBe('[kyoten] hint');
+  });
+});
+
+describe('session_start workspaceLine', () => {
+  test('should warn a DSH session that runs in another workspace', () => {
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'session-other-'));
+    try {
+      const line = workspaceLine(root, 'dsh', other);
+
+      expect(line).toBe(
+        `[Workspace] This DSH session's workspace is ${other}, not ${root}: the hooks, tasks, and memory act on ${root}, while AGENTS.md and skills come from ${other}. Tell the user before acting: to use this workspace's rules, choose ${root} in the DSH Web UI (Choose workspace).`
+      );
+    } finally {
+      fs.rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  test('should compare real paths', () => {
+    const link = `${root}-link`;
+    fs.symlinkSync(root, link, 'junction');
+    try {
+      expect(workspaceLine(root, 'dsh', link)).toBeNull();
+    } finally {
+      fs.unlinkSync(link);
+    }
+  });
+
+  test.runIf(process.platform === 'win32' || process.platform === 'darwin')(
+    'should compare workspace paths case-insensitively on Windows and macOS',
+    () => {
+      expect(
+        workspaceLine(root.toLowerCase(), 'dsh', root.toUpperCase())
+      ).toBeNull();
+    }
+  );
+
+  test('should compare a folder that does not exist by its path', () => {
+    expect(workspaceLine(root, 'dsh', path.join(root, 'gone'))).toContain(
+      'This DSH session'
+    );
+  });
+
+  test.each([
+    ['claude', '/elsewhere'],
+    ['dsh', undefined],
+    ['dsh', ''],
+    ['dsh', 7],
+  ])('should stay silent for %s with cwd %j', (harness, cwd) => {
+    expect(
+      workspaceLine(
+        root,
+        /** @type {any} */ (harness),
+        /** @type {any} */ (cwd)
+      )
+    ).toBeNull();
+  });
+
+  test('should add the line to the DSH session start context', () => {
+    const other = path.join(root, 'nested');
+    fs.mkdirSync(other);
+
+    const output = processHookInput(
+      { source: 'startup', session_id: 'dsh-1', cwd: other },
+      { rootDir: root, harness: 'dsh', tools: () => null }
+    );
+
+    expect(output?.hookSpecificOutput.additionalContext).toContain(
+      `[Workspace] This DSH session's workspace is ${other}`
     );
   });
 });

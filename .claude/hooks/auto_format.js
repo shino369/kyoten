@@ -10,12 +10,10 @@
  *
  * Started with `--harness claude|codex|dsh`. Never blocks: exit 0 always.
  */
-import fs from 'fs';
 import path from 'path';
 import {
   flushFormatQueue,
   formatTargets,
-  isFormattable,
   prettierBin,
   queueFiles,
   runPrettier,
@@ -33,42 +31,39 @@ import { ROOT_DIR } from '#utils/workspace-config.js';
 export { prettierBin, runPrettier };
 
 /**
- * Claude Code: format an Edit or Write target.
+ * Claude Code: format an Edit or Write target, under the same rule as the
+ * other harnesses: only inside the project or the session task's --repo.
+ * Prettier loads the config of the file's repository, which can be code, so
+ * an edit anywhere else (such as the repository kyoten passes with
+ * --add-dir) is left alone.
  *
- * @param {{ tool_name: string, tool_input?: { file_path?: string } }} input
+ * @param {{ tool_name: string, session_id?: string, cwd?: string, tool_input?: { file_path?: string } }} input
+ * @param {{ rootDir?: string, env?: NodeJS.ProcessEnv }} [options]
  * @returns {boolean}
  */
-export function processHookInput(input) {
-  const toolName = input.tool_name;
+export function processHookInput(
+  input,
+  { rootDir = ROOT_DIR, env = process.env } = {}
+) {
   const filePath = input.tool_input?.file_path;
+  if (!['Edit', 'Write'].includes(input.tool_name) || !filePath) return false;
 
-  // Only process Edit and Write operations
-  if (!['Edit', 'Write'].includes(toolName)) {
-    return false;
-  }
-
-  // Check if file path exists
-  if (!filePath) {
-    return false;
-  }
-
-  // Check if file is formattable
-  if (!isFormattable(filePath)) {
-    return false;
-  }
-
-  // Check if file actually exists
-  if (!fs.existsSync(filePath)) {
-    return false;
-  }
-
-  // Run prettier
-  if (runPrettier(filePath)) {
-    console.log(`✓ Formatted ${path.basename(filePath)} with prettier`);
-    return true;
-  }
-
-  return false;
+  const dir = projectDir({ harness: 'claude', env, rootDir });
+  const extraRoots = taskRepoRoots(rootDir, input.session_id);
+  const targets = formatTargets([filePath], {
+    cwd: input.cwd,
+    projectDir: dir,
+    extraRoots,
+  });
+  // No session: Claude Code queues nothing, so only `targets` are formatted.
+  const formatted = flushFormatQueue(null, {
+    projectDir: dir,
+    extraRoots,
+    extra: targets,
+  });
+  if (formatted.length === 0) return false;
+  console.log(`✓ Formatted ${path.basename(filePath)} with prettier`);
+  return true;
 }
 
 /**

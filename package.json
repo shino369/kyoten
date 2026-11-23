@@ -1,8 +1,12 @@
 {
   "name": "kyoten",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
-  "description": "Kyoten (拠点) — a multi-agent personal workspace with shared hooks, tasks, local memory, skills, and quality gates",
+  "description": "kyoten (拠点): a home base for coding agents (Claude Code, Codex, DeepSeek, Antigravity) with shared rules, tasks, memory, skills, hooks, and quality gates",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shino369/kyoten.git"
+  },
   "type": "module",
   "imports": {
     "#utils/*": "./utils/*"
@@ -32,7 +36,9 @@
     "swarm": "node utils/swarm/cli.js",
     "agent": "node utils/agent/cli.js",
     "tools": "node utils/tools/cli.js",
-    "harness": "node utils/harness/cli.js"
+    "harness": "node utils/harness/cli.js",
+    "kyoten": "node utils/kyoten/cli.js",
+    "kyoten:pack": "node utils/kyoten/pack.js"
   },
   "keywords": [],
   "author": "shino369",

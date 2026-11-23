@@ -97,6 +97,104 @@ describe('listSnapshots', () => {
   test('should list nothing before the first snapshot', () => {
     expect(listSnapshots(root)).toEqual([]);
   });
+
+  test('should skip a meta.json whose id is not its folder name', () => {
+    const dir = path.join(root, 'memory', SNAPSHOTS_DIR, 'planted');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'meta.json'),
+      JSON.stringify({ id: '../../../victim', at: NOW.toISOString() })
+    );
+
+    expect(listSnapshots(root)).toEqual([]);
+  });
+
+  test('should skip a snapshot folder that is a link', () => {
+    const { id } = takeSnapshot(root, { reason: 'import', now: NOW });
+    const elsewhere = path.join(root, 'elsewhere');
+    fs.renameSync(path.join(root, 'memory', SNAPSHOTS_DIR, id), elsewhere);
+    fs.symlinkSync(
+      elsewhere,
+      path.join(root, 'memory', SNAPSHOTS_DIR, id),
+      'junction'
+    );
+
+    expect(listSnapshots(root)).toEqual([]);
+  });
+});
+
+describe('snapshot pruning', () => {
+  /** @param {number} count snapshots, one second apart */
+  const takeMany = (count) => {
+    for (let i = 0; i < count; i++) {
+      takeSnapshot(root, {
+        reason: 'extract',
+        now: new Date(NOW.getTime() + (i + 1) * 1000),
+      });
+    }
+  };
+
+  test('should never remove a folder outside the snapshots named by a meta.json id', () => {
+    const victim = path.join(root, 'victim');
+    fs.mkdirSync(victim);
+    fs.writeFileSync(path.join(victim, 'keep.txt'), 'x');
+    const planted = path.join(root, 'memory', SNAPSHOTS_DIR, 'planted');
+    fs.mkdirSync(planted, { recursive: true });
+    fs.writeFileSync(
+      path.join(planted, 'meta.json'),
+      JSON.stringify({ id: '../../victim', at: '2000-01-01T00:00:00.000Z' })
+    );
+
+    takeMany(MAX_SNAPSHOTS + 1);
+
+    expect(fs.existsSync(path.join(victim, 'keep.txt'))).toBe(true);
+  });
+
+  test('should refuse to write or prune through a snapshots folder that is a link', () => {
+    const target = path.join(root, 'target');
+    fs.mkdirSync(path.join(target, 'old'), { recursive: true });
+    fs.writeFileSync(
+      path.join(target, 'old', 'meta.json'),
+      JSON.stringify({ id: 'old', at: '2000-01-01T00:00:00.000Z' })
+    );
+    fs.symlinkSync(
+      target,
+      path.join(root, 'memory', SNAPSHOTS_DIR),
+      'junction'
+    );
+
+    expect(() => takeSnapshot(root, { reason: 'import', now: NOW })).toThrow(
+      /not a folder[\s\S]*Fix:/
+    );
+    expect(listSnapshots(root)).toEqual([]);
+    expect(fs.readdirSync(target)).toEqual(['old']);
+  });
+
+  test('should refuse to write or prune through a memory/ folder that is a link', () => {
+    const target = path.join(root, 'target');
+    fs.mkdirSync(path.join(target, SNAPSHOTS_DIR, 'old'), { recursive: true });
+    fs.writeFileSync(
+      path.join(target, SNAPSHOTS_DIR, 'old', 'meta.json'),
+      JSON.stringify({ id: 'old', at: '2000-01-01T00:00:00.000Z' })
+    );
+    fs.rmSync(path.join(root, 'memory'), { recursive: true, force: true });
+    fs.symlinkSync(target, path.join(root, 'memory'), 'junction');
+
+    expect(() => takeSnapshot(root, { reason: 'import', now: NOW })).toThrow(
+      /not a folder[\s\S]*Fix:/
+    );
+    expect(listSnapshots(root)).toEqual([]);
+    expect(fs.readdirSync(path.join(target, SNAPSHOTS_DIR))).toEqual(['old']);
+  });
+
+  test('should refuse when memory/snapshots is a regular file', () => {
+    fs.writeFileSync(path.join(root, 'memory', SNAPSHOTS_DIR), 'not a dir');
+
+    expect(() => takeSnapshot(root, { reason: 'import', now: NOW })).toThrow(
+      /not a folder[\s\S]*Fix:/
+    );
+    expect(listSnapshots(root)).toEqual([]);
+  });
 });
 
 describe('snapshot upkeep', () => {

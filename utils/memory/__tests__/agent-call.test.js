@@ -6,7 +6,7 @@ import { INNER_LOOP_ENV } from '../../task/loop.js';
 import {
   AGENT_CALL_TIMEOUT_MS,
   CALL_AGENTS,
-  CLAUDE_SETTINGS_FILE,
+  SETTINGS_FILE,
   callAgent,
   headlessCommand,
   jsonObjectOf,
@@ -305,11 +305,57 @@ describe('callAgent', () => {
     );
 
     const file = args[args.indexOf('--settings') + 1];
-    expect(file).toBe(CLAUDE_SETTINGS_FILE);
+    expect(file).toBe(SETTINGS_FILE);
     expect(args.filter((arg) => /["!%]/.test(arg))).toEqual([]);
     expect(JSON.parse(settings)).toEqual({ disableAllHooks: true });
     expect(fs.existsSync(path.join(jobDir, file))).toBe(false);
     expect(claude.args).toContain('{"disableAllHooks":true}');
+  });
+
+  test('should pass agy settings as a quote-free relative filename', () => {
+    const trickyTmp = path.join(root, 'a!b%c');
+    fs.mkdirSync(trickyTmp);
+    const agy = headlessCommand({ agent: 'agy', rootDir: root });
+    /** @type {string[]} */
+    let args = [];
+    let jobDir = '';
+    let settings = '';
+    const runAgent = vi.fn((/** @type {any} */ input) => {
+      args = input.command.args;
+      jobDir = input.cwd;
+      settings = fs.readFileSync(
+        path.join(input.cwd, args[args.lastIndexOf('--settings') + 1]),
+        'utf-8'
+      );
+      return { code: 0, signal: null, stdout: 'a', output: 'a', durationMs: 1 };
+    });
+
+    callAgent(
+      { ...deps(/** @type {any} */ (runAgent)), tmpdir: () => trickyTmp },
+      agy,
+      'P'
+    );
+
+    const file = args[args.lastIndexOf('--settings') + 1];
+    expect(file).toBe(SETTINGS_FILE);
+    expect(args.filter((arg) => /["!%]/.test(arg))).toEqual([]);
+    expect(JSON.parse(settings)).toEqual({
+      toolPermission: 'strict',
+      permissions: {
+        deny: [
+          'command(*)',
+          'write_file(*)',
+          'read_file(*)',
+          'read_url(*)',
+          'execute_url(*)',
+          'mcp(*)',
+        ],
+      },
+    });
+    expect(fs.existsSync(path.join(jobDir, file))).toBe(false);
+    expect(agy.args[agy.args.lastIndexOf('--settings') + 1]).toContain(
+      '"toolPermission":"strict"'
+    );
   });
 
   test('should rewrite the isolation --settings flag when the command already has one', () => {
@@ -333,7 +379,7 @@ describe('callAgent', () => {
     callAgent(deps(/** @type {any} */ (runAgent)), withPrefix, 'P');
 
     expect(args.slice(0, 2)).toEqual(['--settings', '/path/base.json']);
-    expect(args[args.lastIndexOf('--settings') + 1]).toBe(CLAUDE_SETTINGS_FILE);
+    expect(args[args.lastIndexOf('--settings') + 1]).toBe(SETTINGS_FILE);
     expect(args.filter((arg) => arg.includes('"'))).toEqual([]);
     expect(JSON.parse(settings)).toEqual({ disableAllHooks: true });
   });
@@ -346,19 +392,6 @@ describe('callAgent', () => {
 
     expect(/** @type {any} */ (runAgent.mock.calls[0])[0].command).toEqual(
       bare
-    );
-  });
-
-  test('should point agy at another agent when a .cmd shim refuses its JSON settings', () => {
-    const refusal =
-      '"{}" cannot be passed safely to a Windows .cmd/.bat shim (it contains " % ! or a line break).\nFix: pass it on stdin or in a file instead';
-    const runAgent = vi.fn(() => {
-      throw new Error(refusal);
-    });
-    const agy = headlessCommand({ agent: 'agy', rootDir: root });
-
-    expect(() => callAgent(deps(runAgent), agy, 'P')).toThrow(
-      /Fix: pnpm memory set --extract-agent claude\nFix: pnpm memory set --extract-agent codex\nFix: pnpm memory set --extract-agent dsh\n\(agy runs only through a native agy\.exe/
     );
   });
 

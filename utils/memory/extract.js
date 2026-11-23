@@ -51,6 +51,7 @@ import {
   readOffsets,
   readQueue,
   retryEntry,
+  sameProviderSide,
   tryLock,
   writeAnnounced,
   writeOffset,
@@ -439,6 +440,40 @@ export function formatChange(change) {
 const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 /**
+ * Why a job was left for a worker on the other provider side.
+ *
+ * @param {Run} run
+ * @param {string} name
+ */
+function deferredMessage(run, name) {
+  if (run.job === 'consolidation') {
+    return 'Deferred the consolidation: this worker runs on dscc and some notes came from other sessions; run this from a session that is not dscc.';
+  }
+  return run.side === 'dscc'
+    ? `Deferred ${name}: it ran on dscc; run this from a dscc session.`
+    : `Deferred ${name}: it did not run on dscc; run this from a session that is not dscc.`;
+}
+
+/**
+ * The run for a job that the claude CLI would send to the wrong provider
+ * (nothing is changed or journaled), or null when it may go ahead.
+ *
+ * @param {string} agent the agent that would make the call
+ * @param {string | null} kyotenAgent the side of the transcript (null: not dscc)
+ * @param {NodeJS.ProcessEnv} env the worker's environment
+ * @param {Record<string, unknown>} base
+ * @returns {Run | null}
+ */
+export function deferredRun(agent, kyotenAgent, env, base) {
+  if (agent !== 'claude' || sameProviderSide(kyotenAgent, env)) return null;
+  return {
+    ...base,
+    status: 'deferred',
+    side: kyotenAgent === 'dscc' ? 'dscc' : 'normal',
+  };
+}
+
+/**
  * What a run did, for `pnpm memory extract`.
  *
  * @param {Run} run
@@ -505,6 +540,7 @@ export function formatRun(run) {
     empty: `Nothing new in ${session}.`,
     nothing: 'Nothing to consolidate yet.',
   };
+  if (run.status === 'deferred') return [deferredMessage(run, name)];
   return [skipped[run.status]];
 }
 
@@ -567,11 +603,23 @@ export function extractEntry(entry, deps) {
     return run;
   };
 
+  // The claude CLI sends the transcript to whatever provider its environment
+  // names, so a dscc session and a normal one are never mixed. Deferred:
+  // the entry stays queued, untouched, for a worker of the matching side.
+  const config = readConfig(dir);
+  const agent = config.extractAgent ?? harness;
+  const off = savingOff(config, session);
+  if (!off) {
+    const deferred = deferredRun(agent, entry.kyotenAgent, deps.env, base);
+    if (deferred) return deferred;
+  }
+
   const from = readOffsets(dir)[session]?.offset ?? 0;
   const chunk = readNewLines(transcript, from);
   if (!chunk) return settle({ ...base, status: 'missing' }, null);
   const offRun = { ...base, status: 'off', from: chunk.start, to: chunk.end };
-  if (savingOff(readConfig(dir), session)) return settle(offRun, chunk.end);
+  if (off || savingOff(readConfig(dir), session))
+    return settle(offRun, chunk.end);
   if (!chunk.text) return settle({ ...base, status: 'empty' }, null);
   const condensed = TRANSCRIPT_ADAPTERS[
     /** @type {keyof typeof TRANSCRIPT_ADAPTERS} */ (harness)
@@ -591,12 +639,9 @@ export function extractEntry(entry, deps) {
   const { notes, index } = loadIndex(dir);
   const related = relatedNotes(notes, index, sessionText, { repo });
   const prompt = buildPrompt({ session: sessionText, related, repo });
-  // The extractor is the configured agent, else the session's own CLI.
   // `extractModel` pairs with the configured agent (claude when none is
   // set); otherwise only the session's own model name, and only when the
   // extractor is the session's own CLI, is passed on.
-  const config = readConfig(dir);
-  const agent = config.extractAgent ?? harness;
   const model = modelFor({
     agent,
     configured: config.extractAgent,
@@ -638,6 +683,7 @@ export function extractEntry(entry, deps) {
     {
       ...base,
       status: 'applied',
+      side: entry.kyotenAgent === 'dscc' ? 'dscc' : 'normal',
       ...range,
       agent,
       model,

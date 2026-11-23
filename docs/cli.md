@@ -8,6 +8,7 @@ Run `pnpm docs:cli` to refresh this reference from the workspace CLI help. Run `
 
 - [`pnpm agent`](#pnpm-agent)
 - [`pnpm harness`](#pnpm-harness)
+- [`pnpm kyoten`](#pnpm-kyoten)
 - [`pnpm loop`](#pnpm-loop)
 - [`pnpm memory`](#pnpm-memory)
 - [`pnpm skills:install`](#pnpm-skillsinstall)
@@ -51,6 +52,72 @@ Usage:
   pnpm harness sync    write the Codex/DSH/Antigravity files generated from utils/harness/hooks.js
   pnpm harness check   fail when a generated file or .claude/settings.json hooks differ from it
   pnpm harness help    show this help (the default)
+```
+
+## `pnpm kyoten`
+
+```text
+Usage: kyoten [--home <dir>] [--no-add-dir] [<agent>] [agent args…]
+       kyoten [--home <dir>] <command> [options]
+
+kyoten 0.2.0 — start a coding agent in your kyoten workspace (the home)
+
+Agents (the first word, default claude; --<agent> works too)
+  claude    Claude Code
+  codex     OpenAI Codex CLI
+  dsh       DeepSeek harness: dsh <profile> --patch .dsh/workspace.patch.yml
+            (profile: the first argument if it is not an option; default web)
+  dscc      Claude Code on the DeepSeek API
+  agy       Antigravity CLI
+
+Everything after the agent goes to it unchanged; kyoten adds no permission
+flags. Started inside a git repository outside the home, claude, dscc, codex,
+and agy also get --add-dir=<repository>, so they can edit it (--no-add-dir, or
+"addDir": false in the config, turns that off). To give Claude a word that
+is a kyoten command: kyoten claude <word>
+
+Commands
+  init [<dir>] [--no-setup] [--memory on|off]
+            Create a home (default ~/.kyoten) and install it; with <dir>,
+            also make it the default home (an existing kyoten workspace
+            is kept as it is). --no-setup: skip pnpm install and setup.
+            --memory: automatic memory saving in the new home (asked in a
+            terminal; default off)
+  update [--no-setup]
+            Merge a newer kyoten snapshot into a home kyoten created
+  doctor    Check prerequisites, agents, and the home
+  run <script> [args…]
+            Run a workspace script in the home from any folder
+            (pnpm <script> there): kyoten run task status
+  where     Print the home (the rule that chose it goes to stderr)
+  config [path | get <key> | set <key> <value…> | unset <key>]
+            Show or change the config file. Keys: home (a kyoten
+            workspace), args.<agent> (every word after the key is one
+            argument), addDir (true|false)
+  reset [--yes] [--all]
+            Move a home kyoten created aside (renamed to
+            <home>.removed-<time>, never deleted; the undo is printed).
+            Shows what is in it first. --all also moves the config folder
+  backup [<dir>] [--include-key]
+            Write a new folder (default ./kyoten-backup-<time>) with the
+            memory export, config, and your local commits; personal data.
+            --include-key adds the DeepSeek key file
+  restore <dir> [--yes]
+            Check a backup folder, then merge its commits and memory into the
+            home (created first if missing) and copy config files that are
+            not there yet
+  help      This help
+  version   kyoten's version
+
+dscc profile (DeepSeek API key and model mapping)
+  kyoten dscc --set-key   Save the key (hidden prompt, or one line on stdin)
+  kyoten dscc --show      Print the profile, the key masked
+
+The home is the first of: --home, $KYOTEN_HOME, the clone kyoten runs from
+(pnpm kyoten inside it), "home" in the config, ~/.kyoten.
+Config: config.json in %APPDATA%\kyoten (Windows), else in
+$XDG_CONFIG_HOME/kyoten or ~/.config/kyoten:
+  {"home": "/abs/path", "addDir": false, "args": {"dscc": ["--dangerously-skip-permissions"]}}
 ```
 
 ## `pnpm loop`
@@ -173,6 +240,15 @@ Settings
                                 memory/persona.md or the stored persona when no source
                                 flag is given. --agent codex requires zero configured
                                 MCP servers
+  personalize --for claude|codex|ds|agy [--show | --reset]
+      [--persona … | --persona-file <file.md>] [--compact [--dry-run] | --audit]
+                                One persona for the agents kyoten starts (ds: dsh and dscc;
+                                KYOTEN_AGENT), kept in memory/persona.<agent>.md, with the
+                                same limit, audit, and --agent as the default persona. The
+                                other settings stay the default ones; an agent without a
+                                file uses the default persona. --reset removes the file
+                                (a snapshot and tasks/.trash keep it; pnpm memory undo
+                                restores it). Pausing personalization (--off) wins
   personalize --off | --on      Pause or resume applying saved personalization across sessions.
                                 A new session loads the full settings after --on
   set [--extract-agent claude|codex|dsh|agy|default] [--extract-model <model>|default]
@@ -388,6 +464,7 @@ Options:
 - `pnpm docs:cli`
 - `pnpm format`
 - `pnpm format:check`
+- `pnpm kyoten:pack`
 - `pnpm lint`
 - `pnpm lint:fix`
 - `pnpm skills:check`
