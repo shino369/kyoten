@@ -40,7 +40,7 @@ Node.js・Git・pnpm が揃っていれば、管理ホームを初期化して�
 
 ```bash
 npx kyoten init
-npx kyoten codex
+npx kyoten            # Claude Code (default), or: codex | dsh | dscc | agy
 ```
 
 クローンしたリポジトリから直接作業する場合は、リポジトリ内でセットアップを実行してください。

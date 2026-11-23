@@ -40,7 +40,7 @@
 
 ```bash
 npx kyoten init
-npx kyoten codex
+npx kyoten            # Claude Code (default), or: codex | dsh | dscc | agy
 ```
 
 若想直接從 clone 的儲存庫中作業，請於儲存庫內執行初始化設定。

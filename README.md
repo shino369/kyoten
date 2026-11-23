@@ -40,7 +40,7 @@ With Node.js, Git, and pnpm available, initialize a managed home and launch your
 
 ```bash
 npx kyoten init
-npx kyoten codex
+npx kyoten            # Claude Code (default), or: codex | dsh | dscc | agy
 ```
 
 To work directly from a clone, run setup in the repository.
