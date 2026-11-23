@@ -124,7 +124,8 @@ start a task: `pnpm task new <name> --repo <path>`.
 
 Turn it off for one launch with `kyoten --no-add-dir …`, or always with `"addDir": false` in the
 config. A repository that is your home folder itself or above it (a dotfiles repository at `~`) is
-never added: it would open every file you have.
+never added: it would open every file you have. On Windows, a path with `%` or `!` is not added for
+an agent installed as a `.cmd` shim (see the Windows note under Notes per agent).
 
 Already have a clone? Register it as the default home (nothing is copied):
 
@@ -269,7 +270,8 @@ kyoten update                # finishes the install and setup
   (127.0.0.1:3080, or a `--port` in `args.dsh`), such as a `dsh web` started without kyoten.
 - **Windows:** an agent installed by npm is a `.cmd` shim, which cannot take arguments containing
   `"`, `%`, or `!` safely. kyoten refuses those arguments with an explanation: type that text inside
-  the agent instead.
+  the agent instead. A repository whose path holds `%` or `!` is left out of `--add-dir` for such an
+  agent, with a notice, and the agent starts in the home without it.
 
 ## Per-agent personas
 

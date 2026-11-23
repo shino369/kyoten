@@ -126,7 +126,7 @@ class FakeChild extends EventEmitter {
  * real (with the real PATH), pnpm is faked with `pnpmStatus`.
  *
  * @param {string[]} argv
- * @param {{ env?: NodeJS.ProcessEnv, exit?: number, stdin?: any, cwd?: string, answer?: string, pnpmStatus?: number, connect?: (port: number) => Promise<boolean> }} [options]
+ * @param {{ env?: NodeJS.ProcessEnv, exit?: number, stdin?: any, cwd?: string, answer?: string, pnpmStatus?: number, connect?: (port: number) => Promise<boolean>, platform?: NodeJS.Platform, canRun?: (file: string) => boolean }} [options]
  */
 async function run(
   argv,
@@ -138,6 +138,10 @@ async function run(
     answer = '',
     pnpmStatus = 0,
     connect = async () => false,
+    platform = process.platform,
+    canRun = (/** @type {string} */ file) =>
+      path.dirname(file) === bin &&
+      /^(claude|codex|dsh|agy)(\.exe)?$/i.test(path.basename(file)),
   } = {}
 ) {
   /** @type {string[]} */
@@ -187,7 +191,7 @@ async function run(
       ...env,
     },
     cwd,
-    platform: process.platform,
+    platform,
     homedir: path.join(tmp, 'user'),
     out: (text) => out.push(text),
     err: (text) => err.push(text),
@@ -195,9 +199,7 @@ async function run(
     tty: { write: (/** @type {string} */ text) => tty.push(text) },
     spawn,
     signals: new EventEmitter(),
-    canRun: (file) =>
-      path.dirname(file) === bin &&
-      /^(claude|codex|dsh|agy)(\.exe)?$/i.test(path.basename(file)),
+    canRun,
     registry: () => null,
     run: runSpawn,
     ask: async (question) => {
@@ -784,6 +786,29 @@ describe('main: launch', () => {
         );
       }
     );
+
+    test('should leave out a repository a Windows .cmd shim cannot take and still start the agent', async () => {
+      const home = makeHome();
+      const repo = path.join(tmp, 'hello!world');
+      fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+      const real = fs.realpathSync.native(repo);
+
+      const { code, spawn, err } = await run(['--home', home, 'codex'], {
+        cwd: repo,
+        platform: 'win32',
+        env: { ComSpec: 'C:\\Windows\\cmd.exe' },
+        canRun: (file) => /[\\/]codex\.cmd$/i.test(file),
+      });
+
+      expect(code).toBe(0);
+      expect(spawn.mock.calls[0][0]).toBe('C:\\Windows\\cmd.exe');
+      expect(spawn.mock.calls[0][1].join(' ')).not.toContain('--add-dir');
+      expect(spawn.mock.calls[0][2].env.KYOTEN_ADD_DIR).toBeUndefined();
+      expect(err).toContain(
+        `kyoten: --add-dir=${real} left out: cmd.exe cannot pass a path with % or ! to the codex .cmd shim, so codex gets only the home (rename the folder to add it; --no-add-dir hides this)`
+      );
+      expect(err.at(-1)).toBe(`kyoten: codex in ${home} (--home)`);
+    });
 
     test.each(['dsh'])('should not add a directory for %s', async (agent) => {
       const home = makeHome();

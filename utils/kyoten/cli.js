@@ -50,6 +50,7 @@ import { initHome } from './init.js';
 import { pauseSaving } from './memory.js';
 import {
   DSH_DEFAULT_PROFILE,
+  addDirProblem,
   buildEnv,
   dshProfile,
   exitCode,
@@ -685,13 +686,26 @@ async function launch(ctx, agent, args, addDirFlag) {
     profile?.drop ?? (deps.env.KYOTEN_AGENT === 'dscc' ? DSCC_DROP : []);
   for (const warning of profile?.warnings ?? [])
     deps.err(`kyoten: dscc profile ${warning}`);
-  const addDir = outsideRepo({
+  const repo = outsideRepo({
     agent,
     cwd: deps.cwd,
     home: home.dir,
     enabled: addDirEnabled,
     userHome: deps.homedir,
   });
+  const problem = repo
+    ? addDirProblem({
+        agent,
+        addDir: repo,
+        home: home.dir,
+        env: deps.env,
+        platform: deps.platform,
+        canRun: deps.canRun,
+        registry: deps.registry,
+      })
+    : null;
+  if (problem) deps.err(problem);
+  const addDir = problem ? null : repo;
   const argv = prepareLaunch({
     agent,
     args,

@@ -133,6 +133,47 @@ export function outsideRepo({
 }
 
 /**
+ * Why the agent cannot be given `--add-dir=<addDir>`, or null when it can.
+ * On Windows a `.cmd`/`.bat` shim (an agent installed by npm) runs through
+ * cmd.exe, which cannot pass a path holding `%` or `!` (`quoteCmdArg`
+ * refuses it). kyoten adds the directory on its own, so the caller leaves it
+ * out with this notice rather than fail the launch. A missing agent is left
+ * to `prepareLaunch`, which explains how to install it.
+ *
+ * @param {{ agent: AgentName, addDir: string, home: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform, canRun?: (file: string) => boolean, registry?: (home: string, name: string) => string[] | null }} input
+ * @returns {string | null}
+ */
+export function addDirProblem({
+  agent,
+  addDir,
+  home,
+  env,
+  platform,
+  canRun,
+  registry,
+}) {
+  const command = findAgentCommand({
+    agent,
+    home,
+    env,
+    platform,
+    canRun,
+    registry,
+  });
+  if (!command) return null;
+  try {
+    resolveCommand(command[0], [`--add-dir=${addDir}`], {
+      env,
+      platform,
+      isExecutable: canRun,
+    });
+    return null;
+  } catch {
+    return `kyoten: --add-dir=${addDir} left out: cmd.exe cannot pass a path with % or ! to the ${agentBin(agent)} .cmd shim, so ${agent} gets only the home (rename the folder to add it; --no-add-dir hides this)`;
+  }
+}
+
+/**
  * The full argv for an agent. `command` is the executable prefix from
  * `findAgentCommand`; `defaults` are the config's arguments for this agent,
  * placed before the user's. `addDir` (claude, dscc, codex, agy) goes first, in

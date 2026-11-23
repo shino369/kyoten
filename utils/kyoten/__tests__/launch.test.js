@@ -8,6 +8,7 @@ import { ROOT_DIR } from '../../workspace-config.js';
 import { linkDir } from '../../__tests__/support/links.js';
 import {
   DSH_DEFAULT_PROFILE,
+  addDirProblem,
   agentBin,
   agentInstallHint,
   buildArgv,
@@ -593,6 +594,91 @@ describe('prepareLaunch', () => {
     });
 
     expect(argv).toEqual(['/bin/agy']);
+  });
+});
+
+describe('addDirProblem', () => {
+  const WIN_ENV = {
+    Path: 'C:\\bin',
+    PATHEXT: '.EXE;.CMD',
+    ComSpec: 'C:\\Windows\\cmd.exe',
+  };
+  /** A Windows-like file check that finds only `file` (case-insensitive). */
+  const onlyFile = (/** @type {string} */ file) => (/** @type {string} */ f) =>
+    f.toLowerCase() === file.toLowerCase();
+
+  test.each(['C:\\src\\hello!world', 'C:\\src\\100%done'])(
+    'should explain why a Windows .cmd shim cannot take %s',
+    (repo) => {
+      const problem = addDirProblem({
+        agent: 'codex',
+        addDir: repo,
+        home: 'C:\\home',
+        env: WIN_ENV,
+        platform: 'win32',
+        canRun: onlyFile('C:\\bin\\codex.cmd'),
+        registry: () => null,
+      });
+
+      expect(problem).toBe(
+        `kyoten: --add-dir=${repo} left out: cmd.exe cannot pass a path with % or ! to the codex .cmd shim, so codex gets only the home (rename the folder to add it; --no-add-dir hides this)`
+      );
+    }
+  );
+
+  test('should accept a path a Windows .cmd shim can take', () => {
+    expect(
+      addDirProblem({
+        agent: 'agy',
+        addDir: 'C:\\src\\my repo',
+        home: 'C:\\home',
+        env: WIN_ENV,
+        platform: 'win32',
+        canRun: onlyFile('C:\\bin\\agy.cmd'),
+        registry: () => null,
+      })
+    ).toBeNull();
+  });
+
+  test('should accept any path for a Windows .exe', () => {
+    expect(
+      addDirProblem({
+        agent: 'claude',
+        addDir: 'C:\\src\\hello!world',
+        home: 'C:\\home',
+        env: WIN_ENV,
+        platform: 'win32',
+        canRun: onlyFile('C:\\bin\\claude.exe'),
+        registry: () => null,
+      })
+    ).toBeNull();
+  });
+
+  test('should accept any path off Windows', () => {
+    expect(
+      addDirProblem({
+        agent: 'codex',
+        addDir: '/src/100%!',
+        home: '/home',
+        env: POSIX_ENV,
+        platform: 'linux',
+        canRun: (file) => file === '/bin/codex',
+      })
+    ).toBeNull();
+  });
+
+  test('should leave a missing agent to prepareLaunch', () => {
+    expect(
+      addDirProblem({
+        agent: 'codex',
+        addDir: 'C:\\src\\hello!world',
+        home: 'C:\\home',
+        env: WIN_ENV,
+        platform: 'win32',
+        canRun: () => false,
+        registry: () => null,
+      })
+    ).toBeNull();
   });
 });
 
