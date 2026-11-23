@@ -376,9 +376,13 @@ function mergeBlocker({ home, run, env }) {
 /**
  * Paths whose change runs code or steers the agents: hooks, scripts, the
  * harness configs, and the workspace's own code. Restored commits that touch
- * them get a warning before the merge question.
+ * them get a warning before the merge question. `tasks/` and `memory/` are
+ * git-ignored, so a backup kyoten made never tracks them; a bundle that does
+ * would plant verify commands, notes, or snapshot records in the home.
  */
 export const CODE_PATHS = [
+  'tasks/',
+  'memory/',
   '.githooks/',
   '.claude/',
   '.codex/',
@@ -499,10 +503,28 @@ async function restoreBundle({
       .filter(Boolean);
   const range = `${RESTORED_UPSTREAM}..${RESTORED}`;
   const commits = lines(['log', '--no-merges', '--format=%h %s', range]);
-  const risky = lines(
-    ['diff', '--name-only', '-z', RESTORED_UPSTREAM, RESTORED],
-    '\0'
-  ).filter((file) =>
+  // The merge below applies what changed from its merge base to RESTORED, so
+  // the warning is measured from that base, not from RESTORED_UPSTREAM: in a
+  // tampered bundle kyoten/upstream need not be main's ancestor, and a change
+  // both make would not show in a diff of the two. A fresh home is linked to
+  // RESTORED_UPSTREAM first, which makes their merge base the one git uses.
+  const linked = git(['merge-base', 'HEAD', RESTORED]) === 0;
+  const bases = lines([
+    'merge-base',
+    '--all',
+    linked ? 'HEAD' : RESTORED_UPSTREAM,
+    RESTORED,
+  ]);
+  if (bases.length === 0) {
+    throw new Error(
+      `the backup's main shares no history with its kyoten/upstream, so its commits cannot be merged.\nFix: use a backup that kyoten backup made, or merge ${RESTORED} by hand (git -C "${home}" log ${RESTORED})`
+    );
+  }
+  // --no-renames: a code file moved to another name shows under both names.
+  const changed = bases.flatMap((base) =>
+    lines(['diff', '--no-renames', '--name-only', '-z', base, RESTORED], '\0')
+  );
+  const risky = [...new Set(changed)].filter((file) =>
     CODE_PATHS.some((p) => (p.endsWith('/') ? file.startsWith(p) : file === p))
   );
   for (const line of restoreSummary({ commits, risky })) err(line);
@@ -530,7 +552,7 @@ async function restoreBundle({
       );
     }
   };
-  if (git(['merge-base', 'HEAD', RESTORED]) !== 0) {
+  if (!linked) {
     // A fresh home has its own snapshot commit. Connect it to the old one
     // (keeping this tree), so the old snapshot is the merge base below.
     merge(

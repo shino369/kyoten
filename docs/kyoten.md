@@ -364,10 +364,13 @@ overwrites:
   your commits in it, warns when they change files that run code or steer the agents (the harness
   folders such as `.githooks/`, `.claude/`, `.codex/`, `.agents/`, `.dsh/`, `.gemini/`, and
   `.github/`, `utils/`, `tools/`, `package.json`, the pnpm files, `.mcp.json`, the test, lint, and
-  TypeScript configs, `AGENTS.md`, `CLAUDE.md`), and asks `[y/N]` before it merges them into `main` (without a terminal,
-  pass `--yes`; on no they stay in `refs/kyoten/restored`). A fresh home has its
-  own snapshot commit, so the old snapshot in the bundle is linked first (keeping the new files) and
-  then used as the merge base, as in `kyoten update`. Conflicts stay as ordinary git conflicts.
+  TypeScript configs, `AGENTS.md`, `CLAUDE.md`, and the git-ignored `tasks/` and `memory/`, which a
+  backup never tracks), and asks `[y/N]` before it merges them into `main` (without a terminal,
+  pass `--yes`; on no they stay in `refs/kyoten/restored`). The warning covers every file the merge
+  changes, measured from the merge base git uses, under both names for a moved file. A fresh home
+  has its own snapshot commit, so the old snapshot in the bundle is linked first (keeping the new
+  files) and then used as the merge base, as in `kyoten update`; a bundle whose `main` shares no
+  history with that snapshot is refused. Conflicts stay as ordinary git conflicts.
 - `pnpm memory import` merges the notes (never `--replace`). It shows the `--dry-run` result first
   and asks `[y/N]`; without a terminal, pass `--yes`.
 - `config.json` and `dscc.env` are copied only where none exists; otherwise the current one is kept

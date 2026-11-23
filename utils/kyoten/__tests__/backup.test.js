@@ -799,6 +799,98 @@ describe('restoreBackup', () => {
     );
   });
 
+  test('should warn about a code change that kyoten/upstream also makes as a sibling of main', async () => {
+    // A tampered bundle: kyoten/upstream is not main's ancestor, and both add
+    // the same file, so a tree diff of the two hides it; the merge (base: the
+    // common ancestor) still brings it into main.
+    const source = sourceHome();
+    git(source, 'switch', '-q', 'kyoten/upstream');
+    commitFile(source, 'utils/m.js', 'evil\n', 'chore: upstream');
+    git(source, 'switch', '-q', 'main');
+    commitFile(source, 'utils/m.js', 'evil\n', 'chore: main');
+    backupHome(backupInput({ dir: 'bk' }));
+    err = [];
+
+    await restoreBackup(restoreInput());
+
+    expect(fs.existsSync(path.join(tmp, 'new-home', 'utils', 'm.js'))).toBe(
+      true
+    );
+    expect(err.join('\n')).toContain('configure the agents: utils/m.js;');
+  });
+
+  test('should warn about code changes measured from the merge base with an existing home', async () => {
+    // The home shares history with the backup but lacks a commit that the
+    // bundle labels as upstream: the merge brings it in too.
+    const source = sourceHome();
+    const target = path.join(tmp, 'new-home');
+    git(tmp, 'clone', '-q', '-b', 'main', source, target);
+    git(target, 'reset', '-q', '--hard', 'HEAD~1');
+    git(target, 'branch', 'kyoten/upstream');
+    git(source, 'switch', '-q', 'kyoten/upstream');
+    commitFile(source, 'utils/new.js', 'x\n', 'chore: upstream code');
+    git(source, 'switch', '-q', 'main');
+    git(source, 'merge', '-q', '--no-edit', 'kyoten/upstream');
+    backupHome(backupInput({ dir: 'bk' }));
+    err = [];
+
+    await restoreBackup(restoreInput({ createHome: () => {} }));
+
+    expect(fs.existsSync(path.join(target, 'utils', 'new.js'))).toBe(true);
+    expect(err.join('\n')).toContain('configure the agents: utils/new.js;');
+  });
+
+  test('should name both sides of a renamed code file', async () => {
+    const source = sourceHome();
+    fs.mkdirSync(path.join(source, '.githooks'));
+    commitFile(source, '.githooks/pre-commit', 'echo hi\n', 'chore: hook');
+    const target = path.join(tmp, 'new-home');
+    git(tmp, 'clone', '-q', '-b', 'main', source, target);
+    git(target, 'branch', 'kyoten/upstream');
+    git(source, 'mv', '.githooks/pre-commit', 'zz-renamed');
+    git(source, 'commit', '-q', '--no-gpg-sign', '-m', 'chore: move');
+    backupHome(backupInput({ dir: 'bk' }));
+    err = [];
+
+    await restoreBackup(restoreInput({ createHome: () => {} }));
+
+    expect(err.join('\n')).toContain(
+      'configure the agents: .githooks/pre-commit;'
+    );
+  });
+
+  test.each(['tasks/demo/state.json', 'memory/snapshots/x/meta.json'])(
+    'should warn when the backup commits track git-ignored state such as %s',
+    async (file) => {
+      const source = sourceHome();
+      fs.mkdirSync(path.dirname(path.join(source, file)), { recursive: true });
+      commitFile(source, file, '{}\n', 'chore: state');
+      backupHome(backupInput({ dir: 'bk' }));
+      err = [];
+
+      await restoreBackup(restoreInput());
+
+      expect(err.join('\n')).toContain(
+        `configure the agents: ${file}; restore only`
+      );
+    }
+  );
+
+  test('should refuse a bundle whose main shares no history with its kyoten/upstream', async () => {
+    const source = sourceHome();
+    git(source, 'switch', '-q', '--orphan', 'other');
+    commitFile(source, 'b.txt', 'b\n', 'chore: unrelated');
+    git(source, 'branch', '-f', 'kyoten/upstream', 'other');
+    git(source, 'switch', '-q', 'main');
+    backupHome(backupInput({ dir: 'bk' }));
+    err = [];
+
+    await expect(restoreBackup(restoreInput())).rejects.toThrow(
+      /shares no history[\s\S]*Fix:/
+    );
+    expect(fs.existsSync(path.join(tmp, 'new-home', 'local.txt'))).toBe(false);
+  });
+
   test('should skip the memory import when the answer is no', async () => {
     makeBackup();
 
