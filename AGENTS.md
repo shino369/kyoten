@@ -216,23 +216,28 @@ e2e only. Workflows: `.agents/skills/web-browsing/SKILL.md`.
 Skills live in `.agents/skills/<name>/SKILL.md` (third-party skills install via
 `pnpm skills:install`). Open the matching `SKILL.md` if your harness does not auto-load it.
 
-| Skill                                            | Use when                                                   | Owner         |
-| ------------------------------------------------ | ---------------------------------------------------------- | ------------- |
-| `workspace-setup`                                | New clone/machine, missing skills, broken links or hooks   | this repo     |
-| `web-browsing`                                   | Any browser or web task                                    | this repo     |
-| `context-manager`                                | Long sessions losing focus                                 | this repo     |
-| `dependency-update` / `security-update`          | Routine package/Node/pnpm updates / CVEs & `pnpm audit`    | kyoten-skills |
-| `translation-expertise`                          | EN ↔ JA ↔ zh-TW translation, house styles & term traps     | kyoten-skills |
-| `transparent-background`                         | Remove flat image background, clean edges, recolour shapes | kyoten-skills |
-| `code-review`, `tdd`, `diagnosing-bugs`          | Review, test-first work, hard bugs                         | third-party   |
-| `agent-browser`, `browser-use`, `playwright-cli` | Browser runtimes                                           | third-party   |
-| `skill-creator`                                  | Creating or improving skills                               | third-party   |
+| Skill                                            | Use when                                                   | Owner                  |
+| ------------------------------------------------ | ---------------------------------------------------------- | ---------------------- |
+| `workspace-setup`                                | New clone/machine, missing skills, broken links or hooks   | this repo              |
+| `web-browsing`                                   | Any browser or web task                                    | this repo              |
+| `context-manager`                                | Long sessions losing focus                                 | this repo              |
+| `dependency-update` / `security-update`          | Routine package/Node/pnpm updates / CVEs & `pnpm audit`    | kyoten-skills          |
+| `translation-expertise`                          | EN ↔ JA ↔ zh-TW translation, house styles & term traps     | kyoten-skills          |
+| `transparent-background`                         | Remove flat image background, clean edges, recolour shapes | kyoten-skills (opt-in) |
+| `game-image-extraction`                          | Extract, convert, and verify Unity & KiriKiri2/Z images    | kyoten-skills (opt-in) |
+| `code-review`, `tdd`, `diagnosing-bugs`          | Review, test-first work, hard bugs                         | third-party            |
+| `agent-browser`, `browser-use`, `playwright-cli` | Browser runtimes                                           | third-party            |
+| `skill-creator`                                  | Creating or improving skills                               | third-party            |
+
+Opt-in `kyoten-skills` (`creative/*`) are not in `skills-lock.json`; install on demand with
+`pnpm dlx skills add shino369/kyoten-skills --skill <name> --agent claude-code codex -y`.
 
 Runtimes: `agent-browser` (`pnpm exec agent-browser …`; once: `install`), `browser-use`
 (`uv tool install --python 3.12 browser-use`), `playwright-cli` (`pnpm exec playwright cli …`),
 `skill-creator` (`uv run --with pyyaml --python 3.12 python …`), `transparent-background`
-(`uv run --python 3.12 --with pillow --with numpy --with scipy python -I …/imgalpha.py`), `gh`
-(`pnpm tools show gh`). If a runtime is missing, tell the user what to install; never silently
+(`uv run --python 3.12 --with pillow --with numpy --with scipy python -I …/imgalpha.py`),
+`game-image-extraction` (`uv run --python 3.12 --with UnityPy --with pillow python -I …/game_extract.py`),
+`gh` (`pnpm tools show gh`). If a runtime is missing, tell the user what to install; never silently
 switch tools.
 
 ## 10. Roles (reusable agent prompts)

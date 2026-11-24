@@ -31,7 +31,7 @@
 - **Node.js 24 以降**（`.nvmrc` で 24 を指定。`agent-browser` は 24 以上が必須です）
 - **pnpm 12.14.0**（Corepack 経由で `package.json` に固定）— `corepack enable` を実行するか、コマンドの先頭に `corepack pnpm` を付けて実行してください
 - **Chrome / Chromium** _（任意）_ — Playwright の E2E テストおよびブラウザ操作スキルで使用します
-- **`uv`** _（任意）_ — `browser-use` ランタイムおよび Python 3.12 のスキルスクリプト (`skill-creator`, `transparent-background`) で使用します
+- **`uv`** _（任意）_ — `browser-use` ランタイムおよび Python 3.12 のスキルスクリプト (`skill-creator`、およびオプトインのクリエイティブスキル `transparent-background` / `game-image-extraction`) で使用します
 - **`gh` CLI** _（任意）_ — GitHub ワークフローおよび PR レビューで使用します
 
 ## 🚀 はじめに
@@ -218,12 +218,20 @@ pnpm memory export                  # checksummed .tar.gz backup; restore via im
 
 #### ✨ Kyoten Skills ([shino369/kyoten-skills](https://github.com/shino369/kyoten-skills), MIT)
 
-| スキル                   | 概要                                                                                 |
-| ------------------------ | ------------------------------------------------------------------------------------ |
-| `dependency-update`      | `analyze_deps.mjs` を使った Dependabot 形式の pnpm 依存関係アップデート。            |
-| `security-update`        | リリース経過日数チェック付きの CVE・監査パッチ適用。                                 |
-| `transparent-background` | 単色背景画像をきれいなエッジの透過 PNG に変換（残存ピクセル除去・再着色にも対応）。  |
-| `translation-expertise`  | EN ↔ JA ↔ zh-TW のハウススタイル、1:1 構造一致、台湾華語・日本語の用語トラップ対策。 |
+デフォルト収録 (`skills-lock.json`):
+
+| スキル                  | カテゴリ       | 概要                                                                                 |
+| ----------------------- | -------------- | ------------------------------------------------------------------------------------ |
+| `dependency-update`     | `dependencies` | `analyze_deps.mjs` を使った Dependabot 形式の pnpm 依存関係アップデート。            |
+| `security-update`       | `dependencies` | リリース経過日数チェック付きの CVE・監査パッチ適用。                                 |
+| `translation-expertise` | `translation`  | EN ↔ JA ↔ zh-TW のハウススタイル、1:1 構造一致、台湾華語・日本語の用語トラップ対策。 |
+
+オプトイン (`creative/*`、`skills-lock.json` には含まれません — 必要に応じて `pnpm dlx skills add shino369/kyoten-skills --skill <name> --agent claude-code codex -y` で個別インストール):
+
+| スキル                   | カテゴリ   | 概要                                                                                               |
+| ------------------------ | ---------- | -------------------------------------------------------------------------------------------------- |
+| `transparent-background` | `creative` | 単色背景画像をきれいなエッジの透過 PNG に変換（残存ピクセル除去・再着色にも対応）。                |
+| `game-image-extraction`  | `creative` | Unity (`*_Data`/Addressables) および吉里吉里 2/Z (`.xp3`) ゲーム画像の抽出・変換・メタデータ検証。 |
 
 #### 🌐 ブラウザ・Web
 
@@ -278,15 +286,16 @@ pnpm skills:link                         # (re)link .agents/skills into .claude/
 
 ほとんどのスキルは指示ファイルのみで構成されますが、以下のスキルにはローカルランタイムが必要です：
 
-| スキル                   | ランタイム                         | 確認・インストール方法                                                                                                                       |
-| ------------------------ | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent-browser`          | `agent-browser` CLI                | `pnpm exec agent-browser --version`。初回に `pnpm exec agent-browser install` を実行後、`pnpm exec agent-browser ...` を使用 (devDependency) |
-| `browser-use`            | `browser-use` CLI                  | `browser-use --version`。`uv tool install --python 3.12 browser-use` でインストール                                                          |
-| `playwright-cli`         | ローカル Playwright                | `pnpm exec playwright --version`。`pnpm exec playwright cli ...` で実行                                                                      |
-| `skill-creator`          | Python 3.12 + PyYAML               | スキルディレクトリから `uv run --with pyyaml --python 3.12 python ...` を実行                                                                |
-| `transparent-background` | Python 3.12 + Pillow, NumPy, SciPy | `uv run --python 3.12 --with pillow --with numpy --with scipy python -I .agents/skills/transparent-background/scripts/imgalpha.py --help`    |
-| `dependency-update`      | `gh` CLI                           | `gh --version`。<https://cli.github.com/> からインストール（PR への添付にも使用）                                                            |
-| Playwright E2E           | Chromium                           | `pnpm exec playwright install chromium`                                                                                                      |
+| スキル                              | ランタイム                             | 確認・インストール方法                                                                                                                       |
+| ----------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent-browser`                     | `agent-browser` CLI                    | `pnpm exec agent-browser --version`。初回に `pnpm exec agent-browser install` を実行後、`pnpm exec agent-browser ...` を使用 (devDependency) |
+| `browser-use`                       | `browser-use` CLI                      | `browser-use --version`。`uv tool install --python 3.12 browser-use` でインストール                                                          |
+| `playwright-cli`                    | ローカル Playwright                    | `pnpm exec playwright --version`。`pnpm exec playwright cli ...` で実行                                                                      |
+| `skill-creator`                     | Python 3.12 + PyYAML                   | スキルディレクトリから `uv run --with pyyaml --python 3.12 python ...` を実行                                                                |
+| `transparent-background` _（任意）_ | Python 3.12 + Pillow, NumPy, SciPy     | `uv run --python 3.12 --with pillow --with numpy --with scipy python -I .agents/skills/transparent-background/scripts/imgalpha.py --help`    |
+| `game-image-extraction` _（任意）_  | Python 3.12 + Pillow、任意で `UnityPy` | `uv run --python 3.12 --with UnityPy --with pillow python -I .agents/skills/game-image-extraction/scripts/game_extract.py --help`            |
+| `dependency-update`                 | `gh` CLI                               | `gh --version`。<https://cli.github.com/> からインストール（PR への添付にも使用）                                                            |
+| Playwright E2E                      | Chromium                               | `pnpm exec playwright install chromium`                                                                                                      |
 
 このワークスペースでは `npm` コマンドがブロックされています。単発の CLI には `pnpm dlx`、プロジェクトローカルのバイナリには `pnpm add -D` と `pnpm exec`、Python CLI には `uv tool` または `uvx` を使用してください。グローバルインストールはワークスペースのロックファイルとサプライチェーン設定をバイパスしてしまうため、`pnpm add -g` は使用しないでください。
 

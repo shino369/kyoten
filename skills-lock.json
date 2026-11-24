@@ -60,12 +60,6 @@
       "sourceType": "github",
       "skillPath": "skills/translation-expertise/SKILL.md",
       "computedHash": "4173f27ffe966310c63dc829f12b610cb9f96461c7260286dbe79101666041c2"
-    },
-    "transparent-background": {
-      "source": "shino369/kyoten-skills",
-      "sourceType": "github",
-      "skillPath": "skills/transparent-background/SKILL.md",
-      "computedHash": "6a7d9f823e58fcbca6fdb549a118437e3676c5a7e7a860df674a8e22432ef3de"
     }
   }
 }
