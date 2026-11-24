@@ -31,7 +31,7 @@ Everything runs on plain Node.js ESM with zero runtime dependencies and no build
 - **Node.js 24 or later** (`.nvmrc` pins 24; `agent-browser` requires 24+)
 - **pnpm 12.14.0**, pinned in `package.json` via Corepack — run `corepack enable`, or prefix commands with `corepack pnpm`
 - **Chrome / Chromium** _(optional)_ — for Playwright e2e tests and browser-driving skills
-- **`uv`** _(optional)_ — for the `browser-use` runtime and Python 3.12 skill scripts (`skill-creator`, `transparent-background`)
+- **`uv`** _(optional)_ — for the `browser-use` runtime and Python 3.12 skill scripts (`skill-creator`, and optional creative skills like `transparent-background` / `game-image-extraction`)
 - **`gh` CLI** _(optional)_ — for GitHub workflows and PR reviews
 
 ## 🚀 Getting Started
@@ -229,12 +229,20 @@ External skills are not committed. Install the recommended set with `pnpm skills
 
 #### ✨ Kyoten Skills ([shino369/kyoten-skills](https://github.com/shino369/kyoten-skills), MIT)
 
-| Skill                    | What it does                                                                                |
-| ------------------------ | ------------------------------------------------------------------------------------------- |
-| `dependency-update`      | Dependabot-style pnpm updates with `analyze_deps.mjs`.                                      |
-| `security-update`        | CVE and audit patching with release-age checks.                                             |
-| `transparent-background` | Flat-background image → transparent PNG with clean edges; specks and recolour.              |
-| `translation-expertise`  | EN ↔ JA ↔ zh-TW house styles, 1:1 structural parity, and Taiwan/JA terminology trap guards. |
+Included by default (`skills-lock.json`):
+
+| Skill                   | Category       | What it does                                                                                |
+| ----------------------- | -------------- | ------------------------------------------------------------------------------------------- |
+| `dependency-update`     | `dependencies` | Dependabot-style pnpm updates with `analyze_deps.mjs`.                                      |
+| `security-update`       | `dependencies` | CVE and audit patching with release-age checks.                                             |
+| `translation-expertise` | `translation`  | EN ↔ JA ↔ zh-TW house styles, 1:1 structural parity, and Taiwan/JA terminology trap guards. |
+
+Opt-in (`creative/*`, not included in `skills-lock.json` — install locally without modifying `skills-lock.json` using `pnpm skills:add shino369/kyoten-skills --skill <name>`):
+
+| Skill                    | Category   | What it does                                                                             |
+| ------------------------ | ---------- | ---------------------------------------------------------------------------------------- |
+| `transparent-background` | `creative` | Flat-background image → transparent PNG with clean edges; specks and recolour.           |
+| `game-image-extraction`  | `creative` | Extract, convert, and verify Unity (`*_Data`/Addressables) and KiriKiri2/Z (`.xp3`) art. |
 
 #### 🌐 Browser & Web
 
@@ -271,33 +279,35 @@ Project-owned skills live in `.agents/skills/` and are committed to this reposit
 External skills are **not committed**. Install the recommended set from `skills-lock.json` with Vercel's [`skills` CLI](https://github.com/vercel-labs/skills) (the [skills.sh](https://skills.sh) ecosystem):
 
 ```bash
-pnpm skills:install                      # install everything in skills-lock.json
-pnpm skills:install --skip <name>        # skip optional skills
-pnpm skills:install --only <name>        # install only the named skills (comma-separated)
-pnpm skills:update                       # update installed skills
-pnpm skills:check                        # verify lock entries are installed
-pnpm skills:link                         # (re)link .agents/skills into .claude/skills
+pnpm skills:install                                     # install everything in skills-lock.json (+ skills-lock.local.json)
+pnpm skills:install --skip <name>                       # skip optional skills
+pnpm skills:install --only <name>                       # install only the named skills (comma-separated)
+pnpm skills:add <owner/repo> --skill <name>...          # install opt-in skills locally (skills-lock.local.json)
+pnpm skills:update                                      # update installed skills
+pnpm skills:check                                       # verify lock entries are installed
+pnpm skills:link                                        # (re)link .agents/skills into .claude/skills
 ```
 
-Installation uses skills.sh's default layout with `--agent claude-code codex`: the real files land in `.agents/skills/<name>/` (read natively by Codex and Antigravity) and `.claude/skills/<name>` is a relative symlink to them. `skills:link` creates the same links for project-owned skills, migrates old copied installs, prunes stale links, and falls back to directory junctions on Windows. External installs remain untracked; commit `skills-lock.json` whenever it changes. `skills:check` verifies every lock entry is installed with a matching frontmatter name.
+Installation uses skills.sh's default layout with `--agent claude-code codex`: the real files land in `.agents/skills/<name>/` (read natively by Codex and Antigravity) and `.claude/skills/<name>` is a relative symlink to them. `skills:link` creates the same links for project-owned skills, migrates old copied installs, prunes stale links, and falls back to directory junctions on Windows. External installs remain untracked; commit `skills-lock.json` whenever you intentionally change default workspace skills. `skills:check` verifies every entry in `skills-lock.json` (and git-ignored `skills-lock.local.json` if present) is installed with a matching frontmatter name.
 
 The lock's hash is a source snapshot hash, not reproducible from the installed copy, so review content changes via `git diff`. On Windows, `skills:update` may exit 127 after a successful update due to an upstream crash — verify the files changed before treating it as a failure.
 
-To add a skill manually, run `pnpm dlx skills add <owner/repo> --skill <name> --agent claude-code codex -y`, then `pnpm skills:link`; it stays local and untracked.
+To install an opt-in skill locally without dirtying tracked `skills-lock.json`, run `pnpm skills:add <owner/repo> --skill <name>`. It records the entry in git-ignored `skills-lock.local.json`, restores `skills-lock.json`, and runs `pnpm skills:link` automatically (pass `--tracked` to keep it in `skills-lock.json` instead).
 
 ### 🔧 Skill runtime prerequisites
 
 Most skills are instructions only. These require a local runtime:
 
-| Skill                    | Runtime                            | Check / install                                                                                                                           |
-| ------------------------ | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent-browser`          | `agent-browser` CLI                | `pnpm exec agent-browser --version`; run `pnpm exec agent-browser install` once, then `pnpm exec agent-browser ...` (devDependency)       |
-| `browser-use`            | `browser-use` CLI                  | `browser-use --version`; install with `uv tool install --python 3.12 browser-use`                                                         |
-| `playwright-cli`         | local Playwright                   | `pnpm exec playwright --version`; run `pnpm exec playwright cli ...`                                                                      |
-| `skill-creator`          | Python 3.12 + PyYAML               | `uv run --with pyyaml --python 3.12 python ...` from the skill directory                                                                  |
-| `transparent-background` | Python 3.12 + Pillow, NumPy, SciPy | `uv run --python 3.12 --with pillow --with numpy --with scipy python -I .agents/skills/transparent-background/scripts/imgalpha.py --help` |
-| `dependency-update`      | `gh` CLI                           | `gh --version`; install from <https://cli.github.com/> (also used for PR attachments)                                                     |
-| Playwright e2e           | Chromium                           | `pnpm exec playwright install chromium`                                                                                                   |
+| Skill                               | Runtime                                  | Check / install                                                                                                                           |
+| ----------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent-browser`                     | `agent-browser` CLI                      | `pnpm exec agent-browser --version`; run `pnpm exec agent-browser install` once, then `pnpm exec agent-browser ...` (devDependency)       |
+| `browser-use`                       | `browser-use` CLI                        | `browser-use --version`; install with `uv tool install --python 3.12 browser-use`                                                         |
+| `playwright-cli`                    | local Playwright                         | `pnpm exec playwright --version`; run `pnpm exec playwright cli ...`                                                                      |
+| `skill-creator`                     | Python 3.12 + PyYAML                     | `uv run --with pyyaml --python 3.12 python ...` from the skill directory                                                                  |
+| `transparent-background` _(opt-in)_ | Python 3.12 + Pillow, NumPy, SciPy       | `uv run --python 3.12 --with pillow --with numpy --with scipy python -I .agents/skills/transparent-background/scripts/imgalpha.py --help` |
+| `game-image-extraction` _(opt-in)_  | Python 3.12 + Pillow, optional `UnityPy` | `uv run --python 3.12 --with UnityPy --with pillow python -I .agents/skills/game-image-extraction/scripts/game_extract.py --help`         |
+| `dependency-update`                 | `gh` CLI                                 | `gh --version`; install from <https://cli.github.com/> (also used for PR attachments)                                                     |
+| Playwright e2e                      | Chromium                                 | `pnpm exec playwright install chromium`                                                                                                   |
 
 `npm` commands are blocked in this workspace. Use `pnpm dlx` for one-off CLIs, `pnpm add -D` + `pnpm exec` for project-local binaries, and `uv tool` / `uvx` for Python CLIs. Avoid `pnpm add -g`: global installs bypass the workspace lockfile and supply-chain settings.
 

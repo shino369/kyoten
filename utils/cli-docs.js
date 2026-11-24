@@ -23,6 +23,7 @@ const HELP_COMMANDS = {
   kyoten: '--help',
   loop: '--help',
   memory: '--help',
+  'skills:add': '--help',
   'skills:install': '--help',
   'skills:link': '--help',
   swarm: '--help',
@@ -32,7 +33,7 @@ const HELP_COMMANDS = {
 };
 const CHECK_SCRIPT = 'workspace:check';
 const NODE_CLI =
-  /^\s*node\s+(?:(-[^;&|\r\n]*?)\s+)?(['"]?)(?:\.\/)?(utils\/(?:[a-z0-9-]+\/cli|skills-(?:install|link)|workspace-setup)\.js)\2(?=\s|$)/;
+  /^\s*node\s+(?:(-[^;&|\r\n]*?)\s+)?(['"]?)(?:\.\/)?(utils\/(?:[a-z0-9-]+\/cli|skills-(?:add|install|link)|workspace-setup)\.js)\2(?=\s|$)/;
 
 /**
  * @typedef {{ status: number | null, stdout: string | null }} HelpResult

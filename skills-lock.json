@@ -22,7 +22,7 @@
     "dependency-update": {
       "source": "shino369/kyoten-skills",
       "sourceType": "github",
-      "skillPath": "skills/dependency-update/SKILL.md",
+      "skillPath": "skills/dependencies/dependency-update/SKILL.md",
       "computedHash": "476423b3d0297b26cf87a47b2d817ce9c25d1911ca6219b43da033978f88510e"
     },
     "diagnosing-bugs": {
@@ -40,7 +40,7 @@
     "security-update": {
       "source": "shino369/kyoten-skills",
       "sourceType": "github",
-      "skillPath": "skills/security-update/SKILL.md",
+      "skillPath": "skills/dependencies/security-update/SKILL.md",
       "computedHash": "37bcf983b6676a1ba6622140875b56a6b91d01c15687b5f985f589a4567fed43"
     },
     "skill-creator": {
@@ -58,14 +58,8 @@
     "translation-expertise": {
       "source": "shino369/kyoten-skills",
       "sourceType": "github",
-      "skillPath": "skills/translation-expertise/SKILL.md",
+      "skillPath": "skills/translation/translation-expertise/SKILL.md",
       "computedHash": "4173f27ffe966310c63dc829f12b610cb9f96461c7260286dbe79101666041c2"
-    },
-    "transparent-background": {
-      "source": "shino369/kyoten-skills",
-      "sourceType": "github",
-      "skillPath": "skills/transparent-background/SKILL.md",
-      "computedHash": "6a7d9f823e58fcbca6fdb549a118437e3676c5a7e7a860df674a8e22432ef3de"
     }
   }
 }

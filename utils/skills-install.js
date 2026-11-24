@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Install third-party skills from skills-lock.json with skills.sh.
+ * Install third-party skills from skills-lock.json (and optional
+ * skills-lock.local.json) with skills.sh.
  *
  * skills.sh's default layout puts the canonical copy in .agents/skills/<name>
  * (read directly by Codex and other agents) and links it into each agent's
@@ -12,11 +13,17 @@ import { spawnSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { runIfMain } from './module-runner.js';
-import { readSkillsLock } from './skills-lock.js';
+import {
+  DEFAULT_LOCK_FILE,
+  LOCAL_LOCK_FILE,
+  readMergedSkillsLock,
+  restoreFileSnapshot,
+} from './skills-lock.js';
+import { readIfExists } from './task/store.js';
 
 const HELP = `Usage: pnpm skills:install [options]
 
-Install third-party skills listed in skills-lock.json.
+Install third-party skills listed in skills-lock.json (and skills-lock.local.json if present).
 
 Options
   --only <names>  Install only these skill names (comma-separated, repeatable)
@@ -83,19 +90,20 @@ export function parseArgs(argv) {
 }
 
 /**
- * @param {{ rootDir?: string, lockPath?: string, skip?: string[], only?: string[], spawn?: Function, log?: (message: string) => void, platform?: string }} [options]
+ * @param {{ rootDir?: string, lockPath?: string, localLockPath?: string | null, skip?: string[], only?: string[], spawn?: Function, log?: (message: string) => void, platform?: string }} [options]
  * @returns {Promise<number>}
  */
 export async function installSkills({
   rootDir = ROOT_DIR,
-  lockPath = path.join(rootDir, 'skills-lock.json'),
+  lockPath = path.join(rootDir, DEFAULT_LOCK_FILE),
+  localLockPath = path.join(path.dirname(lockPath), LOCAL_LOCK_FILE),
   skip = [],
   only = [],
   spawn = spawnSync,
   log = console.log,
   platform = process.platform,
 } = {}) {
-  const lock = await readSkillsLock(lockPath);
+  const lock = await readMergedSkillsLock({ lockPath, localLockPath });
   const names = Object.keys(lock.skills).filter((name) => {
     if (only.length > 0 && !only.includes(name)) return false;
     return !skip.includes(name);
@@ -129,26 +137,33 @@ export async function installSkills({
     bySource.set(entry.source, group);
   }
 
-  for (const [source, group] of bySource) {
-    log(`Installing ${group.join(', ')} (${source})...`);
-    // pnpm is a .cmd shim on Windows, which Node only runs through a shell;
-    // the values above are validated, so no shell is used elsewhere.
-    const result = spawn('pnpm', buildInstallArgs({ source }, group), {
-      cwd: rootDir,
-      stdio: 'inherit',
-      shell: platform === 'win32',
-    });
+  const originalLockRaw = readIfExists(lockPath);
+  try {
+    for (const [source, group] of bySource) {
+      log(`Installing ${group.join(', ')} (${source})...`);
+      // pnpm is a .cmd shim on Windows, which Node only runs through a shell;
+      // the values above are validated, so no shell is used elsewhere.
+      const result = spawn('pnpm', buildInstallArgs({ source }, group), {
+        cwd: rootDir,
+        stdio: 'inherit',
+        shell: platform === 'win32',
+      });
 
-    if (result.status !== 0) {
-      for (const name of group) {
-        log(`✗ ${name} failed (exit ${result.status ?? 'unknown'})`);
-        failures++;
-      }
-    } else {
-      for (const name of group) {
-        log(`✓ ${name}`);
+      if (result.status !== 0) {
+        for (const name of group) {
+          log(`✗ ${name} failed (exit ${result.status ?? 'unknown'})`);
+          failures++;
+        }
+      } else {
+        for (const name of group) {
+          log(`✓ ${name}`);
+        }
       }
     }
+  } finally {
+    // Installing local-lock entries via skills.sh writes them into tracked
+    // skills-lock.json; restore the tracked snapshot so git stays clean.
+    restoreFileSnapshot(lockPath, originalLockRaw);
   }
 
   log(
@@ -161,13 +176,14 @@ export async function installSkills({
 }
 
 /**
- * @param {{ argv?: string[], rootDir?: string, lockPath?: string, spawn?: Function, log?: (message: string) => void }} [options]
+ * @param {{ argv?: string[], rootDir?: string, lockPath?: string, localLockPath?: string | null, spawn?: Function, log?: (message: string) => void }} [options]
  * @returns {Promise<number>}
  */
 export async function main({
   argv = process.argv.slice(2),
   rootDir = ROOT_DIR,
-  lockPath = path.join(rootDir, 'skills-lock.json'),
+  lockPath = path.join(rootDir, DEFAULT_LOCK_FILE),
+  localLockPath = path.join(path.dirname(lockPath), LOCAL_LOCK_FILE),
   spawn = spawnSync,
   log = console.log,
 } = {}) {
@@ -176,7 +192,15 @@ export async function main({
     return 0;
   }
   const { skip, only } = parseArgs(argv);
-  return installSkills({ rootDir, lockPath, skip, only, spawn, log });
+  return installSkills({
+    rootDir,
+    lockPath,
+    localLockPath,
+    skip,
+    only,
+    spawn,
+    log,
+  });
 }
 
 /* c8 ignore next 8 - CLI entry point */

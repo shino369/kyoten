@@ -31,7 +31,7 @@
 - **Node.js 24 或更新版本**（`.nvmrc` 鎖定為 24；`agent-browser` 需要 24+）
 - **pnpm 12.14.0**，透過 Corepack 鎖定於 `package.json`——執行 `corepack enable`，或在指令前加上 `corepack pnpm`
 - **Chrome / Chromium**（_選用_）——用於 Playwright e2e 測試與瀏覽器操控技能
-- **`uv`**（_選用_）——用於 `browser-use` 執行環境與 Python 3.12 技能腳本（`skill-creator`、`transparent-background`）
+- **`uv`**（_選用_）——用於 `browser-use` 執行環境與 Python 3.12 技能腳本（`skill-creator`，以及選用的創意技能 `transparent-background`／`game-image-extraction`）
 - **`gh` CLI**（_選用_）——用於 GitHub 工作流程與 PR 審查
 
 ## 🚀 快速開始
@@ -218,12 +218,20 @@ pnpm memory export                  # checksummed .tar.gz backup; restore via im
 
 #### ✨ Kyoten Skills（[shino369/kyoten-skills](https://github.com/shino369/kyoten-skills)，MIT）
 
-| 技能                     | 功能說明                                                                 |
-| ------------------------ | ------------------------------------------------------------------------ |
-| `dependency-update`      | 搭配 `analyze_deps.mjs` 進行仿 Dependabot 風格的 pnpm 相依套件更新。     |
-| `security-update`        | 結合發布天數檢查進行 CVE 與稽核漏洞修補。                                |
-| `transparent-background` | 將純色背景圖片轉為邊緣乾淨的透明 PNG，並支援清理殘留雜點與局部換色。     |
-| `translation-expertise`  | EN ↔ JA ↔ zh-TW 譯文風格規範、1:1 結構對齊，以及台灣／日文術語陷阱防護。 |
+預設收錄（`skills-lock.json`）：
+
+| 技能                    | 分類           | 功能說明                                                                 |
+| ----------------------- | -------------- | ------------------------------------------------------------------------ |
+| `dependency-update`     | `dependencies` | 搭配 `analyze_deps.mjs` 進行仿 Dependabot 風格的 pnpm 相依套件更新。     |
+| `security-update`       | `dependencies` | 結合發布天數檢查進行 CVE 與稽核漏洞修補。                                |
+| `translation-expertise` | `translation`  | EN ↔ JA ↔ zh-TW 譯文風格規範、1:1 結構對齊，以及台灣／日文術語陷阱防護。 |
+
+選用（`creative/*`，不包含在 `skills-lock.json` 中——有需要時執行 `pnpm skills:add shino369/kyoten-skills --skill <name>` 在本機安裝，不會更動 `skills-lock.json`）：
+
+| 技能                     | 分類       | 功能說明                                                                                                     |
+| ------------------------ | ---------- | ------------------------------------------------------------------------------------------------------------ |
+| `transparent-background` | `creative` | 將純色背景圖片轉為邊緣乾淨的透明 PNG，並支援清理殘留雜點與局部換色。                                         |
+| `game-image-extraction`  | `creative` | 擷取、轉換並驗證 Unity（`*_Data`／Addressables）與吉里吉里 2/Z（`.xp3`）遊戲圖片素材（支援純中繼資料檢查）。 |
 
 #### 🌐 瀏覽器與網頁
 
@@ -260,33 +268,35 @@ pnpm memory export                  # checksummed .tar.gz backup; restore via im
 外部技能**不會提交至 Git**。請使用 Vercel 的 [`skills` CLI](https://github.com/vercel-labs/skills)（[skills.sh](https://skills.sh) 生態系）從 `skills-lock.json` 安裝推薦組合：
 
 ```bash
-pnpm skills:install                      # install everything in skills-lock.json
-pnpm skills:install --skip <name>        # skip optional skills
-pnpm skills:install --only <name>        # install only the named skills (comma-separated)
-pnpm skills:update                       # update installed skills
-pnpm skills:check                        # verify lock entries are installed
-pnpm skills:link                         # (re)link .agents/skills into .claude/skills
+pnpm skills:install                                     # install everything in skills-lock.json (+ skills-lock.local.json)
+pnpm skills:install --skip <name>                       # skip optional skills
+pnpm skills:install --only <name>                       # install only the named skills (comma-separated)
+pnpm skills:add <owner/repo> --skill <name>...          # install opt-in skills locally (skills-lock.local.json)
+pnpm skills:update                                      # update installed skills
+pnpm skills:check                                       # verify lock entries are installed
+pnpm skills:link                                        # (re)link .agents/skills into .claude/skills
 ```
 
-安裝作業採用 skills.sh 搭配 `--agent claude-code codex` 的預設配置：實際檔案會安裝至 `.agents/skills/<name>/`（由 Codex 與 Antigravity 原生讀取），並在 `.claude/skills/<name>` 建立指向該處的相對符號連結。`skills:link` 會為專案自建技能建立相同的連結、遷移舊版複製安裝的檔案、清除過時連結，並在 Windows 上自動改用目錄連接點（Directory Junction）。外部安裝的技能會保持未追蹤狀態；每當 `skills-lock.json` 有異動時請記得提交。`skills:check` 會驗證鎖定檔中的每個項目是否皆已安裝，且 frontmatter 名稱相符。
+安裝作業採用 skills.sh 搭配 `--agent claude-code codex` 的預設配置：實際檔案會安裝至 `.agents/skills/<name>/`（由 Codex 與 Antigravity 原生讀取），並在 `.claude/skills/<name>` 建立指向該處的相對符號連結。`skills:link` 會為專案自建技能建立相同的連結、遷移舊版複製安裝的檔案、清除過時連結，並在 Windows 上自動改用目錄連接點（Directory Junction）。外部安裝的技能會保持未追蹤狀態；僅在刻意變更預設技能組合時才提交 `skills-lock.json`。`skills:check` 會驗證 `skills-lock.json`（以及若存在，由 Git 忽略的 `skills-lock.local.json`）中的每個項目是否皆已安裝，且 frontmatter 名稱相符。
 
 鎖定檔中的雜湊值是來源快照雜湊值，無法從本機安裝的複本重現，因此請透過 `git diff` 檢視內容變更。在 Windows 上，`skills:update` 可能會在成功更新後因上游工具異常中斷而回傳結束碼 127——判定失敗前請先確認檔案是否已更新。
 
-若要手動新增技能，請執行 `pnpm dlx skills add <owner/repo> --skill <name> --agent claude-code codex -y`，接著執行 `pnpm skills:link`；該技能將僅留存於本機且不納入追蹤。
+若想在本機安裝選用技能而不更動受追蹤的 `skills-lock.json`，請執行 `pnpm skills:add <owner/repo> --skill <name>`。該指令會將項目記錄至由 Git 忽略的 `skills-lock.local.json`、還原 `skills-lock.json`，並自動執行 `pnpm skills:link`（若想改為保留在 `skills-lock.json` 中，請加上 `--tracked`）。
 
 ### 🔧 技能執行環境需求
 
 多數技能僅包含操作指引，以下技能則需要本機執行環境：
 
-| 技能                     | 執行環境                           | 檢查／安裝方式                                                                                                                            |
-| ------------------------ | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent-browser`          | `agent-browser` CLI                | `pnpm exec agent-browser --version`；先執行一次 `pnpm exec agent-browser install`，之後使用 `pnpm exec agent-browser ...`（開發相依套件） |
-| `browser-use`            | `browser-use` CLI                  | `browser-use --version`；透過 `uv tool install --python 3.12 browser-use` 安裝                                                            |
-| `playwright-cli`         | 本機 Playwright                    | `pnpm exec playwright --version`；執行 `pnpm exec playwright cli ...`                                                                     |
-| `skill-creator`          | Python 3.12 + PyYAML               | 於技能目錄內執行 `uv run --with pyyaml --python 3.12 python ...`                                                                          |
-| `transparent-background` | Python 3.12 + Pillow、NumPy、SciPy | `uv run --python 3.12 --with pillow --with numpy --with scipy python -I .agents/skills/transparent-background/scripts/imgalpha.py --help` |
-| `dependency-update`      | `gh` CLI                           | `gh --version`；請至 <https://cli.github.com/> 安裝（亦用於 PR 附件處理）                                                                 |
-| Playwright e2e           | Chromium                           | `pnpm exec playwright install chromium`                                                                                                   |
+| 技能                               | 執行環境                             | 檢查／安裝方式                                                                                                                            |
+| ---------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent-browser`                    | `agent-browser` CLI                  | `pnpm exec agent-browser --version`；先執行一次 `pnpm exec agent-browser install`，之後使用 `pnpm exec agent-browser ...`（開發相依套件） |
+| `browser-use`                      | `browser-use` CLI                    | `browser-use --version`；透過 `uv tool install --python 3.12 browser-use` 安裝                                                            |
+| `playwright-cli`                   | 本機 Playwright                      | `pnpm exec playwright --version`；執行 `pnpm exec playwright cli ...`                                                                     |
+| `skill-creator`                    | Python 3.12 + PyYAML                 | 於技能目錄內執行 `uv run --with pyyaml --python 3.12 python ...`                                                                          |
+| `transparent-background`（_選用_） | Python 3.12 + Pillow、NumPy、SciPy   | `uv run --python 3.12 --with pillow --with numpy --with scipy python -I .agents/skills/transparent-background/scripts/imgalpha.py --help` |
+| `game-image-extraction`（_選用_）  | Python 3.12 + Pillow、選用 `UnityPy` | `uv run --python 3.12 --with UnityPy --with pillow python -I .agents/skills/game-image-extraction/scripts/game_extract.py --help`         |
+| `dependency-update`                | `gh` CLI                             | `gh --version`；請至 <https://cli.github.com/> 安裝（亦用於 PR 附件處理）                                                                 |
+| Playwright e2e                     | Chromium                             | `pnpm exec playwright install chromium`                                                                                                   |
 
 本工作區已封鎖 `npm` 指令。單次執行的 CLI 請使用 `pnpm dlx`，專案本機執行檔請使用 `pnpm add -D` 搭配 `pnpm exec`，Python CLI 則使用 `uv tool`／`uvx`。請避免使用 `pnpm add -g`：全域安裝會繞過工作區的鎖定檔與供應鏈安全設定。
 

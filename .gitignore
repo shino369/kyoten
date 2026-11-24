@@ -240,5 +240,8 @@ pip-log.txt
 !/.agents/skills/web-browsing/
 !/.agents/skills/workspace-setup/
 
+# Machine-local opt-in skills lockfile (pnpm skills:add); tracked defaults live in skills-lock.json
+/skills-lock.local.json
+
 # .claude/skills/ only holds links into .agents/skills/ (pnpm workspace:setup)
 /.claude/skills/

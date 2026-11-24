@@ -20,7 +20,8 @@ outputs.
   or the task's repo to `tasks/.trash/` for 7 days, so it is safe and needs no asking.
 - Never `git commit --no-verify`. If a hook rejects a commit, fix the cause.
 - Never commit `tasks/`, `logs/`, `memory/`, `AGENTS.local.md`, `CLAUDE.local.md`,
-  `tools/local.json`, third-party skills, `.claude/settings.local.json`, or `.mcp.json`.
+  `tools/local.json`, `skills-lock.local.json`, third-party skills, `.claude/settings.local.json`,
+  or `.mcp.json`.
 - Never edit files under `.claude/skills/` — they are links. Edit `.agents/skills/` instead.
 - Never add attribution lines (`Co-Authored-By`, "Generated with …") to commits or PRs.
 - Never create summary or completion documents unless the user asks.
@@ -48,28 +49,28 @@ outputs.
 
 ## 3. Commands
 
-| Goal                          | Command                                                                            |
-| ----------------------------- | ---------------------------------------------------------------------------------- |
-| Full quality gate (required)  | `pnpm check`                                                                       |
-| Tests / with coverage         | `pnpm test` / `pnpm test:coverage`                                                 |
-| Lint / auto-fix               | `pnpm lint` / `pnpm lint:fix`                                                      |
-| Format / check format         | `pnpm format` / `pnpm format:check`                                                |
-| Typecheck                     | `pnpm typecheck`                                                                   |
-| Task brief / log / help       | `pnpm task status` · `pnpm task note …` · `pnpm task help`                         |
-| Delete stale files (undoable) | `pnpm task rm <path>…` (to `tasks/.trash/`, kept 7 days)                           |
-| Tools on this machine         | `pnpm tools list` · `pnpm tools show <name>` · `pnpm tools scan`                   |
-| Ask another agent (read-only) | `pnpm agent ask --agent claude\|codex\|dsh\|agy "…"`                               |
-| Fix until verify passes       | `pnpm loop <task> --agent claude\|codex\|dsh\|agy` (`--help`)                      |
-| Review round (code task)      | `pnpm task review` · `pnpm task review record` (§4.5)                              |
-| Run a plan with N workers     | `pnpm swarm <task> --agent claude\|codex\|dsh\|agy --workers 2`                    |
-| Set up / verify the workspace | `pnpm workspace:setup` / `pnpm workspace:check`                                    |
-| Sync / check harness configs  | `pnpm harness sync` / `pnpm harness check` (`docs/harness.md`)                     |
-| Third-party skills            | `pnpm skills:install` · `pnpm skills:check` · `pnpm skills:link`                   |
-| Add a dev dependency          | `pnpm add -D <pkg> --save-catalog-name=dev`                                        |
-| E2E tests (Playwright)        | `pnpm test:e2e`                                                                    |
-| Start an agent (kyoten)       | `pnpm kyoten [<agent>]` or `npx kyoten`. See [the launcher guide](docs/kyoten.md). |
-| Memory: status, save, search  | `pnpm memory` · `pnpm memory add "…" …` · `pnpm memory recall "…"` §13             |
-| Memory: move or back up       | `pnpm memory export` · `pnpm memory import <file> --dry-run`                       |
+| Goal                          | Command                                                                              |
+| ----------------------------- | ------------------------------------------------------------------------------------ |
+| Full quality gate (required)  | `pnpm check`                                                                         |
+| Tests / with coverage         | `pnpm test` / `pnpm test:coverage`                                                   |
+| Lint / auto-fix               | `pnpm lint` / `pnpm lint:fix`                                                        |
+| Format / check format         | `pnpm format` / `pnpm format:check`                                                  |
+| Typecheck                     | `pnpm typecheck`                                                                     |
+| Task brief / log / help       | `pnpm task status` · `pnpm task note …` · `pnpm task help`                           |
+| Delete stale files (undoable) | `pnpm task rm <path>…` (to `tasks/.trash/`, kept 7 days)                             |
+| Tools on this machine         | `pnpm tools list` · `pnpm tools show <name>` · `pnpm tools scan`                     |
+| Ask another agent (read-only) | `pnpm agent ask --agent claude\|codex\|dsh\|agy "…"`                                 |
+| Fix until verify passes       | `pnpm loop <task> --agent claude\|codex\|dsh\|agy` (`--help`)                        |
+| Review round (code task)      | `pnpm task review` · `pnpm task review record` (§4.5)                                |
+| Run a plan with N workers     | `pnpm swarm <task> --agent claude\|codex\|dsh\|agy --workers 2`                      |
+| Set up / verify the workspace | `pnpm workspace:setup` / `pnpm workspace:check`                                      |
+| Sync / check harness configs  | `pnpm harness sync` / `pnpm harness check` (`docs/harness.md`)                       |
+| Third-party skills            | `pnpm skills:install` · `pnpm skills:add` · `pnpm skills:check` · `pnpm skills:link` |
+| Add a dev dependency          | `pnpm add -D <pkg> --save-catalog-name=dev`                                          |
+| E2E tests (Playwright)        | `pnpm test:e2e`                                                                      |
+| Start an agent (kyoten)       | `pnpm kyoten [<agent>]` or `npx kyoten`. See [the launcher guide](docs/kyoten.md).   |
+| Memory: status, save, search  | `pnpm memory` · `pnpm memory add "…" …` · `pnpm memory recall "…"` §13               |
+| Memory: move or back up       | `pnpm memory export` · `pnpm memory import <file> --dry-run`                         |
 
 Every workspace script prints a `Fix:` line when it fails — run that command.
 
@@ -216,23 +217,29 @@ e2e only. Workflows: `.agents/skills/web-browsing/SKILL.md`.
 Skills live in `.agents/skills/<name>/SKILL.md` (third-party skills install via
 `pnpm skills:install`). Open the matching `SKILL.md` if your harness does not auto-load it.
 
-| Skill                                            | Use when                                                   | Owner         |
-| ------------------------------------------------ | ---------------------------------------------------------- | ------------- |
-| `workspace-setup`                                | New clone/machine, missing skills, broken links or hooks   | this repo     |
-| `web-browsing`                                   | Any browser or web task                                    | this repo     |
-| `context-manager`                                | Long sessions losing focus                                 | this repo     |
-| `dependency-update` / `security-update`          | Routine package/Node/pnpm updates / CVEs & `pnpm audit`    | kyoten-skills |
-| `translation-expertise`                          | EN ↔ JA ↔ zh-TW translation, house styles & term traps     | kyoten-skills |
-| `transparent-background`                         | Remove flat image background, clean edges, recolour shapes | kyoten-skills |
-| `code-review`, `tdd`, `diagnosing-bugs`          | Review, test-first work, hard bugs                         | third-party   |
-| `agent-browser`, `browser-use`, `playwright-cli` | Browser runtimes                                           | third-party   |
-| `skill-creator`                                  | Creating or improving skills                               | third-party   |
+| Skill                                            | Use when                                                   | Owner                  |
+| ------------------------------------------------ | ---------------------------------------------------------- | ---------------------- |
+| `workspace-setup`                                | New clone/machine, missing skills, broken links or hooks   | this repo              |
+| `web-browsing`                                   | Any browser or web task                                    | this repo              |
+| `context-manager`                                | Long sessions losing focus                                 | this repo              |
+| `dependency-update` / `security-update`          | Routine package/Node/pnpm updates / CVEs & `pnpm audit`    | kyoten-skills          |
+| `translation-expertise`                          | EN ↔ JA ↔ zh-TW translation, house styles & term traps     | kyoten-skills          |
+| `transparent-background`                         | Remove flat image background, clean edges, recolour shapes | kyoten-skills (opt-in) |
+| `game-image-extraction`                          | Extract, convert, and verify Unity & KiriKiri2/Z images    | kyoten-skills (opt-in) |
+| `code-review`, `tdd`, `diagnosing-bugs`          | Review, test-first work, hard bugs                         | third-party            |
+| `agent-browser`, `browser-use`, `playwright-cli` | Browser runtimes                                           | third-party            |
+| `skill-creator`                                  | Creating or improving skills                               | third-party            |
+
+Opt-in `kyoten-skills` (`creative/*`) are not in `skills-lock.json`; install on demand with
+`pnpm skills:add shino369/kyoten-skills --skill <name>` (records in git-ignored
+`skills-lock.local.json` and runs `pnpm skills:link` without modifying `skills-lock.json`).
 
 Runtimes: `agent-browser` (`pnpm exec agent-browser …`; once: `install`), `browser-use`
 (`uv tool install --python 3.12 browser-use`), `playwright-cli` (`pnpm exec playwright cli …`),
 `skill-creator` (`uv run --with pyyaml --python 3.12 python …`), `transparent-background`
-(`uv run --python 3.12 --with pillow --with numpy --with scipy python -I …/imgalpha.py`), `gh`
-(`pnpm tools show gh`). If a runtime is missing, tell the user what to install; never silently
+(`uv run --python 3.12 --with pillow --with numpy --with scipy python -I …/imgalpha.py`),
+`game-image-extraction` (`uv run --python 3.12 --with UnityPy --with pillow python -I …/game_extract.py`),
+`gh` (`pnpm tools show gh`). If a runtime is missing, tell the user what to install; never silently
 switch tools.
 
 ## 10. Roles (reusable agent prompts)
