@@ -87,7 +87,13 @@ agent: `kyoten claude update`.
 The workspace's own commands (`pnpm task`, `pnpm memory`, `pnpm tools`, `pnpm check`, …) run in
 the home. `kyoten run <script> [args…]` runs `pnpm <script> [args…]` there from wherever you are,
 with your terminal and environment, and returns its exit code; `kyoten run` lists the scripts.
-Every Fix line kyoten prints uses this form, because `cd "$(kyoten where)"` does not work in cmd.
+Every Fix line the launcher prints uses this form, because `cd "$(kyoten where)"` does not work in
+cmd. The scripts' own hints and Fix lines show `pnpm <script> …`; outside the home, run them as
+`kyoten run <script> …`.
+
+The script runs in the home, so a relative path in its arguments is resolved from the home, not
+from where you typed it. Pass absolute paths instead: `kyoten run task new <name> --repo "$PWD"`,
+not `--repo .`, which resolves to the home and starts a task with no repository.
 
 ```bash
 kyoten run task status
@@ -277,13 +283,20 @@ kyoten update                # finishes the install and setup
 
 ## Per-agent personas
 
-Each agent can talk in its own voice. `pnpm memory personalize --for <claude|codex|ds|agy>
---persona "…"` (in the home) writes `memory/persona.<agent>.md`; `ds` is shared by `dsh` and
-`dscc`. kyoten starts every agent with `KYOTEN_AGENT=<agent>`, and the memory hook applies that
-agent's file at session start (and names it on each prompt). Nothing is rewritten at launch, so
-other sessions in the same home are not affected. An agent without a file uses the default
-persona, and `pnpm memory personalize --off` pauses all of them. `--for … --reset` removes a file
-(`pnpm memory undo` restores it). Details: `docs/harness.md`.
+Each agent can talk in its own voice. `kyoten run memory personalize --for <claude|codex|ds|agy>
+--persona "…"` (or `--persona-file "$PWD/persona.md"`) writes `memory/persona.<agent>.md` in the
+home; `ds` is shared by `dsh` and `dscc`. kyoten starts every agent with `KYOTEN_AGENT=<agent>`,
+and the memory hook applies that agent's file at session start (and names it on each prompt).
+Nothing is rewritten at launch, so other sessions in the same home are not affected. An agent
+without a file uses the default persona, and `kyoten run memory personalize --off` pauses all of
+them. `--for … --reset` removes a file (`kyoten run memory undo` restores it).
+
+The file is markdown like `memory/persona.md`: HTML comments and heading marks are dropped, and the
+rendered personalization (this persona plus the shared settings) is at most 1,500 characters. You
+can edit it by hand: the hook reads it at every session start, so the next session uses the edit
+without `memory init`. A hand-edited file that fails the checks (over the limit, or text that looks
+like a secret) is skipped, and that agent falls back to the default persona without a warning;
+`--for <agent> --persona-file` runs the same checks and prints the error. Details: `docs/harness.md`.
 
 ## Security
 

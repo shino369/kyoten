@@ -407,7 +407,11 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   personalization. The per-prompt `[Persona]` line names it. Without the variable (a plain clone,
   or an agent not started by kyoten), without the file, or with `personalize --off`, nothing
   changes: the default persona applies, or none when paused. The `AGENTS.local.md` core block always
-  shows the default persona. `pnpm memory` lists the agent personas.
+  shows the default persona. `pnpm memory` lists the agent personas. The hook reads the file at
+  each session start, so a hand edit applies to the next session without `pnpm memory init`
+  (unlike `memory/persona.md`). A file the checks refuse (over the limit, or text that looks like
+  a secret) is ignored without a warning, and the agent falls back to the default persona;
+  `pnpm memory` still lists it, so set it through `--for <agent> --persona-file` to see the error.
 - **Persona compaction and audit.** `pnpm memory personalize --compact` shortens a persona
   to fit, then audits the result in a second fresh session. `--audit` checks the original
   persona without writing files. The persona comes from `--persona` or `--persona-file`,
