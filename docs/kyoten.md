@@ -98,6 +98,7 @@ not `--repo .`, which resolves to the home and starts a task with no repository.
 ```bash
 kyoten run task status
 kyoten run memory recall "deploy"
+kyoten run skills:add shino369/kyoten-skills --skill transparent-background
 kyoten run install          # pnpm install in the home
 ```
 
@@ -242,9 +243,11 @@ When the home was made by another kyoten version, each launch prints a one-line 
 **What the snapshot holds.** The tracked files of one kyoten commit: `AGENTS.md`, `CLAUDE.md`, the
 harness folders (`.claude/`, `.codex/`, `.agents/`, `.dsh/`), `utils/`, `docs/` (excluding
 `docs/images/`), `templates/`, `tools/catalog.json`, the project's own skills, and `package.json`
-with its lockfile. Third-party skills are not in it: `pnpm workspace:setup` installs them from
-`skills-lock.json`. Your personal state (`tasks/`, `memory/`, `AGENTS.local.md`, `CLAUDE.local.md`,
-`logs/`, `tools/local.json`) is ignored by git, so neither the snapshot nor an update touches it.
+with its lockfile. Third-party skills are not in it: `pnpm workspace:setup` installs the defaults
+from `skills-lock.json` (plus any opt-in skills you added locally with `kyoten run skills:add`).
+Your personal state (`tasks/`, `memory/`, `AGENTS.local.md`, `CLAUDE.local.md`, `logs/`,
+`tools/local.json`, `skills-lock.local.json`) is ignored by git, so neither the snapshot nor an
+update touches it.
 
 **Customizing.** Edit the home and commit on `main` (a rule in `AGENTS.md`, a skill, a hook
 setting). An update merges the new snapshot with your commits like any git merge.

@@ -61,7 +61,7 @@ Usage:
 Usage: kyoten [--home <dir>] [--no-add-dir] [<agent>] [agent args…]
        kyoten [--home <dir>] <command> [options]
 
-kyoten 0.2.0 — start a coding agent in your kyoten workspace (the home)
+kyoten 0.2.1 — start a coding agent in your kyoten workspace (the home)
 
 Agents (the first word, default claude; --<agent> works too)
   claude    Claude Code
