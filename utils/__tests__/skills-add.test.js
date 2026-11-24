@@ -46,7 +46,7 @@ describe('parseArgs', () => {
       source: 'shino369/kyoten-skills',
       skills: ['transparent-background', 'game-image-extraction'],
       tracked: false,
-      targets: ['.claude\\skills'.replace('\\', path.sep)],
+      targets: [path.join('.claude', 'skills')],
       help: false,
     });
   });
