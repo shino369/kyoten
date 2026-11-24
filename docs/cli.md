@@ -11,6 +11,7 @@ Run `pnpm docs:cli` to refresh this reference from the workspace CLI help. Run `
 - [`pnpm kyoten`](#pnpm-kyoten)
 - [`pnpm loop`](#pnpm-loop)
 - [`pnpm memory`](#pnpm-memory)
+- [`pnpm skills:add`](#pnpm-skillsadd)
 - [`pnpm skills:install`](#pnpm-skillsinstall)
 - [`pnpm skills:link`](#pnpm-skillslink)
 - [`pnpm swarm`](#pnpm-swarm)
@@ -265,12 +266,32 @@ Options
   --help, -h                   Show this help (also pnpm memory help)
 ```
 
+## `pnpm skills:add`
+
+```text
+Usage: pnpm skills:add <source> --skill <name>... [options]
+
+Install opt-in third-party skills locally without modifying skills-lock.json.
+Installed entries are saved to git-ignored skills-lock.local.json, and harness
+links are refreshed automatically.
+
+Options
+  --skill, -s <name...>  Skill name(s) to install (space/comma-separated, repeatable)
+  --tracked              Keep the new entries in tracked skills-lock.json instead
+  --target <dir>         Extra skill link directory (repeatable)
+  --help, -h             Show this help
+
+Examples
+  pnpm skills:add shino369/kyoten-skills --skill transparent-background
+  pnpm skills:add shino369/kyoten-skills --skill transparent-background game-image-extraction
+```
+
 ## `pnpm skills:install`
 
 ```text
 Usage: pnpm skills:install [options]
 
-Install third-party skills listed in skills-lock.json.
+Install third-party skills listed in skills-lock.json (and skills-lock.local.json if present).
 
 Options
   --only <names>  Install only these skill names (comma-separated, repeatable)

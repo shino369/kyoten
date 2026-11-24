@@ -226,7 +226,7 @@ pnpm memory export                  # checksummed .tar.gz backup; restore via im
 | `security-update`       | `dependencies` | 結合發布天數檢查進行 CVE 與稽核漏洞修補。                                |
 | `translation-expertise` | `translation`  | EN ↔ JA ↔ zh-TW 譯文風格規範、1:1 結構對齊，以及台灣／日文術語陷阱防護。 |
 
-選用（`creative/*`，不包含在 `skills-lock.json` 中——有需要時執行 `pnpm dlx skills add shino369/kyoten-skills --skill <name> --agent claude-code codex -y` 個別安裝）：
+選用（`creative/*`，不包含在 `skills-lock.json` 中——有需要時執行 `pnpm skills:add shino369/kyoten-skills --skill <name>` 在本機安裝，不會更動 `skills-lock.json`）：
 
 | 技能                     | 分類       | 功能說明                                                                                                     |
 | ------------------------ | ---------- | ------------------------------------------------------------------------------------------------------------ |
@@ -268,19 +268,20 @@ pnpm memory export                  # checksummed .tar.gz backup; restore via im
 外部技能**不會提交至 Git**。請使用 Vercel 的 [`skills` CLI](https://github.com/vercel-labs/skills)（[skills.sh](https://skills.sh) 生態系）從 `skills-lock.json` 安裝推薦組合：
 
 ```bash
-pnpm skills:install                      # install everything in skills-lock.json
-pnpm skills:install --skip <name>        # skip optional skills
-pnpm skills:install --only <name>        # install only the named skills (comma-separated)
-pnpm skills:update                       # update installed skills
-pnpm skills:check                        # verify lock entries are installed
-pnpm skills:link                         # (re)link .agents/skills into .claude/skills
+pnpm skills:install                                     # install everything in skills-lock.json (+ skills-lock.local.json)
+pnpm skills:install --skip <name>                       # skip optional skills
+pnpm skills:install --only <name>                       # install only the named skills (comma-separated)
+pnpm skills:add <owner/repo> --skill <name>...          # install opt-in skills locally (skills-lock.local.json)
+pnpm skills:update                                      # update installed skills
+pnpm skills:check                                       # verify lock entries are installed
+pnpm skills:link                                        # (re)link .agents/skills into .claude/skills
 ```
 
-安裝作業採用 skills.sh 搭配 `--agent claude-code codex` 的預設配置：實際檔案會安裝至 `.agents/skills/<name>/`（由 Codex 與 Antigravity 原生讀取），並在 `.claude/skills/<name>` 建立指向該處的相對符號連結。`skills:link` 會為專案自建技能建立相同的連結、遷移舊版複製安裝的檔案、清除過時連結，並在 Windows 上自動改用目錄連接點（Directory Junction）。外部安裝的技能會保持未追蹤狀態；每當 `skills-lock.json` 有異動時請記得提交。`skills:check` 會驗證鎖定檔中的每個項目是否皆已安裝，且 frontmatter 名稱相符。
+安裝作業採用 skills.sh 搭配 `--agent claude-code codex` 的預設配置：實際檔案會安裝至 `.agents/skills/<name>/`（由 Codex 與 Antigravity 原生讀取），並在 `.claude/skills/<name>` 建立指向該處的相對符號連結。`skills:link` 會為專案自建技能建立相同的連結、遷移舊版複製安裝的檔案、清除過時連結，並在 Windows 上自動改用目錄連接點（Directory Junction）。外部安裝的技能會保持未追蹤狀態；僅在刻意變更預設技能組合時才提交 `skills-lock.json`。`skills:check` 會驗證 `skills-lock.json`（以及若存在，由 Git 忽略的 `skills-lock.local.json`）中的每個項目是否皆已安裝，且 frontmatter 名稱相符。
 
 鎖定檔中的雜湊值是來源快照雜湊值，無法從本機安裝的複本重現，因此請透過 `git diff` 檢視內容變更。在 Windows 上，`skills:update` 可能會在成功更新後因上游工具異常中斷而回傳結束碼 127——判定失敗前請先確認檔案是否已更新。
 
-若要手動新增技能，請執行 `pnpm dlx skills add <owner/repo> --skill <name> --agent claude-code codex -y`，接著執行 `pnpm skills:link`；該技能將僅留存於本機且不納入追蹤。
+若想在本機安裝選用技能而不更動受追蹤的 `skills-lock.json`，請執行 `pnpm skills:add <owner/repo> --skill <name>`。該指令會將項目記錄至由 Git 忽略的 `skills-lock.local.json`、還原 `skills-lock.json`，並自動執行 `pnpm skills:link`（若想改為保留在 `skills-lock.json` 中，請加上 `--tracked`）。
 
 ### 🔧 技能執行環境需求
 

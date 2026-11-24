@@ -226,7 +226,7 @@ pnpm memory export                  # checksummed .tar.gz backup; restore via im
 | `security-update`       | `dependencies` | リリース経過日数チェック付きの CVE・監査パッチ適用。                                 |
 | `translation-expertise` | `translation`  | EN ↔ JA ↔ zh-TW のハウススタイル、1:1 構造一致、台湾華語・日本語の用語トラップ対策。 |
 
-オプトイン (`creative/*`、`skills-lock.json` には含まれません — 必要に応じて `pnpm dlx skills add shino369/kyoten-skills --skill <name> --agent claude-code codex -y` で個別インストール):
+オプトイン (`creative/*`、`skills-lock.json` には含まれません — `skills-lock.json` を変更せずにローカル導入するには `pnpm skills:add shino369/kyoten-skills --skill <name>` を実行):
 
 | スキル                   | カテゴリ   | 概要                                                                                               |
 | ------------------------ | ---------- | -------------------------------------------------------------------------------------------------- |
@@ -268,19 +268,20 @@ pnpm memory export                  # checksummed .tar.gz backup; restore via im
 外部スキルは**コミットされません**。Vercel の [`skills` CLI](https://github.com/vercel-labs/skills)（[skills.sh](https://skills.sh) エコシステム）を使って、`skills-lock.json` から推奨セットをインストールします：
 
 ```bash
-pnpm skills:install                      # install everything in skills-lock.json
-pnpm skills:install --skip <name>        # skip optional skills
-pnpm skills:install --only <name>        # install only the named skills (comma-separated)
-pnpm skills:update                       # update installed skills
-pnpm skills:check                        # verify lock entries are installed
-pnpm skills:link                         # (re)link .agents/skills into .claude/skills
+pnpm skills:install                                     # install everything in skills-lock.json (+ skills-lock.local.json)
+pnpm skills:install --skip <name>                       # skip optional skills
+pnpm skills:install --only <name>                       # install only the named skills (comma-separated)
+pnpm skills:add <owner/repo> --skill <name>...          # install opt-in skills locally (skills-lock.local.json)
+pnpm skills:update                                      # update installed skills
+pnpm skills:check                                       # verify lock entries are installed
+pnpm skills:link                                        # (re)link .agents/skills into .claude/skills
 ```
 
-インストールには skills.sh のデフォルトレイアウト (`--agent claude-code codex`) を使用します。実ファイルは `.agents/skills/<name>/`（Codex と Antigravity がネイティブに参照）に配置され、`.claude/skills/<name>` にはそこへの相対シンボリックリンクが作成されます。`skills:link` はプロジェクト固有スキルにも同様のリンクを作成し、旧来のコピー方式からの移行、不要リンクの削除を行い、Windows ではディレクトリジャンクションへフォールバックします。外部スキルは git の追跡対象外のままにし、`skills-lock.json` に変更があった場合は同ファイルをコミットしてください。`skills:check` は、ロック内のすべてのエントリがインストールされており、それぞれのフロントマター名と一致しているかを検証します。
+インストールには skills.sh のデフォルトレイアウト (`--agent claude-code codex`) を使用します。実ファイルは `.agents/skills/<name>/`（Codex と Antigravity がネイティブに参照）に配置され、`.claude/skills/<name>` にはそこへの相対シンボリックリンクが作成されます。`skills:link` はプロジェクト固有スキルにも同様のリンクを作成し、旧来のコピー方式からの移行、不要リンクの削除を行い、Windows ではディレクトリジャンクションへフォールバックします。外部スキルは git の追跡対象外のままにし、デフォルトスキルを変更した場合のみ `skills-lock.json` をコミットしてください。`skills:check` は、`skills-lock.json`（および存在する場合は git 管理外の `skills-lock.local.json`）内のすべてのエントリがインストールされており、それぞれのフロントマター名と一致しているかを検証します。
 
 ロックファイル内のハッシュは取得元スナップショットのハッシュであり、インストール済みコピーからは再現できないため、内容の変更は `git diff` で確認してください。Windows では、アップストリームのクラッシュにより `skills:update` が更新成功後に終了コード 127 で終了する場合があります。失敗と判断する前にファイルが更新されているか確認してください。
 
-手動でスキルを追加するには、`pnpm dlx skills add <owner/repo> --skill <name> --agent claude-code codex -y` を実行してから `pnpm skills:link` を実行します。追加されたスキルはローカルかつ未追跡のまま維持されます。
+追跡中の `skills-lock.json` を変更せずにオプトインスキルをローカル追加するには、`pnpm skills:add <owner/repo> --skill <name>` を実行します。追加エントリは git 管理外の `skills-lock.local.json` に記録され、`skills-lock.json` は元の状態に戻されたうえで `pnpm skills:link` まで自動実行されます（`skills-lock.json` に残したい場合は `--tracked` を付けてください）。
 
 ### 🔧 スキルのランタイム要件
 

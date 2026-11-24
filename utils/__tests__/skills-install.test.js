@@ -1,4 +1,5 @@
-import { mkdtemp, rm, writeFile } from 'fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
+import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { vi } from 'vitest';
@@ -8,6 +9,7 @@ import {
   main,
   parseArgs,
 } from '../skills-install.js';
+import { LOCAL_LOCK_FILE } from '../skills-lock.js';
 
 /** @type {string[]} */
 let tempDirs = [];
@@ -389,6 +391,68 @@ describe('installSkills', () => {
     expect(code).toBe(0);
     expect(calls).toHaveLength(0);
     expect(lines).toContain('No skills to install.');
+  });
+
+  test('installs skills from skills-lock.local.json and restores skills-lock.json if mutated', async () => {
+    const root = await makeTempDir();
+    const lockPath = await writeLock(root, {
+      alpha: { source: 'owner/shared' },
+    });
+    const originalLock = await readFile(lockPath, 'utf8');
+    await writeFile(
+      path.join(root, LOCAL_LOCK_FILE),
+      JSON.stringify({
+        version: 2,
+        skills: { beta: { source: 'owner/shared' } },
+      })
+    );
+    /** @type {Array<{ args: string[] }>} */
+    const calls = [];
+    const spawn = (
+      /** @type {string} */ _cmd,
+      /** @type {string[]} */ args
+    ) => {
+      calls.push({ args });
+      // Simulate skills.sh writing the local skill into tracked skills-lock.json.
+      fs.writeFileSync(
+        lockPath,
+        JSON.stringify({
+          version: 2,
+          skills: {
+            alpha: { source: 'owner/shared' },
+            beta: { source: 'owner/shared' },
+          },
+        })
+      );
+      return { status: 0 };
+    };
+    /** @type {string[]} */
+    const lines = [];
+
+    const code = await installSkills({
+      rootDir: root,
+      lockPath,
+      spawn,
+      log: (line) => lines.push(line),
+    });
+
+    expect(code).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args).toEqual([
+      'dlx',
+      'skills',
+      'add',
+      'owner/shared',
+      '--skill',
+      'alpha',
+      'beta',
+      '--agent',
+      'claude-code',
+      'codex',
+      '-y',
+    ]);
+    expect(await readFile(lockPath, 'utf8')).toBe(originalLock);
+    expect(lines).toContain('Installed 2 skill(s).');
   });
 });
 
