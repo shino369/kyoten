@@ -102,7 +102,10 @@
     "DISABLE_AUTO_COMPACT": "1"
   },
   "companyAnnouncements": [
-    "Welcome! Tasks live in tasks/<task-name-yymmdd>/ — resume with: pnpm task status"
+    "kyoten — resume: pnpm task list → pnpm task switch <name> → pnpm task status",
+    "New work: pnpm task new <name> --goal \"…\" · each session binds its own task",
+    "Memory: pnpm memory recall \"…\" · save: pnpm memory add \"…\"",
+    "Other agents: pnpm tools list · pnpm agent ask --agent codex \"…\""
   ],
   "hooks": {
     "SessionStart": [
