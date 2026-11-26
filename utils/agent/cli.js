@@ -11,7 +11,7 @@
 import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { AGENTS, buildCommand, runAgent } from '../loop/adapters.js';
+import { buildCommand, runAgent } from '../loop/adapters.js';
 import { isLinkedWorktree } from '../loop/worktree.js';
 import { runIfMain } from '../module-runner.js';
 import { INNER_LOOP_ENV } from '../task/loop.js';
@@ -22,15 +22,23 @@ import { ROOT_DIR } from '../workspace-config.js';
 import { relPosix } from '../paths.js';
 
 export const DEFAULT_TIMEOUT_MIN = 10;
+/**
+ * Agents callable via `pnpm agent ask`. `agy` is excluded: Google Antigravity
+ * Terms of Service prohibit invoking `agy` from other agentic CLIs
+ * (`agy -> others` is allowed; `others -> agy` is blocked).
+ */
+export const ASK_AGENTS = /** @type {const} */ (['claude', 'codex', 'dsh']);
 
-export const HELP = `Usage: pnpm agent ask --agent ${AGENTS.join('|')} [options] "<prompt>" | -
+export const HELP = `Usage: pnpm agent ask --agent ${ASK_AGENTS.join('|')} [options] "<prompt>" | -
 
 Runs one headless turn of another coding agent in this repository and prints
 its answer: a second opinion, a review, or a delegated question. Which agents
 are installed here: pnpm tools list
+Note: agy is intentionally excluded (Google Antigravity ToS forbids calling agy
+from other agent harnesses; agy may call other agents, never the reverse).
 
 Options
-  --agent <name>       ${AGENTS.join(' | ')} (required)
+  --agent <name>       ${ASK_AGENTS.join(' | ')} (required)
   --write              Let the agent edit files (default: read-only). Prefer a
                        git worktree; in the main checkout it edits your tree
   --timeout-min <n>    Stop the agent after n minutes (default ${DEFAULT_TIMEOUT_MIN})
@@ -265,7 +273,17 @@ export function defaultAgentDeps(overrides = {}) {
 function ask(options, d) {
   if (!options.agent) {
     throw new Error(
-      `--agent is required.\nFix: pnpm agent ask --agent ${AGENTS.join('|')} "<prompt>"`
+      `--agent is required.\nFix: pnpm agent ask --agent ${ASK_AGENTS.join('|')} "<prompt>"`
+    );
+  }
+  if (options.agent === 'agy') {
+    throw new Error(
+      `Refusing pnpm agent ask --agent agy: Google Antigravity Terms of Service prohibit invoking agy (headless or agy acp) from other agent harnesses (agy -> others is allowed; others -> agy is blocked).\nFix: use --agent ${ASK_AGENTS.join('|')} (inside Antigravity, use native subagents instead)`
+    );
+  }
+  if (!ASK_AGENTS.includes(/** @type {any} */ (options.agent))) {
+    throw new Error(
+      `Unknown agent "${options.agent}".\nFix: use --agent ${ASK_AGENTS.join('|')}`
     );
   }
   const fromStdin = options.prompt.length === 1 && options.prompt[0] === '-';
@@ -361,7 +379,7 @@ export function main({ argv = process.argv.slice(2), deps = {} } = {}) {
   }
   if (options.command !== 'ask') {
     throw new Error(
-      `Unknown command "${options.command}".\nFix: pnpm agent ask --agent ${AGENTS.join('|')} "<prompt>" (see pnpm agent help)`
+      `Unknown command "${options.command}".\nFix: pnpm agent ask --agent ${ASK_AGENTS.join('|')} "<prompt>" (see pnpm agent help)`
     );
   }
   return ask(options, d);

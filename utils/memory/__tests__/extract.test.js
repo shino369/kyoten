@@ -1167,6 +1167,44 @@ describe('extractEntry', () => {
       }
     );
 
+    test('should defer agy extraction when triggered from another agent harness, while allowing agy -> others', () => {
+      richSession();
+      writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });
+      const entry = queued({ harness: 'agy' });
+      enqueue(dir, entry);
+      const runAgent = answering();
+
+      const deferred = extractEntry(
+        entry,
+        deps({ runAgent, env: { KYOTEN_CALLER_HARNESS: 'claude' } })
+      );
+
+      expect(deferred).toMatchObject({
+        status: 'deferred',
+        side: 'agy',
+        caller: 'claude',
+      });
+      expect(runAgent).not.toHaveBeenCalled();
+      expect(readQueue(dir)).toHaveLength(1);
+      expect(formatRun(deferred)[0]).toContain('uses agy');
+      expect(formatRun(deferred)[0]).toContain('claude');
+
+      // agy -> codex is allowed.
+      writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'codex' });
+      const run = extractEntry(
+        queued({ harness: 'claude' }),
+        deps({
+          runAgent,
+          env: {
+            KYOTEN_CALLER_HARNESS: 'agy',
+            ANTIGRAVITY_CONVERSATION_ID: 'agy-1',
+          },
+        })
+      );
+      expect(run).toMatchObject({ status: 'applied', agent: 'codex' });
+      expect(runAgent).toHaveBeenCalled();
+    });
+
     test('should pair extractModel with the configured agent', () => {
       richSession();
       writeConfig(dir, {
@@ -1538,21 +1576,26 @@ describe('provider sides', () => {
     expect(extractEntry(entry, deps()).status).toBe('applied');
   });
 
-  test('should not apply the rule to other extraction agents', () => {
+  test('should not apply the dscc rule to dsh, while deferring agy from dscc', () => {
     richSession();
-    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'dsh' });
     const runAgent = agentReturning({ ops: [] });
 
     const run = extractEntry(queued(), deps({ env: DSCC, runAgent }));
 
     expect(run.status).toBe('applied');
+
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });
+    expect(extractEntry(queued(), deps({ env: DSCC, runAgent }))).toMatchObject(
+      { status: 'deferred', side: 'agy', caller: 'dscc' }
+    );
   });
 
   test('should dispatch with the agent checked for provider isolation when config changes', () => {
     richSession();
     const entry = queued();
     const runAgent = agentReturning({ ops: [] });
-    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'dsh' });
     const configPath = path.join(dir, CONFIG_FILE);
     const readFile = fs.readFileSync;
     const spy = vi.spyOn(fs, 'readFileSync').mockImplementation((...args) => {
@@ -1567,7 +1610,7 @@ describe('provider sides', () => {
     try {
       expect(extractEntry(entry, deps({ env: DSCC, runAgent }))).toMatchObject({
         status: 'applied',
-        agent: 'agy',
+        agent: 'dsh',
       });
     } finally {
       spy.mockRestore();

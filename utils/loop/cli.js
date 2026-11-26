@@ -17,7 +17,12 @@ import { loadTask, resolveTaskName } from '../task/store.js';
 import { runCommands } from '../task/verify.js';
 import { commandFor } from '../tools/registry.js';
 import { ROOT_DIR } from '../workspace-config.js';
-import { AGENTS, buildCommand, runAgent } from './adapters.js';
+import {
+  AGENTS,
+  assertAgyAllowed,
+  buildCommand,
+  runAgent,
+} from './adapters.js';
 import { fingerprint, runLoop } from './driver.js';
 import { runReviewLoop } from './review-loop.js';
 import {
@@ -205,6 +210,7 @@ export function main({ argv = process.argv.slice(2), deps = {} } = {}) {
       `--agent is required.\nFix: pnpm loop ${options.task ?? '<task>'} --agent ${AGENTS.join('|')}`
     );
   }
+  assertAgyAllowed(options.agent, d.env, 'pnpm loop --agent agy', options.bin);
   const command = buildCommand({
     agent: options.agent,
     bin: options.bin,
@@ -235,6 +241,14 @@ export function main({ argv = process.argv.slice(2), deps = {} } = {}) {
     );
   }
   const reviewerName = options.reviewer ?? options.agent;
+  if (options.review && reviewerName === 'agy') {
+    if (options.agent !== 'agy') {
+      throw new Error(
+        `Refusing --reviewer agy with --agent ${options.agent}: Google Antigravity Terms of Service prohibit invoking agy from another agent workflow.\nFix: use --reviewer claude|codex|dsh`
+      );
+    }
+    assertAgyAllowed(reviewerName, d.env, 'pnpm loop --review --reviewer agy');
+  }
   const reviewer = options.review
     ? buildCommand({
         agent: reviewerName,

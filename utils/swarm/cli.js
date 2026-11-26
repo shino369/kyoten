@@ -7,7 +7,7 @@
 import { spawn as spawnAsync, spawnSync } from 'child_process';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { AGENTS, buildCommand } from '../loop/adapters.js';
+import { AGENTS, assertAgyAllowed, buildCommand } from '../loop/adapters.js';
 import { assertWorkspaceRepo } from '../loop/worktree.js';
 import { runIfMain } from '../module-runner.js';
 import { pnpmInstall } from '../spawn.js';
@@ -311,6 +311,7 @@ export async function main({ argv = process.argv.slice(2), deps = {} } = {}) {
       `--agent is required.\nFix: pnpm swarm ${options.task ?? '<task>'} --agent ${AGENTS.join('|')}`
     );
   }
+  assertAgyAllowed(options.agent, d.env, 'pnpm swarm --agent agy', options.bin);
   const command = buildCommand({
     agent: options.agent,
     bin: options.bin,

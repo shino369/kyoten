@@ -42,12 +42,13 @@ describe('toolsLine', () => {
         tools: [
           entry(),
           entry({ name: 'claude' }),
+          entry({ name: 'agy' }),
           entry({ name: 'gh', kind: 'cli', ok: false }),
           entry({ name: 'dsh-src', kind: 'source' }),
         ],
       })
     ).toBe(
-      'Tools: agents codex, claude · cli gh (broken) · sources dsh-src (pnpm tools list; call another agent: pnpm agent ask --agent <name> "…")'
+      'Tools: agents codex, claude, agy (interactive only) · cli gh (broken) · sources dsh-src (pnpm tools list; call another agent: pnpm agent ask --agent claude|codex|dsh "…")'
     );
   });
 

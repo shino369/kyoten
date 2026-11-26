@@ -37,6 +37,7 @@ import {
   agyInjectOutput,
   normalizeHookInput,
 } from '../harness/input.js';
+import { CALLER_HARNESS_ENV } from '../loop/adapters.js';
 import { runIfMain } from '../module-runner.js';
 import { SESSION_ID_RE, readIfExists } from '../task/store.js';
 import { ROOT_DIR } from '../workspace-config.js';
@@ -381,7 +382,12 @@ export function handleHook(
     const work =
       readQueue(dir).length > 0 ||
       (orConsolidate && consolidationDue(home, { now }) !== null);
-    if (work && !workerRunning(dir)) kick({ rootDir: home, env });
+    if (work && !workerRunning(dir)) {
+      kick({
+        rootDir: home,
+        env: { ...env, [CALLER_HARNESS_ENV]: harness },
+      });
+    }
   };
 
   if (event === 'SessionEnd') {

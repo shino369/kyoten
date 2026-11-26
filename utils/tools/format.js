@@ -34,10 +34,16 @@ export function toolsLine(registry) {
   const groups = KINDS.map((kind) => {
     const names = registry.tools
       .filter((t) => t.kind === kind)
-      .map((t) => `${t.name}${t.ok ? '' : ' (broken)'}`);
+      .map((t) =>
+        !t.ok
+          ? `${t.name} (broken)`
+          : kind === 'agent' && t.name === 'agy'
+            ? 'agy (interactive only)'
+            : t.name
+      );
     return names.length > 0 ? `${KIND_LABELS[kind]} ${names.join(', ')}` : '';
   }).filter(Boolean);
-  const line = `Tools: ${groups.join(' · ')} (pnpm tools list; call another agent: pnpm agent ask --agent <name> "…")`;
+  const line = `Tools: ${groups.join(' · ')} (pnpm tools list; call another agent: pnpm agent ask --agent claude|codex|dsh "…")`;
   return line.length > LINE_LIMIT ? `${line.slice(0, LINE_LIMIT - 1)}…` : line;
 }
 

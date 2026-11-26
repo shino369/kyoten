@@ -325,6 +325,29 @@ describe('main', () => {
       );
     });
 
+    test('should refuse agy from foreign harnesses and as reviewer for another agent, while allowing agy -> codex', () => {
+      seedCode(repo);
+      expect(() =>
+        run(['--agent', 'agy', '--dry-run'], {
+          env: { CLAUDE_CODE_SESSION_ID: 'cc-1' },
+        })
+      ).toThrow(/Terms of Service/);
+      expect(() =>
+        run(['--agent', 'claude', '--bin', 'agy', '--dry-run'], {
+          env: { CLAUDE_CODE_SESSION_ID: 'cc-1' },
+        })
+      ).toThrow(/Terms of Service/);
+      expect(() =>
+        run(['--agent', 'codex', '--review', '--reviewer', 'agy', '--dry-run'])
+      ).toThrow(/Terms of Service/);
+      const { code, out } = run(
+        ['--agent', 'agy', '--review', '--reviewer', 'codex', '--dry-run'],
+        { env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1', KYOTEN_AGENT: 'agy' } }
+      );
+      expect(code).toBe(0);
+      expect(out).toContain('Review: reviewer + triage: codex exec');
+    });
+
     test('should run the quality loop and report it', () => {
       const linked = path.join(base, 'linked');
       git(repo, ['worktree', 'add', '-q', '-b', 'x', linked]);

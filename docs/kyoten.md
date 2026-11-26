@@ -221,7 +221,9 @@ Memory saving starts off in a new home. `kyoten run memory on` turns it on, `kyo
 pauses it (recall keeps working; save a note by hand with `kyoten run memory add "…" --force`), and `kyoten doctor` shows the state. The
 extraction runs on the CLI the session used (Claude Code, Codex, or Antigravity CLI); `kyoten run
 memory set --extract-agent <claude|codex|dsh|agy>` picks one for every job, for example on a
-machine where Codex has MCP servers (Codex extraction needs none configured).
+machine where Codex has MCP servers (Codex extraction needs none configured). Background `agy`
+memory jobs are deferred when triggered from another agent harness (Google Antigravity ToS forbids
+`others -> agy`), and `kyoten agy` refuses to start from inside another agentic CLI.
 
 ## Updating
 

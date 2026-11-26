@@ -4,9 +4,13 @@ import {
   AGENTS,
   AGY_READ_SETTINGS,
   AGY_WRITE_SETTINGS,
+  CALLER_HARNESS_ENV,
+  assertAgyAllowed,
   buildCommand,
   dshDirProblem,
+  foreignHarnessForAgy,
   installHint,
+  isAgyBinary,
   parseAgyStreamJson,
   runAgent,
 } from '../adapters.js';
@@ -476,6 +480,32 @@ describe('dshDirProblem', () => {
   );
 });
 
+describe('isAgyBinary', () => {
+  test.each([
+    ['agy', true],
+    ['AGY', true],
+    ['agy acp', true],
+    ['agy.exe', true],
+    ['agy.CMD', true],
+    ['agy.ps1', true],
+    ['C:\\tools\\agy.exe', true],
+    ['C:/tools/agy', true],
+    ['tools/agy.bat', true],
+    ['claude', false],
+    ['myagy', false],
+    ['agy.txt', false],
+    ['npx -y @antigravity/agy', true],
+    ['npx -y somepkg', false],
+    ['', false],
+  ])('should classify %j as %s', (bin, expected) => {
+    expect(isAgyBinary(bin)).toBe(expected);
+  });
+
+  test('should treat a missing value as not agy', () => {
+    expect(isAgyBinary(undefined)).toBe(false);
+  });
+});
+
 describe('runAgent', () => {
   const command = buildCommand({ agent: 'codex' });
   let clock = 0;
@@ -537,7 +567,12 @@ describe('runAgent', () => {
       'codex',
       command.args,
       expect.objectContaining({
-        env: { A: '1', TASK_SESSION: 'mine', MEMORY_EXTRACT: '1' },
+        env: {
+          A: '1',
+          TASK_SESSION: 'mine',
+          MEMORY_EXTRACT: '1',
+          [CALLER_HARNESS_ENV]: 'codex',
+        },
       })
     );
     expect(env.CLAUDE_CODE_SESSION_ID).toBe('cc-1');
@@ -559,7 +594,9 @@ describe('runAgent', () => {
     expect(spawn).toHaveBeenCalledWith(
       'codex',
       command.args,
-      expect.objectContaining({ env: { [EXTRACT_ENV]: '1' } })
+      expect.objectContaining({
+        env: { [EXTRACT_ENV]: '1', [CALLER_HARNESS_ENV]: 'codex' },
+      })
     );
   });
 
@@ -585,7 +622,11 @@ describe('runAgent', () => {
         cwd: '/wt',
         input: 'fix it',
         timeout: 5000,
-        env: { A: '1', MEMORY_EXTRACT: '1' },
+        env: {
+          A: '1',
+          MEMORY_EXTRACT: '1',
+          [CALLER_HARNESS_ENV]: 'codex',
+        },
       })
     );
     expect(result).toEqual({
@@ -697,5 +738,87 @@ describe('runAgent', () => {
         spawn: () => ({ status: null, error }),
       })
     ).toThrow(/dsh was not found.*\nFix: pass --bin/s);
+  });
+
+  test('should block headless agy from foreign harnesses while allowing agy -> others', () => {
+    const agyCmd = buildCommand({ agent: 'agy', mode: 'read' });
+    const spawn = vi.fn(() => ({ status: 0, stdout: 'ok', stderr: '' }));
+    for (const env of [
+      { CLAUDE_CODE_SESSION_ID: 'cc-1' },
+      { CLAUDECODE: '1' },
+      { CODEX_THREAD_ID: 'cx-1' },
+      { CODEX_SESSION_ID: 'cx-2' },
+      { DSH_SESSION_ID: 'dsh-1' },
+      { OPENCODE: '1' },
+      { KYOTEN_AGENT: 'dscc' },
+      { [CALLER_HARNESS_ENV]: 'codex' },
+      { ANTIGRAVITY_CONVERSATION_ID: 'agy-1', CLAUDECODE: '1' },
+    ]) {
+      expect(() =>
+        runAgent({
+          command: agyCmd,
+          cwd: '/wt',
+          prompt: 'p',
+          timeoutMs: 1000,
+          env,
+          spawn,
+        })
+      ).toThrow(/Terms of Service/);
+    }
+    expect(spawn).not.toHaveBeenCalled();
+
+    // agy -> others is allowed.
+    runAgent({
+      command: buildCommand({ agent: 'codex', mode: 'read' }),
+      cwd: '/wt',
+      prompt: 'p',
+      timeoutMs: 1000,
+      env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1', KYOTEN_AGENT: 'agy' },
+      spawn,
+    });
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(foreignHarnessForAgy({})).toBeNull();
+    expect(
+      foreignHarnessForAgy({
+        ANTIGRAVITY_CONVERSATION_ID: 'agy-1',
+        KYOTEN_AGENT: 'agy',
+        [CALLER_HARNESS_ENV]: 'agy',
+      })
+    ).toBeNull();
+    expect(() => assertAgyAllowed('codex', { CLAUDECODE: '1' })).not.toThrow();
+  });
+
+  test('should block an agy executable passed with --bin from a foreign harness', () => {
+    const spawn = vi.fn(() => ({ status: 0, stdout: '', stderr: '' }));
+    for (const bin of ['agy', 'agy acp', 'AGY.EXE', 'C:\\tools\\agy.cmd']) {
+      expect(() =>
+        runAgent({
+          command: buildCommand({ agent: 'claude', bin }),
+          cwd: '/wt',
+          prompt: 'p',
+          timeoutMs: 1000,
+          env: { CLAUDE_CODE_SESSION_ID: 'cc-1' },
+          spawn,
+        })
+      ).toThrow(/Terms of Service/);
+    }
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  test('should not treat another executable passed with --bin as agy', () => {
+    const spawn = vi.fn(() => ({ status: 0, stdout: '', stderr: '' }));
+    runAgent({
+      command: buildCommand({ agent: 'claude', bin: 'myclaude' }),
+      cwd: '/wt',
+      prompt: 'p',
+      timeoutMs: 1000,
+      env: { CLAUDECODE: '1' },
+      spawn,
+    });
+    expect(spawn).toHaveBeenCalledWith(
+      'myclaude',
+      expect.any(Array),
+      expect.any(Object)
+    );
   });
 });

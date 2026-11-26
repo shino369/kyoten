@@ -855,7 +855,7 @@ describe('main: launch', () => {
       expect(spawn.mock.calls[0][1]).toEqual([]);
     });
 
-    test.each(['claude', 'codex', 'dsh', 'dscc', 'agy'])(
+    test.each(['claude', 'codex', 'dsh', 'dscc'])(
       'should set KYOTEN_AGENT to %s and replace an inherited value',
       async (agent) => {
         const home = makeHome();
@@ -872,6 +872,21 @@ describe('main: launch', () => {
         expect(spawn.mock.calls[0][2].env.KYOTEN_AGENT).toBe(agent);
       }
     );
+
+    test('should set KYOTEN_AGENT to agy from a plain shell and refuse agy from another harness', async () => {
+      const home = makeHome();
+
+      const ok = await run(['--home', home, 'agy']);
+      expect(ok.code).toBe(0);
+      expect(ok.spawn.mock.calls[0][2].env.KYOTEN_AGENT).toBe('agy');
+
+      const blocked = await run(['--home', home, 'agy'], {
+        env: { KYOTEN_AGENT: 'claude' },
+      });
+      expect(blocked.code).toBe(1);
+      expect(blocked.spawn).not.toHaveBeenCalled();
+      expect(blocked.err.join('\n')).toContain('Terms of Service');
+    });
 
     test('should not pass on an inherited KYOTEN_ADD_DIR', async () => {
       const home = makeHome();

@@ -31,7 +31,7 @@ Everything runs on plain Node.js ESM with zero runtime dependencies and no build
 - **Node.js 24 or later** (`.nvmrc` pins 24; `agent-browser` requires 24+)
 - **pnpm 12.14.0**, pinned in `package.json` via Corepack — run `corepack enable`, or prefix commands with `corepack pnpm`
 - **Chrome / Chromium** _(optional)_ — for Playwright e2e tests and browser-driving skills
-- **`uv`** _(optional)_ — for the `browser-use` runtime and Python 3.12 skill scripts (`skill-creator`, and optional creative skills like `transparent-background` / `game-image-extraction`)
+- **`uv`** _(optional; `>= 0.9.17` for pinned creative skills)_ — for the `browser-use` runtime and Python 3.12 skill scripts (`skill-creator`, and optional creative skills: `transparent-background`, `game-image-extraction`, `psd-flats-cleanup`, `live2d-from-image`)
 - **`gh` CLI** _(optional)_ — for GitHub workflows and PR reviews
 
 ## 🚀 Getting Started
@@ -239,10 +239,12 @@ Included by default (`skills-lock.json`):
 
 Opt-in (`creative/*`, not included in `skills-lock.json` — install locally without modifying `skills-lock.json` using `pnpm skills:add shino369/kyoten-skills --skill <name>`):
 
-| Skill                    | Category   | What it does                                                                             |
-| ------------------------ | ---------- | ---------------------------------------------------------------------------------------- |
-| `transparent-background` | `creative` | Flat-background image → transparent PNG with clean edges; specks and recolour.           |
-| `game-image-extraction`  | `creative` | Extract, convert, and verify Unity (`*_Data`/Addressables) and KiriKiri2/Z (`.xp3`) art. |
+| Skill                    | Category   | What it does                                                                                                                                                                                                    |
+| ------------------------ | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `transparent-background` | `creative` | Flat-background image → transparent PNG with clean edges; specks and recolour.                                                                                                                                  |
+| `game-image-extraction`  | `creative` | Extract, convert, and verify Unity (`*_Data`/Addressables) and KiriKiri2/Z (`.xp3`) art.                                                                                                                        |
+| `psd-flats-cleanup`      | `creative` | Clean up rough flats in a layered 8-bit RGB PSD to follow lineart (editable PSD copy + review PNG). By [staryume](https://github.com/staryume) ([Coloring Helper](https://github.com/staryume/ColoringHelper)). |
+| `live2d-from-image`      | `creative` | Turn character illustrations or sprite parts into Live2D Cubism v5 models (`.moc3`, VTube Studio, WebGL, GIF) via See-through + PSD2Live.                                                                       |
 
 #### 🌐 Browser & Web
 
@@ -298,16 +300,18 @@ To install an opt-in skill locally without dirtying tracked `skills-lock.json`, 
 
 Most skills are instructions only. These require a local runtime:
 
-| Skill                               | Runtime                                  | Check / install                                                                                                                           |
-| ----------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent-browser`                     | `agent-browser` CLI                      | `pnpm exec agent-browser --version`; run `pnpm exec agent-browser install` once, then `pnpm exec agent-browser ...` (devDependency)       |
-| `browser-use`                       | `browser-use` CLI                        | `browser-use --version`; install with `uv tool install --python 3.12 browser-use`                                                         |
-| `playwright-cli`                    | local Playwright                         | `pnpm exec playwright --version`; run `pnpm exec playwright cli ...`                                                                      |
-| `skill-creator`                     | Python 3.12 + PyYAML                     | `uv run --with pyyaml --python 3.12 python ...` from the skill directory                                                                  |
-| `transparent-background` _(opt-in)_ | Python 3.12 + Pillow, NumPy, SciPy       | `uv run --python 3.12 --with pillow --with numpy --with scipy python -I .agents/skills/transparent-background/scripts/imgalpha.py --help` |
-| `game-image-extraction` _(opt-in)_  | Python 3.12 + Pillow, optional `UnityPy` | `uv run --python 3.12 --with UnityPy --with pillow python -I .agents/skills/game-image-extraction/scripts/game_extract.py --help`         |
-| `dependency-update`                 | `gh` CLI                                 | `gh --version`; install from <https://cli.github.com/> (also used for PR attachments)                                                     |
-| Playwright e2e                      | Chromium                                 | `pnpm exec playwright install chromium`                                                                                                   |
+| Skill                               | Runtime                                                                                                  | Check / install                                                                                                                                         |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent-browser`                     | `agent-browser` CLI                                                                                      | `pnpm exec agent-browser --version`; run `pnpm exec agent-browser install` once, then `pnpm exec agent-browser ...` (devDependency)                     |
+| `browser-use`                       | `browser-use` CLI                                                                                        | `browser-use --version`; install with `uv tool install --python 3.12 browser-use`                                                                       |
+| `playwright-cli`                    | local Playwright                                                                                         | `pnpm exec playwright --version`; run `pnpm exec playwright cli ...`                                                                                    |
+| `skill-creator`                     | Python 3.12 + PyYAML                                                                                     | `uv run --with pyyaml --python 3.12 python ...` from the skill directory                                                                                |
+| `transparent-background` _(opt-in)_ | `uv` >= 0.9.17 (Python 3.12 + Pillow, NumPy, SciPy)                                                      | Use the pinned `ia` helper in `.agents/skills/transparent-background/SKILL.md` (`ia --help`) from a trusted folder                                      |
+| `game-image-extraction` _(opt-in)_  | `uv` >= 0.9.17 (Python 3.12 + Pillow, optional `UnityPy`)                                                | Use the pinned `ge` / `geu` helpers in `.agents/skills/game-image-extraction/SKILL.md` (`ge --help`) from a trusted folder                              |
+| `psd-flats-cleanup` _(opt-in)_      | `uv` >= 0.9.17 (Python 3.12 + `psd-tools`, Pillow, NumPy, SciPy)                                         | Use the pinned `pfc` helper in `.agents/skills/psd-flats-cleanup/SKILL.md` (`pfc --help`) from a trusted folder                                         |
+| `live2d-from-image` _(opt-in)_      | `uv` >= 0.9.17 (Python 3.12 + Pillow, NumPy, SciPy, `psd-tools`), See-through, PSD2Live 3.8.4+, Node 24+ | Use the pinned `l2d` helper in `.agents/skills/live2d-from-image/SKILL.md` (`l2d --help`) from a trusted folder; set `PSD2LIVE_DIR` or pass `--p2l-dir` |
+| `dependency-update`                 | `gh` CLI                                                                                                 | `gh --version`; install from <https://cli.github.com/> (also used for PR attachments)                                                                   |
+| Playwright e2e                      | Chromium                                                                                                 | `pnpm exec playwright install chromium`                                                                                                                 |
 
 `npm` commands are blocked in this workspace. Use `pnpm dlx` for one-off CLIs, `pnpm add -D` + `pnpm exec` for project-local binaries, and `uv tool` / `uvx` for Python CLIs. Avoid `pnpm add -g`: global installs bypass the workspace lockfile and supply-chain settings.
 

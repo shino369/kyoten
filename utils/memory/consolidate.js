@@ -15,6 +15,7 @@
 import fs from 'fs';
 import path from 'path';
 import { answerOf } from '../agent/cli.js';
+import { foreignHarnessForAgy } from '../loop/adapters.js';
 import { findSecrets, redactSecrets } from '../redact.js';
 import {
   sessionFromEnv,
@@ -340,8 +341,10 @@ export function consolidate(deps) {
   const prompt = buildConsolidationPrompt({ shown, groups });
   const last = lastRun(dir);
   const side = deps.env.KYOTEN_AGENT === 'dscc' ? 'dscc' : 'normal';
+  const foreignCaller = foreignHarnessForAgy(deps.env);
+  const lastAgent = last?.agent === 'agy' && foreignCaller ? null : last?.agent;
   const agent =
-    config.extractAgent ?? last?.agent ?? sessionHarness(deps.env) ?? 'claude';
+    config.extractAgent ?? lastAgent ?? sessionHarness(deps.env) ?? 'claude';
   const model = modelFor({
     agent,
     configured: config.extractAgent,

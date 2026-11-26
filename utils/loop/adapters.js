@@ -21,6 +21,74 @@ import { crossSpawn } from '../spawn.js';
 import { HARNESS_SESSION_VARS } from '../task/store.js';
 
 export const AGENTS = /** @type {const} */ (['claude', 'codex', 'dsh', 'agy']);
+/** Set on child processes/workers so they know which harness spawned them. */
+export const CALLER_HARNESS_ENV = 'KYOTEN_CALLER_HARNESS';
+
+/**
+ * The foreign (non-Antigravity) agentic CLI running the caller, or null when
+ * invoked from Antigravity itself or from a plain terminal.
+ *
+ * Intentionally checks foreign markers even when `ANTIGRAVITY_CONVERSATION_ID`
+ * is also set, so another harness cannot bypass the guard by setting it.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {string | null}
+ */
+export function foreignHarnessForAgy(env = {}) {
+  const caller = env[CALLER_HARNESS_ENV]?.trim();
+  if (caller && caller !== 'agy') return caller;
+  const kyotenAgent = env.KYOTEN_AGENT?.trim();
+  if (kyotenAgent && kyotenAgent !== 'agy') return kyotenAgent;
+  if (env.CODEX_THREAD_ID || env.CODEX_SESSION_ID) return 'codex';
+  if (env.DSH_SESSION_ID) return 'dsh';
+  if (env.CLAUDE_CODE_SESSION_ID || env.CLAUDECODE === '1') return 'claude';
+  if (env.OPENCODE === '1') return 'opencode';
+  return null;
+}
+
+/** Windows shim extensions that resolve to the same executable. */
+const AGY_EXE_EXT = /\.(?:exe|cmd|bat|ps1)$/i;
+
+/**
+ * Whether a `--bin` value or executable path names the Antigravity CLI,
+ * however the caller spells it (`agy`, `AGY`, `agy.cmd`, `C:\tools\agy.exe`,
+ * `agy acp`). A wrapper (`npx agy`) is not detectable from the name alone.
+ *
+ * @param {string} [bin]
+ * @returns {boolean}
+ */
+export function isAgyBinary(bin) {
+  const text = String(bin ?? '').trim();
+  if (!text) return false;
+  // The CLI splits --bin on whitespace (no shell), while a registry argv entry
+  // stays whole, so check both the full value and its first word.
+  return [text, text.split(/\s+/)[0]].some((value) => {
+    const base = value.replace(/\\/g, '/').split('/').pop() ?? '';
+    return base.replace(AGY_EXE_EXT, '').toLowerCase() === 'agy';
+  });
+}
+
+/**
+ * Refuse invoking `agy` (headless or `agy acp`) from another agentic CLI.
+ * Google Antigravity Terms of Service prohibit accessing Antigravity from
+ * third-party agent harnesses (`agy -> others` is allowed; `others -> agy` is
+ * blocked). `bin` catches a `--bin` override that names the agy executable
+ * while the declared agent is another harness.
+ *
+ * @param {string} agent
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {string} [via]
+ * @param {string} [bin]
+ */
+export function assertAgyAllowed(agent, env = {}, via = 'headless agy', bin) {
+  if (agent !== 'agy' && !isAgyBinary(bin)) return;
+  const caller = foreignHarnessForAgy(env);
+  if (!caller) return;
+  const what = agent === 'agy' ? via : `agy via --bin ${bin}`;
+  throw new Error(
+    `Refusing to run ${what} from another agent harness (${caller}): Google Antigravity Terms of Service prohibit invoking agy (headless or agy acp) from third-party agentic CLIs.\nFix: use --agent claude|codex|dsh, or run agy directly from your own terminal`
+  );
+}
 /** Argument characters that cannot chain, redirect, or run subshells/PowerShell `(expr)`. */
 const AGY_SAFE_ARGS = '[^;&|<>`$()\\r\\n]*';
 /**
@@ -365,6 +433,7 @@ export function runAgent({
   now = Date.now,
   platform = process.platform,
 }) {
+  assertAgyAllowed(command.agent, env, 'headless agy', command.bin);
   if (command.agent === 'dsh') {
     const problem = dshDirProblem(cwd, platform);
     if (problem) throw new Error(problem);
@@ -374,6 +443,16 @@ export function runAgent({
       ? `${JSON.stringify({ event: 'user', message: { content: prompt } })}\n`
       : prompt;
   const started = now();
+  const childEnv = {
+    ...Object.fromEntries(
+      Object.entries(env).filter(
+        ([key]) =>
+          !HARNESS_SESSION_VARS.includes(key) && key !== CALLER_HARNESS_ENV
+      )
+    ),
+    [EXTRACT_ENV]: '1',
+    ...(command.agent !== 'agy' ? { [CALLER_HARNESS_ENV]: command.agent } : {}),
+  };
   const result = spawn(command.bin, command.args, {
     cwd,
     input,
@@ -384,14 +463,7 @@ export function runAgent({
     // A detached caller (the memory worker, queue.js) has no console, so
     // Windows would give every headless child a new, visible console window.
     windowsHide: true,
-    env: {
-      ...Object.fromEntries(
-        Object.entries(env).filter(
-          ([key]) => !HARNESS_SESSION_VARS.includes(key)
-        )
-      ),
-      [EXTRACT_ENV]: '1',
-    },
+    env: childEnv,
   });
   if (result.error?.code === 'ENOENT') {
     throw new Error(

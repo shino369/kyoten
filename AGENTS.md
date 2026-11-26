@@ -23,6 +23,8 @@ outputs.
   `tools/local.json`, `skills-lock.local.json`, third-party skills, `.claude/settings.local.json`,
   or `.mcp.json`.
 - Never edit files under `.claude/skills/` — they are links. Edit `.agents/skills/` instead.
+- Never invoke `agy` (headless `-p`/`stream-json` or `agy acp`) from another agent harness (Claude
+  Code, Codex, DSH); `agy` may call other agents, never the reverse (Google Antigravity ToS).
 - Never add attribution lines (`Co-Authored-By`, "Generated with …") to commits or PRs.
 - Never create summary or completion documents unless the user asks.
 
@@ -59,7 +61,7 @@ outputs.
 | Task brief / log / help       | `pnpm task status` · `pnpm task note …` · `pnpm task help`                           |
 | Delete stale files (undoable) | `pnpm task rm <path>…` (to `tasks/.trash/`, kept 7 days)                             |
 | Tools on this machine         | `pnpm tools list` · `pnpm tools show <name>` · `pnpm tools scan`                     |
-| Ask another agent (read-only) | `pnpm agent ask --agent claude\|codex\|dsh\|agy "…"`                                 |
+| Ask another agent (read-only) | `pnpm agent ask --agent claude\|codex\|dsh "…"`                                      |
 | Fix until verify passes       | `pnpm loop <task> --agent claude\|codex\|dsh\|agy` (`--help`)                        |
 | Review round (code task)      | `pnpm task review` · `pnpm task review record` (§4.5)                                |
 | Run a plan with N workers     | `pnpm swarm <task> --agent claude\|codex\|dsh\|agy --workers 2`                      |
@@ -259,9 +261,10 @@ Use `trilingual-translator` with `translation-expertise`. Write drafts and passe
 `tools/catalog.json` (committed).
 
 - **Look first:** `pnpm tools list` (`--all` adds install hints); details: `pnpm tools show <name>`.
-- **Call another agent:** `pnpm agent ask --agent claude|codex|dsh|agy "…"` (or `-` for stdin).
+- **Call another agent:** `pnpm agent ask --agent claude|codex|dsh "…"` (or `-` for stdin).
   Read-only by default, memory hooks off, saved in the active task's `tmp/`. `--write` allows edits
-  (use only in a worktree).
+  (use only in a worktree). `agy` is excluded here (`agy -> others` is allowed; `others -> agy` is
+  blocked by Google Antigravity ToS).
 - **Record installs:** `pnpm tools add <name> --kind agent|cli|runtime|source (--path … | --command "…")`.
   Clone source checkouts into `pnpm tools sources` (`~/.cache/agent-tools/src/<name>`), read-only
   (do not build or run). Never record secret values (`--env` takes var names only).
