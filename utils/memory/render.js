@@ -21,7 +21,7 @@ import {
   readPersonalization,
   renderPersonalization,
 } from './personalize.js';
-import { MemoryError, loadNotes, memoryDir } from './store.js';
+import { MemoryError, compareNoteIds, loadNotes, memoryDir } from './store.js';
 
 export const AGENTS_LOCAL_FILE = 'AGENTS.local.md';
 export const CLAUDE_LOCAL_FILE = 'CLAUDE.local.md';
@@ -75,9 +75,6 @@ const plural = (n, unit) => `${n} ${unit}${n === 1 ? '' : 's'}`;
 /** @param {Note} note */
 const isDigest = (note) => note.source.via === 'digest';
 
-/** @param {string} id */
-const idNumber = (id) => Number(id.slice(1));
-
 /**
  * @param {Note[]} notes
  * @returns {string[]}
@@ -99,8 +96,7 @@ function recentTaskLines(notes) {
   return notes
     .filter((note) => note.status === 'active' && isDigest(note))
     .sort(
-      (a, b) =>
-        b.updated.localeCompare(a.updated) || idNumber(b.id) - idNumber(a.id)
+      (a, b) => b.updated.localeCompare(a.updated) || compareNoteIds(b.id, a.id)
     )
     .slice(0, RECENT_TASKS)
     .map(

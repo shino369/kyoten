@@ -7,6 +7,7 @@
  * its checkout share repo notes. Repo notes store this name, and recall
  * compares it with the name of the repository the agent works in.
  */
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { readIfExists } from '../task/store.js';
@@ -99,6 +100,48 @@ export function repoName(start) {
   return path.basename(dirs.commonDir) === '.git'
     ? path.basename(path.dirname(dirs.commonDir))
     : path.basename(dirs.top);
+}
+
+/**
+ * Normalize a git remote URL into a canonical lowercase `<host>/<path>` form
+ * when possible (unifying SSH `git@host:owner/repo.git` and HTTPS URLs) and
+ * return `{ name, hash }` so repo notes can detect basename collisions across
+ * machines. Returns null outside a repository.
+ *
+ * @param {string} start a folder in the repository
+ * @returns {{ name: string, hash: string | null } | null}
+ */
+export function repoIdentity(start) {
+  const dirs = findGitDirs(start);
+  if (!dirs) return null;
+  const name = repoName(start);
+  /* c8 ignore next - repoName is always non-null when findGitDirs succeeds */
+  if (!name) return null;
+  const rawUrl = originUrl(
+    readIfExists(path.join(dirs.commonDir, 'config')) ?? ''
+  );
+  if (!rawUrl) return { name, hash: null };
+  let normalized = rawUrl
+    .trim()
+    .replace(/[\\/]+$/, '')
+    .replace(/\.git$/i, '');
+  const scpMatch = /^[^@]+@([^:/]+):(.+)$/.exec(normalized);
+  if (scpMatch) {
+    normalized = `${scpMatch[1].toLowerCase()}/${scpMatch[2].replace(/^\/+/, '').toLowerCase()}`;
+  } else {
+    try {
+      const parsed = new URL(normalized);
+      normalized = `${parsed.hostname.toLowerCase()}${parsed.pathname.replace(/\/+$/, '').toLowerCase()}`;
+    } catch {
+      normalized = normalized.replace(/\\/g, '/').toLowerCase();
+    }
+  }
+  const hash = crypto
+    .createHash('sha256')
+    .update(normalized)
+    .digest('hex')
+    .slice(0, 12);
+  return { name, hash };
 }
 
 /**
