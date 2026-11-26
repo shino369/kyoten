@@ -164,17 +164,31 @@ describe('commandMatch', () => {
     expect(commandMatch('rtk proxy env FOO=1 rm x', prefixes)).toEqual(['rm']);
   });
 
-  test('should match Windows executable shims (.exe, .cmd, .bat) case-insensitively', () => {
+  test('should match Windows executable shims (.exe, .cmd, .bat, .ps1), case, and relative backslash paths', () => {
     const agyPrefixes = [['agy']];
     expect(commandMatch('agy -p "hi"', agyPrefixes)).toEqual(['agy']);
     expect(commandMatch('agy acp', agyPrefixes)).toEqual(['agy']);
     expect(commandMatch('agy.exe -p "hi"', agyPrefixes)).toEqual(['agy']);
+    expect(commandMatch('agy.ps1 acp', agyPrefixes)).toEqual(['agy']);
     expect(commandMatch('C:\\tools\\AGY.CMD acp', agyPrefixes)).toEqual([
       'agy',
     ]);
     expect(commandMatch('"C:\\tools\\AGY.CMD" acp', agyPrefixes)).toEqual([
       'agy',
     ]);
+    expect(commandMatch('tools\\agy.cmd acp', agyPrefixes)).toEqual(['agy']);
+    expect(
+      commandMatch('node_modules\\.bin\\agy.ps1 -p "hi"', agyPrefixes)
+    ).toEqual(['agy']);
+    expect(
+      commandMatch('AGY -p "hi"', agyPrefixes, { platform: 'win32' })
+    ).toEqual(['agy']);
+    expect(
+      commandMatch('C:\\tools\\AGY acp', agyPrefixes, { platform: 'win32' })
+    ).toEqual(['agy']);
+    expect(
+      commandMatch('AGY -p "hi"', agyPrefixes, { platform: 'linux' })
+    ).toBeNull();
     expect(commandMatch('env FOO=1 agy.bat --print hi', agyPrefixes)).toEqual([
       'agy',
     ]);

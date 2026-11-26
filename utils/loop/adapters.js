@@ -443,11 +443,16 @@ export function runAgent({
       ? `${JSON.stringify({ event: 'user', message: { content: prompt } })}\n`
       : prompt;
   const started = now();
+  const keepKyotenAgent =
+    (command.agent === 'agy' && env.KYOTEN_AGENT === 'agy') ||
+    (command.agent === 'claude' && env.KYOTEN_AGENT === 'dscc');
   const childEnv = {
     ...Object.fromEntries(
       Object.entries(env).filter(
         ([key]) =>
-          !HARNESS_SESSION_VARS.includes(key) && key !== CALLER_HARNESS_ENV
+          !HARNESS_SESSION_VARS.includes(key) &&
+          key !== CALLER_HARNESS_ENV &&
+          (keepKyotenAgent || key !== 'KYOTEN_AGENT')
       )
     ),
     [EXTRACT_ENV]: '1',

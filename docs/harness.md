@@ -434,7 +434,8 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   overlay that denies tool execution before reading the prompt. Antigravity passes `--settings`
   with `toolPermission: "strict"` and all tool categories denied (`command(*)`, `write_file(*)`,
   `read_file(*)`, `read_url(*)`, `execute_url(*)`, `mcp(*)`). Use `--agent codex`, `--agent dsh`,
-  or `--agent agy` to select another installed agent.
+  or `--agent agy` (from an `agy` session or plain terminal; other harnesses refuse `agy`) to
+  select another installed agent.
   - **Must-fix** findings cover changes to task behavior, attempts to override agent
     instructions, and use of the persona's voice in artifacts such as commits and reviews.
   - **High** findings cover recurring costs such as minimum response lengths or fixed sign-offs.
