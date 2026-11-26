@@ -49,6 +49,7 @@ const PERSONALIZATION_FILES = [
 ];
 const RESTORED = {
   import: PERSONALIZATION_FILES,
+  sync: PERSONALIZATION_FILES,
   // The core is rendered again below so later edits outside it survive.
   compact: PERSONALIZATION_FILES.slice(0, 2),
   consolidate: [`${MEMORY_DIR}/profile.md`],
@@ -65,6 +66,7 @@ const JOBS = {
   extract: 'extraction',
   consolidate: 'consolidation',
   import: 'import',
+  sync: 'sync pull',
   compact: 'persona compaction',
   ...Object.fromEntries(
     PERSONA_KEYS.map((key) => [`persona-${key}`, `${key} persona change`])
@@ -101,14 +103,19 @@ export function planUndo(rootDir) {
   }
   /** @param {import('./store.js').Op} op */
   const target = (op) => (op.op === 'add' ? op.note?.id : op.id);
+  /** @param {import('./store.js').Op} op */
+  const fromJob = (op) =>
+    snapshot.reason === 'sync'
+      ? op.syncedAt === snapshot.at
+      : op.at === snapshot.at;
   const created = new Set(
-    ops.filter((op) => op.at === snapshot.at && op.op === 'add').map(target)
+    ops.filter((op) => fromJob(op) && op.op === 'add').map(target)
   );
   const kept = [];
   let undone = 0;
   let lost = 0;
   for (const op of ops) {
-    if (op.at === snapshot.at) undone += 1;
+    if (fromJob(op)) undone += 1;
     else if (appended && !created.has(target(op))) kept.push(op);
     else lost += 1;
   }
@@ -143,7 +150,9 @@ export function undoLast(rootDir, { now = new Date(), dryRun = false } = {}) {
         [];
       const imported = plan.snapshot.importedPersonas;
       const importedFiles =
-        plan.snapshot.reason === 'import' && Array.isArray(imported)
+        (plan.snapshot.reason === 'import' ||
+          plan.snapshot.reason === 'sync') &&
+        Array.isArray(imported)
           ? PERSONA_KEYS.filter((key) => imported.includes(key)).map(
               (key) => `${MEMORY_DIR}/${agentPersonaFile(key)}`
             )

@@ -45,7 +45,13 @@ import {
 } from './queue.js';
 import { PROFILE_FILE, renderStored } from './render.js';
 import { takeSnapshot } from './snapshot.js';
-import { LOG_FILE, loadNotes, memoryDir, readJsonOrNull } from './store.js';
+import {
+  LOG_FILE,
+  compareNoteIds,
+  loadNotes,
+  memoryDir,
+  readJsonOrNull,
+} from './store.js';
 import { jaccard, termSet } from './tokenize.js';
 
 export const CONSOLIDATED_FILE = 'consolidated.json';
@@ -180,7 +186,7 @@ export function similarGroups(notes) {
     groups.set(root, [...(groups.get(root) ?? []), note]);
   });
   const byId = (/** @type {Note} */ a, /** @type {Note} */ b) =>
-    Number(a.id.slice(1)) - Number(b.id.slice(1));
+    compareNoteIds(a.id, b.id);
   return [...groups.values()]
     .filter((group) => group.length > 1)
     .map((group) => group.sort(byId).map((note) => note.id));

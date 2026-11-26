@@ -14,6 +14,7 @@
  * scope and repo updates that note instead. See
  * tasks/memory-system-261120/docs/DESIGN_memory-system.md §5.
  */
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { findSecrets } from '../redact.js';
@@ -36,6 +37,7 @@ export const VIAS = [
   'digest',
   'consolidate',
   'import',
+  'sync',
 ];
 export const LIMITS = {
   text: 1000,
@@ -51,7 +53,10 @@ export const STALE_DAYS = 90;
 
 const CACHE_VERSION = 1;
 const DAY_MS = 86_400_000;
-const ID_RE = /^[mt][1-9]\d*$/;
+export const ID_RE = /^[mt](?:[1-9]\d*|-[0-9a-f]{4,8}-[1-9]\d*)$/;
+const LEGACY_ID_RE = /^([mt])([1-9]\d*)$/;
+const V2_ID_RE = /^([mt])-([0-9a-f]{4,8})-([1-9]\d*)$/;
+const DEVICE_HEX_RE = /^[0-9a-f]{4,16}$/;
 const OPS = ['add', 'update', 'delete', 'pin', 'check'];
 const EDITABLE = ['text', 'tags', 'triggers', 'type', 'scope', 'repo'];
 const SOURCE_FIELDS = /** @type {const} */ (['harness', 'session', 'task']);
@@ -96,6 +101,9 @@ const SOURCE_FIELDS = /** @type {const} */ (['harness', 'session', 'task']);
  * @property {string} op
  * @property {string} at ISO time
  * @property {string} [id]
+ * @property {string} [opId] globally unique operation id (sync v2)
+ * @property {string} [device] authoring device id (sync v2)
+ * @property {string} [syncedAt] local sync pull timestamp (sync v2)
  * @property {Record<string, unknown>} [note] add
  * @property {Record<string, unknown>} [set] update
  * @property {string} [why] delete
@@ -280,18 +288,80 @@ export function assertNoSecrets({ text, tags, triggers }) {
   }
 }
 
+/** @param {unknown} id @returns {id is string} */
+export function isValidNoteId(id) {
+  return typeof id === 'string' && ID_RE.test(id);
+}
+
+/**
+ * Parse a legacy (`m12`) or v2 (`m-a3f1-42`) note ID for deterministic ordering.
+ *
+ * @param {string} id
+ * @returns {{ prefix: string, device: string, seq: number } | null}
+ */
+function parseNoteId(id) {
+  const legacy = LEGACY_ID_RE.exec(id);
+  if (legacy) {
+    return { prefix: legacy[1], device: '', seq: Number(legacy[2]) };
+  }
+  const v2 = V2_ID_RE.exec(id);
+  if (v2) {
+    return { prefix: v2[1], device: v2[2], seq: Number(v2[3]) };
+  }
+  return null;
+}
+
+/**
+ * Compare two note IDs deterministically: legacy IDs (empty device) sort before
+ * device-scoped v2 IDs, then by device tag, then numeric sequence, then prefix.
+ *
+ * @param {string} a
+ * @param {string} b
+ * @returns {number}
+ */
+export function compareNoteIds(a, b) {
+  const pa = parseNoteId(a);
+  const pb = parseNoteId(b);
+  if (!pa || !pb) return a.localeCompare(b);
+  const devDiff = pa.device.localeCompare(pb.device);
+  if (devDiff !== 0) return devDiff;
+  if (pa.seq !== pb.seq) return pa.seq - pb.seq;
+  return pa.prefix.localeCompare(pb.prefix);
+}
+
+/**
+ * Validate a device hex identifier for v2 IDs / ops.
+ *
+ * @param {string} deviceId
+ * @returns {string}
+ */
+function normalizeDeviceId(deviceId) {
+  const normalized =
+    typeof deviceId === 'string' ? deviceId.trim().toLowerCase() : '';
+  if (!DEVICE_HEX_RE.test(normalized)) {
+    invalid(
+      `Invalid deviceId "${String(deviceId)}": expected 4-16 hex characters.`
+    );
+  }
+  return normalized;
+}
+
 /**
  * Apply one op to the notes. Returns a problem, or null when applied.
+ * When `lww` is provided (v2 opId replay), per-field LWW prevents older remote
+ * edits from overwriting newer field values.
  *
  * @param {Map<string, Note>} notes
  * @param {Op} op
+ * @param {Map<string, Record<string, string>>} [lww]
  * @returns {string | null}
  */
-function applyOp(notes, op) {
+function applyOp(notes, op, lww) {
   if (!isObject(op) || typeof op.at !== 'string') return 'an op without a time';
   const label = `${op.op} ${op.id ?? op.note?.id ?? '?'} at ${op.at}`;
   if (!OPS.includes(op.op)) return `${label}: unknown op`;
   const day = op.at.slice(0, 10);
+  const stamp = `${op.at}\0${typeof op.opId === 'string' ? op.opId : ''}`;
   try {
     if (op.op === 'add') {
       const id = op.note?.id;
@@ -310,19 +380,48 @@ function applyOp(notes, op) {
         checked: unchecked ? null : day,
         status: 'active',
       });
+      if (lww) {
+        lww.set(id, {
+          text: stamp,
+          tags: stamp,
+          triggers: stamp,
+          type: stamp,
+          scope: stamp,
+          repo: stamp,
+          pinned: stamp,
+          checked: stamp,
+        });
+      }
       return null;
     }
     const note = notes.get(/** @type {string} */ (op.id));
     if (!note) return `${label}: unknown note`;
     if (note.status === 'deleted') return `${label}: the note is deleted`;
+    const noteStamps = lww?.get(note.id);
+    const newer = (/** @type {string} */ field) =>
+      !noteStamps || !noteStamps[field] || stamp >= noteStamps[field];
     if (op.op === 'update') {
+      const candidateChanges = normalizeChanges(op.set);
+      /** @type {Record<string, unknown>} */
+      const filtered = {};
+      for (const [key, value] of Object.entries(candidateChanges)) {
+        if (newer(key)) filtered[key] = value;
+      }
       const { text, tags, triggers, type, scope, repo } = normalizeInput({
         ...note,
-        ...normalizeChanges(op.set),
+        ...filtered,
       });
-      Object.assign(note, { text, tags, triggers, type, scope, repo });
-      note.updated = day;
-      note.checked = day;
+      if (Object.keys(filtered).length > 0) {
+        Object.assign(note, { text, tags, triggers, type, scope, repo });
+        if (noteStamps) {
+          for (const key of Object.keys(filtered)) noteStamps[key] = stamp;
+        }
+        if (day > note.updated) note.updated = day;
+      }
+      if (newer('checked')) {
+        note.checked = day;
+        if (noteStamps) noteStamps.checked = stamp;
+      }
     } else if (op.op === 'delete') {
       Object.assign(note, {
         status: 'deleted',
@@ -330,9 +429,15 @@ function applyOp(notes, op) {
         why: op.why ?? '',
       });
     } else if (op.op === 'pin') {
-      note.pinned = op.pinned === true;
+      if (newer('pinned')) {
+        note.pinned = op.pinned === true;
+        if (noteStamps) noteStamps.pinned = stamp;
+      }
     } else {
-      note.checked = day;
+      if (newer('checked')) {
+        note.checked = day;
+        if (noteStamps) noteStamps.checked = stamp;
+      }
     }
     return null;
   } catch (error) {
@@ -341,8 +446,9 @@ function applyOp(notes, op) {
 }
 
 /**
- * Replay ops into notes (in id order of creation), with the problems found:
- * ops that are malformed or refer to unknown or deleted notes are skipped.
+ * Replay ops into notes. When any op carries a v2 `opId`, ops are deduplicated
+ * by `opId`, causally ordered (`add` before mutations, then `(at, opId)`), and
+ * replayed with per-field LWW. Legacy logs without `opId` replay in log order.
  *
  * @param {Op[]} ops
  * @returns {{ notes: Note[], problems: string[] }}
@@ -352,8 +458,49 @@ export function replay(ops) {
   const notes = new Map();
   /** @type {string[]} */
   const problems = [];
-  for (const op of ops) {
-    const problem = applyOp(notes, op);
+  const hasV2 = ops.some(
+    (op) => isObject(op) && typeof op.opId === 'string' && op.opId.length > 0
+  );
+  if (!hasV2) {
+    for (const op of ops) {
+      const problem = applyOp(notes, op);
+      if (problem) problems.push(problem);
+    }
+    return { notes: [...notes.values()], problems };
+  }
+  /** @type {Set<string>} */
+  const seenOpIds = new Set();
+  /** @type {{ op: Op, index: number }[]} */
+  const ordered = [];
+  ops.forEach((op, index) => {
+    if (!isObject(op) || typeof op.at !== 'string') {
+      ordered.push({ op, index });
+      return;
+    }
+    if (typeof op.opId === 'string' && op.opId.length > 0) {
+      if (seenOpIds.has(op.opId)) return;
+      seenOpIds.add(op.opId);
+    }
+    ordered.push({ op, index });
+  });
+  ordered.sort((a, b) => {
+    const aValid = isObject(a.op) && typeof a.op.at === 'string';
+    const bValid = isObject(b.op) && typeof b.op.at === 'string';
+    if (!aValid || !bValid) return a.index - b.index;
+    const aAdd = a.op.op === 'add' ? 0 : 1;
+    const bAdd = b.op.op === 'add' ? 0 : 1;
+    if (aAdd !== bAdd) return aAdd - bAdd;
+    const atCmp = a.op.at.localeCompare(b.op.at);
+    if (atCmp !== 0) return atCmp;
+    const aId = typeof a.op.opId === 'string' ? a.op.opId : '';
+    const bId = typeof b.op.opId === 'string' ? b.op.opId : '';
+    if (aId !== bId) return aId.localeCompare(bId);
+    return a.index - b.index;
+  });
+  /** @type {Map<string, Record<string, string>>} */
+  const lww = new Map();
+  for (const { op } of ordered) {
+    const problem = applyOp(notes, op, lww);
     if (problem) problems.push(problem);
   }
   return { notes: [...notes.values()], problems };
@@ -510,14 +657,26 @@ function activeNote(notes, id) {
 
 /**
  * The next id: `t<n>` for a task digest, else `m<n>`, from one sequence.
+ * When `deviceTag` (4-8 hex chars) is given, allocates a globally unique
+ * device-scoped v2 id (`m-<deviceTag>-<n>` / `t-<deviceTag>-<n>`).
  *
  * @param {Map<string, Note>} notes
  * @param {string} via
+ * @param {string | null} [deviceTag]
  */
-function nextId(notes, via) {
+function nextId(notes, via, deviceTag = null) {
+  const prefix = via === 'digest' ? 't' : 'm';
   let max = 0;
-  for (const id of notes.keys()) max = Math.max(max, Number(id.slice(1)));
-  return `${via === 'digest' ? 't' : 'm'}${max + 1}`;
+  for (const id of notes.keys()) {
+    const parsed = parseNoteId(id);
+    if (!parsed) continue;
+    if (deviceTag ? parsed.device === deviceTag : parsed.device === '') {
+      max = Math.max(max, parsed.seq);
+    }
+  }
+  return deviceTag
+    ? `${prefix}-${deviceTag}-${max + 1}`
+    : `${prefix}${max + 1}`;
 }
 
 /**
@@ -566,24 +725,45 @@ function joinLists(a, b, max) {
  * Save a note. A near-duplicate of an active note in the same scope and repo
  * updates that note instead (new text and type, tags and triggers joined),
  * unless `merge` is false (task digests: two similar tasks are two notes).
+ * When `deviceId` is provided, allocates a device-scoped v2 note id and stamps
+ * `opId` + `device` on the committed ops.
  *
  * @param {string} dir the memory directory
  * @param {NoteInput} input
- * @param {{ now?: Date, merge?: boolean }} [options]
+ * @param {{ now?: Date, merge?: boolean, deviceId?: string, opId?: string }} [options]
  * @returns {{ action: 'added' | 'merged' | 'unchanged', note: Note }}
  */
-export function addNote(dir, input, { now = new Date(), merge = true } = {}) {
+export function addNote(
+  dir,
+  input,
+  { now = new Date(), merge = true, deviceId, opId } = {}
+) {
   const fields = normalizeInput(input);
   assertNoSecrets(fields);
+  const device =
+    deviceId === undefined ? undefined : normalizeDeviceId(deviceId);
+  const deviceTag = device ? device.slice(0, 4) : null;
   const at = now.toISOString();
+  const resolvedOpId =
+    opId ??
+    (device
+      ? `${device}-${now.getTime()}-${crypto.randomUUID().slice(0, 8)}`
+      : undefined);
   return mutate(dir, (notes) => {
     const existing = merge ? findNearDuplicate(notes.values(), fields) : null;
-    if (existing) return mergeInto(dir, notes, existing, fields, at);
+    if (existing) {
+      return mergeInto(dir, notes, existing, fields, at, {
+        device,
+        opId: resolvedOpId,
+      });
+    }
     const { unchecked, ...rest } = fields;
-    const id = nextId(notes, fields.source.via);
+    const id = nextId(notes, fields.source.via, deviceTag);
     const note = commit(dir, notes, {
       op: 'add',
       at,
+      ...(resolvedOpId ? { opId: resolvedOpId } : {}),
+      ...(device ? { device } : {}),
       note: { id, ...rest, ...(unchecked ? { checked: null } : {}) },
     });
     return { action: /** @type {const} */ ('added'), note };
@@ -596,9 +776,10 @@ export function addNote(dir, input, { now = new Date(), merge = true } = {}) {
  * @param {Note} existing
  * @param {NoteFields} fields
  * @param {string} at
+ * @param {{ device?: string, opId?: string }} [meta]
  * @returns {{ action: 'merged' | 'unchanged', note: Note }}
  */
-function mergeInto(dir, notes, existing, fields, at) {
+function mergeInto(dir, notes, existing, fields, at, meta = {}) {
   /** @type {Record<string, unknown>} */
   const set = {};
   if (fields.text !== existing.text) set.text = fields.text;
@@ -615,10 +796,139 @@ function mergeInto(dir, notes, existing, fields, at) {
   const pin = fields.pinned && !existing.pinned;
   const { id } = existing;
   // commit applies each op to `existing` itself (it is the object in `notes`).
-  if (update)
-    commit(dir, notes, { op: 'update', id, at, set, source: fields.source });
-  if (pin) commit(dir, notes, { op: 'pin', id, at, pinned: true });
+  if (update) {
+    commit(dir, notes, {
+      op: 'update',
+      id,
+      at,
+      ...(meta.opId ? { opId: meta.opId } : {}),
+      ...(meta.device ? { device: meta.device } : {}),
+      set,
+      source: fields.source,
+    });
+  }
+  if (pin) {
+    commit(dir, notes, {
+      op: 'pin',
+      id,
+      at,
+      ...(meta.opId ? { opId: `${meta.opId}-pin` } : {}),
+      ...(meta.device ? { device: meta.device } : {}),
+      pinned: true,
+    });
+  }
   return { action: update || pin ? 'merged' : 'unchanged', note: existing };
+}
+
+/**
+ * Merge validated remote sync ops into the local memory log under the store
+ * lock. Deduplicates by `opId`, enforces Plane 2 (never imports `machine`
+ * scope), refuses secrets, and stamps `syncedAt` for `pnpm memory undo`.
+ *
+ * @param {string} dir
+ * @param {Op[]} incomingOps
+ * @param {{ now?: Date }} [options]
+ * @returns {{ applied: number, skipped: number, refused: number, problems: string[] }}
+ */
+export function mergeSyncedOps(dir, incomingOps, { now = new Date() } = {}) {
+  const syncedAt = now.toISOString();
+  return mutate(dir, (notes) => {
+    const existingLog = readLog(dir);
+    /** @type {Set<string>} */
+    const seenOpIds = new Set();
+    for (const existing of existingLog.ops) {
+      if (typeof existing.opId === 'string' && existing.opId) {
+        seenOpIds.add(existing.opId);
+      }
+    }
+    const ordered = [...incomingOps].sort((a, b) => {
+      const aAdd = a?.op === 'add' ? 0 : 1;
+      const bAdd = b?.op === 'add' ? 0 : 1;
+      if (aAdd !== bAdd) return aAdd - bAdd;
+      const aAt = typeof a?.at === 'string' ? a.at : '';
+      const bAt = typeof b?.at === 'string' ? b.at : '';
+      const atCmp = aAt.localeCompare(bAt);
+      if (atCmp !== 0) return atCmp;
+      return String(a?.opId ?? '').localeCompare(String(b?.opId ?? ''));
+    });
+
+    let applied = 0;
+    let skipped = 0;
+    let refused = 0;
+    /** @type {string[]} */
+    const problems = [];
+
+    for (const raw of ordered) {
+      if (
+        !isObject(raw) ||
+        typeof raw.at !== 'string' ||
+        !OPS.includes(raw.op) ||
+        typeof raw.opId !== 'string' ||
+        !raw.opId
+      ) {
+        problems.push('malformed synced op');
+        skipped += 1;
+        continue;
+      }
+      if (seenOpIds.has(raw.opId)) {
+        skipped += 1;
+        continue;
+      }
+      if (
+        (raw.op === 'add' && raw.note?.scope === 'machine') ||
+        (raw.op === 'update' && raw.set?.scope === 'machine')
+      ) {
+        refused += 1;
+        problems.push(`${raw.opId}: machine-scoped op refused`);
+        continue;
+      }
+      try {
+        if (raw.op === 'add') {
+          const id = raw.note?.id;
+          if (typeof id !== 'string' || !ID_RE.test(id)) {
+            problems.push(`${raw.opId}: invalid note id`);
+            skipped += 1;
+            continue;
+          }
+          if (notes.has(id)) {
+            skipped += 1;
+            continue;
+          }
+          const normalized = normalizeInput({
+            ...raw.note,
+            unchecked: raw.note?.checked === null,
+          });
+          assertNoSecrets(normalized);
+        } else {
+          const note = notes.get(/** @type {string} */ (raw.id));
+          if (!note || note.status === 'deleted') {
+            problems.push(`${raw.opId}: target note missing or deleted`);
+            skipped += 1;
+            continue;
+          }
+          if (raw.op === 'update') {
+            const changes = normalizeChanges(raw.set);
+            const next = normalizeInput({ ...note, ...changes });
+            assertNoSecrets(next);
+          }
+        }
+      } catch (error) {
+        if (error instanceof MemoryError && error.code === 'secret') {
+          refused += 1;
+          problems.push(`${raw.opId}: ${error.message}`);
+        } else {
+          skipped += 1;
+          problems.push(`${raw.opId}: ${/** @type {Error} */ (error).message}`);
+        }
+        continue;
+      }
+      commit(dir, notes, { ...raw, syncedAt });
+      seenOpIds.add(raw.opId);
+      applied += 1;
+    }
+
+    return { applied, skipped, refused, problems };
+  });
 }
 
 /**
