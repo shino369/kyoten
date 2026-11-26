@@ -31,7 +31,7 @@
 - **Node.js 24 或更新版本**（`.nvmrc` 鎖定為 24；`agent-browser` 需要 24+）
 - **pnpm 12.14.0**，透過 Corepack 鎖定於 `package.json`——執行 `corepack enable`，或在指令前加上 `corepack pnpm`
 - **Chrome / Chromium**（_選用_）——用於 Playwright e2e 測試與瀏覽器操控技能
-- **`uv`**（_選用_）——用於 `browser-use` 執行環境與 Python 3.12 技能腳本（`skill-creator`，以及選用的創意技能 `transparent-background`／`game-image-extraction`）
+- **`uv`**（_選用；鎖定版本的創意技能需要 `>= 0.9.17`_）——用於 `browser-use` 執行環境與 Python 3.12 技能腳本（`skill-creator`，以及選用的創意技能 `transparent-background`／`game-image-extraction`／`psd-flats-cleanup`／`live2d-from-image`）
 - **`gh` CLI**（_選用_）——用於 GitHub 工作流程與 PR 審查
 
 ## 🚀 快速開始
@@ -228,10 +228,12 @@ pnpm memory export                  # checksummed .tar.gz backup; restore via im
 
 選用（`creative/*`，不包含在 `skills-lock.json` 中——有需要時執行 `pnpm skills:add shino369/kyoten-skills --skill <name>` 在本機安裝，不會更動 `skills-lock.json`）：
 
-| 技能                     | 分類       | 功能說明                                                                                                     |
-| ------------------------ | ---------- | ------------------------------------------------------------------------------------------------------------ |
-| `transparent-background` | `creative` | 將純色背景圖片轉為邊緣乾淨的透明 PNG，並支援清理殘留雜點與局部換色。                                         |
-| `game-image-extraction`  | `creative` | 擷取、轉換並驗證 Unity（`*_Data`／Addressables）與吉里吉里 2/Z（`.xp3`）遊戲圖片素材（支援純中繼資料檢查）。 |
+| 技能                     | 分類       | 功能說明                                                                                                                                                                                                     |
+| ------------------------ | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `transparent-background` | `creative` | 將純色背景圖片轉為邊緣乾淨的透明 PNG，並支援清理殘留雜點與局部換色。                                                                                                                                         |
+| `game-image-extraction`  | `creative` | 擷取、轉換並驗證 Unity（`*_Data`／Addressables）與吉里吉里 2/Z（`.xp3`）遊戲圖片素材（支援純中繼資料檢查）。                                                                                                 |
+| `psd-flats-cleanup`      | `creative` | 整理分層 8-bit RGB PSD 中的草稿平塗（底色），使其貼合線稿並輸出可編輯 PSD 複本與檢視用 PNG。作者：[staryume](https://github.com/staryume)（[Coloring Helper](https://github.com/staryume/ColoringHelper)）。 |
+| `live2d-from-image`      | `creative` | 透過 See-through 與 PSD2Live，將單張角色插畫或分件立繪轉換為 Live2D Cubism v5 模型（`.moc3`、VTube Studio、WebGL、GIF）。                                                                                    |
 
 #### 🌐 瀏覽器與網頁
 
@@ -287,16 +289,18 @@ pnpm skills:link                                        # (re)link .agents/skill
 
 多數技能僅包含操作指引，以下技能則需要本機執行環境：
 
-| 技能                               | 執行環境                             | 檢查／安裝方式                                                                                                                            |
-| ---------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent-browser`                    | `agent-browser` CLI                  | `pnpm exec agent-browser --version`；先執行一次 `pnpm exec agent-browser install`，之後使用 `pnpm exec agent-browser ...`（開發相依套件） |
-| `browser-use`                      | `browser-use` CLI                    | `browser-use --version`；透過 `uv tool install --python 3.12 browser-use` 安裝                                                            |
-| `playwright-cli`                   | 本機 Playwright                      | `pnpm exec playwright --version`；執行 `pnpm exec playwright cli ...`                                                                     |
-| `skill-creator`                    | Python 3.12 + PyYAML                 | 於技能目錄內執行 `uv run --with pyyaml --python 3.12 python ...`                                                                          |
-| `transparent-background`（_選用_） | Python 3.12 + Pillow、NumPy、SciPy   | `uv run --python 3.12 --with pillow --with numpy --with scipy python -I .agents/skills/transparent-background/scripts/imgalpha.py --help` |
-| `game-image-extraction`（_選用_）  | Python 3.12 + Pillow、選用 `UnityPy` | `uv run --python 3.12 --with UnityPy --with pillow python -I .agents/skills/game-image-extraction/scripts/game_extract.py --help`         |
-| `dependency-update`                | `gh` CLI                             | `gh --version`；請至 <https://cli.github.com/> 安裝（亦用於 PR 附件處理）                                                                 |
-| Playwright e2e                     | Chromium                             | `pnpm exec playwright install chromium`                                                                                                   |
+| 技能                               | 執行環境                                                                                                  | 檢查／安裝方式                                                                                                                                       |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent-browser`                    | `agent-browser` CLI                                                                                       | `pnpm exec agent-browser --version`；先執行一次 `pnpm exec agent-browser install`，之後使用 `pnpm exec agent-browser ...`（開發相依套件）            |
+| `browser-use`                      | `browser-use` CLI                                                                                         | `browser-use --version`；透過 `uv tool install --python 3.12 browser-use` 安裝                                                                       |
+| `playwright-cli`                   | 本機 Playwright                                                                                           | `pnpm exec playwright --version`；執行 `pnpm exec playwright cli ...`                                                                                |
+| `skill-creator`                    | Python 3.12 + PyYAML                                                                                      | 於技能目錄內執行 `uv run --with pyyaml --python 3.12 python ...`                                                                                     |
+| `transparent-background`（_選用_） | `uv` >= 0.9.17（Python 3.12 + Pillow、NumPy、SciPy）                                                      | 於受信任的資料夾使用 `.agents/skills/transparent-background/SKILL.md` 中鎖定版本的 `ia` 輔助指令（`ia --help`）                                      |
+| `game-image-extraction`（_選用_）  | `uv` >= 0.9.17（Python 3.12 + Pillow、選用 `UnityPy`）                                                    | 於受信任的資料夾使用 `.agents/skills/game-image-extraction/SKILL.md` 中鎖定版本的 `ge`／`geu` 輔助指令（`ge --help`）                                |
+| `psd-flats-cleanup`（_選用_）      | `uv` >= 0.9.17（Python 3.12 + `psd-tools`、Pillow、NumPy、SciPy）                                         | 於受信任的資料夾使用 `.agents/skills/psd-flats-cleanup/SKILL.md` 中鎖定版本的 `pfc` 輔助指令（`pfc --help`）                                         |
+| `live2d-from-image`（_選用_）      | `uv` >= 0.9.17（Python 3.12 + Pillow、NumPy、SciPy、`psd-tools`）、See-through、PSD2Live 3.8.4+、Node 24+ | 於受信任的資料夾使用 `.agents/skills/live2d-from-image/SKILL.md` 中鎖定版本的 `l2d` 輔助指令（`l2d --help`）；設定 `PSD2LIVE_DIR` 或傳入 `--p2l-dir` |
+| `dependency-update`                | `gh` CLI                                                                                                  | `gh --version`；請至 <https://cli.github.com/> 安裝（亦用於 PR 附件處理）                                                                            |
+| Playwright e2e                     | Chromium                                                                                                  | `pnpm exec playwright install chromium`                                                                                                              |
 
 本工作區已封鎖 `npm` 指令。單次執行的 CLI 請使用 `pnpm dlx`，專案本機執行檔請使用 `pnpm add -D` 搭配 `pnpm exec`，Python CLI 則使用 `uv tool`／`uvx`。請避免使用 `pnpm add -g`：全域安裝會繞過工作區的鎖定檔與供應鏈安全設定。
 

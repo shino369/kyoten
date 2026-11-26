@@ -31,7 +31,7 @@
 - **Node.js 24 以降**（`.nvmrc` で 24 を指定。`agent-browser` は 24 以上が必須です）
 - **pnpm 12.14.0**（Corepack 経由で `package.json` に固定）— `corepack enable` を実行するか、コマンドの先頭に `corepack pnpm` を付けて実行してください
 - **Chrome / Chromium** _（任意）_ — Playwright の E2E テストおよびブラウザ操作スキルで使用します
-- **`uv`** _（任意）_ — `browser-use` ランタイムおよび Python 3.12 のスキルスクリプト (`skill-creator`、およびオプトインのクリエイティブスキル `transparent-background` / `game-image-extraction`) で使用します
+- **`uv`** _（任意。バージョン固定されたクリエイティブスキルでは `>= 0.9.17`）_ — `browser-use` ランタイムおよび Python 3.12 のスキルスクリプト（`skill-creator`、およびオプトインのクリエイティブスキル `transparent-background` / `game-image-extraction` / `psd-flats-cleanup` / `live2d-from-image`）で使用します
 - **`gh` CLI** _（任意）_ — GitHub ワークフローおよび PR レビューで使用します
 
 ## 🚀 はじめに
@@ -228,10 +228,12 @@ pnpm memory export                  # checksummed .tar.gz backup; restore via im
 
 オプトイン (`creative/*`、`skills-lock.json` には含まれません — `skills-lock.json` を変更せずにローカル導入するには `pnpm skills:add shino369/kyoten-skills --skill <name>` を実行):
 
-| スキル                   | カテゴリ   | 概要                                                                                               |
-| ------------------------ | ---------- | -------------------------------------------------------------------------------------------------- |
-| `transparent-background` | `creative` | 単色背景画像をきれいなエッジの透過 PNG に変換（残存ピクセル除去・再着色にも対応）。                |
-| `game-image-extraction`  | `creative` | Unity (`*_Data`/Addressables) および吉里吉里 2/Z (`.xp3`) ゲーム画像の抽出・変換・メタデータ検証。 |
+| スキル                   | カテゴリ   | 概要                                                                                                                                                                                                                           |
+| ------------------------ | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `transparent-background` | `creative` | 単色背景画像をきれいなエッジの透過 PNG に変換（残存ピクセル除去・再着色にも対応）。                                                                                                                                            |
+| `game-image-extraction`  | `creative` | Unity (`*_Data`/Addressables) および吉里吉里 2/Z (`.xp3`) ゲーム画像の抽出・変換・メタデータ検証。                                                                                                                             |
+| `psd-flats-cleanup`      | `creative` | レイヤー付き 8-bit RGB PSD の下塗り（ベタ塗り）を線画に沿って整形し、編集可能な PSD コピーとレビュー PNG を出力。作：[staryume](https://github.com/staryume) ([Coloring Helper](https://github.com/staryume/ColoringHelper))。 |
+| `live2d-from-image`      | `creative` | 1 枚のキャラクターイラストやパーツ分割スプライトから、See-through + PSD2Live で Live2D Cubism v5 モデル (`.moc3`、VTube Studio、WebGL、GIF) を生成。                                                                           |
 
 #### 🌐 ブラウザ・Web
 
@@ -287,16 +289,18 @@ pnpm skills:link                                        # (re)link .agents/skill
 
 ほとんどのスキルは指示ファイルのみで構成されますが、以下のスキルにはローカルランタイムが必要です：
 
-| スキル                              | ランタイム                             | 確認・インストール方法                                                                                                                       |
-| ----------------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent-browser`                     | `agent-browser` CLI                    | `pnpm exec agent-browser --version`。初回に `pnpm exec agent-browser install` を実行後、`pnpm exec agent-browser ...` を使用 (devDependency) |
-| `browser-use`                       | `browser-use` CLI                      | `browser-use --version`。`uv tool install --python 3.12 browser-use` でインストール                                                          |
-| `playwright-cli`                    | ローカル Playwright                    | `pnpm exec playwright --version`。`pnpm exec playwright cli ...` で実行                                                                      |
-| `skill-creator`                     | Python 3.12 + PyYAML                   | スキルディレクトリから `uv run --with pyyaml --python 3.12 python ...` を実行                                                                |
-| `transparent-background` _（任意）_ | Python 3.12 + Pillow, NumPy, SciPy     | `uv run --python 3.12 --with pillow --with numpy --with scipy python -I .agents/skills/transparent-background/scripts/imgalpha.py --help`    |
-| `game-image-extraction` _（任意）_  | Python 3.12 + Pillow、任意で `UnityPy` | `uv run --python 3.12 --with UnityPy --with pillow python -I .agents/skills/game-image-extraction/scripts/game_extract.py --help`            |
-| `dependency-update`                 | `gh` CLI                               | `gh --version`。<https://cli.github.com/> からインストール（PR への添付にも使用）                                                            |
-| Playwright E2E                      | Chromium                               | `pnpm exec playwright install chromium`                                                                                                      |
+| スキル                              | ランタイム                                                                                               | 確認・インストール方法                                                                                                                                                  |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent-browser`                     | `agent-browser` CLI                                                                                      | `pnpm exec agent-browser --version`。初回に `pnpm exec agent-browser install` を実行後、`pnpm exec agent-browser ...` を使用 (devDependency)                            |
+| `browser-use`                       | `browser-use` CLI                                                                                        | `browser-use --version`。`uv tool install --python 3.12 browser-use` でインストール                                                                                     |
+| `playwright-cli`                    | ローカル Playwright                                                                                      | `pnpm exec playwright --version`。`pnpm exec playwright cli ...` で実行                                                                                                 |
+| `skill-creator`                     | Python 3.12 + PyYAML                                                                                     | スキルディレクトリから `uv run --with pyyaml --python 3.12 python ...` を実行                                                                                           |
+| `transparent-background` _（任意）_ | `uv` >= 0.9.17 (Python 3.12 + Pillow, NumPy, SciPy)                                                      | 信頼できるフォルダから `.agents/skills/transparent-background/SKILL.md` のバージョン固定済み `ia` ヘルパーを実行 (`ia --help`)                                          |
+| `game-image-extraction` _（任意）_  | `uv` >= 0.9.17 (Python 3.12 + Pillow、任意で `UnityPy`)                                                  | 信頼できるフォルダから `.agents/skills/game-image-extraction/SKILL.md` のバージョン固定済み `ge` / `geu` ヘルパーを実行 (`ge --help`)                                   |
+| `psd-flats-cleanup` _（任意）_      | `uv` >= 0.9.17 (Python 3.12 + `psd-tools`, Pillow, NumPy, SciPy)                                         | 信頼できるフォルダから `.agents/skills/psd-flats-cleanup/SKILL.md` のバージョン固定済み `pfc` ヘルパーを実行 (`pfc --help`)                                             |
+| `live2d-from-image` _（任意）_      | `uv` >= 0.9.17 (Python 3.12 + Pillow, NumPy, SciPy, `psd-tools`)、See-through、PSD2Live 3.8.4+、Node 24+ | 信頼できるフォルダから `.agents/skills/live2d-from-image/SKILL.md` のバージョン固定済み `l2d` ヘルパーを実行 (`l2d --help`)。`PSD2LIVE_DIR` 設定または `--p2l-dir` 指定 |
+| `dependency-update`                 | `gh` CLI                                                                                                 | `gh --version`。<https://cli.github.com/> からインストール（PR への添付にも使用）                                                                                       |
+| Playwright E2E                      | Chromium                                                                                                 | `pnpm exec playwright install chromium`                                                                                                                                 |
 
 このワークスペースでは `npm` コマンドがブロックされています。単発の CLI には `pnpm dlx`、プロジェクトローカルのバイナリには `pnpm add -D` と `pnpm exec`、Python CLI には `uv tool` または `uvx` を使用してください。グローバルインストールはワークスペースのロックファイルとサプライチェーン設定をバイパスしてしまうため、`pnpm add -g` は使用しないでください。
 
