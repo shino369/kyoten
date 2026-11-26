@@ -15,13 +15,14 @@
 import fs from 'fs';
 import path from 'path';
 import { answerOf } from '../agent/cli.js';
+import { CALLER_HARNESS_ENV } from '../loop/adapters.js';
 import { findSecrets, redactSecrets } from '../redact.js';
 import {
   sessionFromEnv,
   sessionHarness,
   writeFileAtomic,
 } from '../task/store.js';
-import { callAgent } from './agent-call.js';
+import { CALL_AGENTS, callAgent } from './agent-call.js';
 import { readConfig, savingOff } from './config.js';
 import { looksLikeInstruction } from './instructions.js';
 import { kindLabel, refreshAfterWrite, shorten } from './context.js';
@@ -323,6 +324,26 @@ export function foreignSides(dir, side) {
 }
 
 /**
+ * The CLI that runs consolidation in this environment: `--extract-agent`,
+ * else this session's harness (falling back to `KYOTEN_CALLER_HARNESS` passed
+ * by memory hooks to detached workers), else `claude`.
+ *
+ * @param {{ extractAgent?: string | null }} config
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {string}
+ */
+export function consolidationAgent(config, env) {
+  if (config.extractAgent) return config.extractAgent;
+  const session = sessionHarness(env);
+  if (session) return session;
+  const caller = env[CALLER_HARNESS_ENV]?.trim();
+  if (caller && CALL_AGENTS.includes(/** @type {any} */ (caller))) {
+    return caller;
+  }
+  return 'claude';
+}
+
+/**
  * Run one consolidation (the caller holds the worker lock). Throws when the
  * agent fails.
  *
@@ -336,14 +357,21 @@ export function consolidate(deps) {
   const base = { at, job: 'consolidation', session: 'consolidation' };
   const config = readConfig(dir);
   const session = sessionFromEnv(deps.env);
+  // The session's own agent, unless --extract-agent assigns one: one CLI and
+  // one provider per session, so a prior run's agent never routes a session
+  // to another CLI. It still supplies the model when agent and side match.
+  const agent = consolidationAgent(config, deps.env);
+  // The side this run records: the agent that actually runs it, falling back
+  // to the session's side when the agent names its own provider (dsh, codex).
+  const side = agentSide(agent, deps.env) ?? memorySide(deps.env.KYOTEN_AGENT);
   if (!deps.dryRun && !deps.force && savingOff(config, session)) {
-    const run = { ...base, status: 'off' };
+    const run = { ...base, status: 'off', side };
     appendJournal(dir, run);
     return run;
   }
   const { shown, groups } = consolidationInput(loadNotes(dir).notes);
   if (shown.length === 0) {
-    const run = { ...base, status: 'nothing' };
+    const run = { ...base, status: 'nothing', side };
     if (deps.dryRun) return run;
     writeConsolidated(dir, { at, ops: countOps(dir) });
     appendJournal(dir, run);
@@ -351,13 +379,6 @@ export function consolidate(deps) {
   }
   const prompt = buildConsolidationPrompt({ shown, groups });
   const last = lastRun(dir);
-  // The session's own agent, unless --extract-agent assigns one: one CLI and
-  // one provider per session, so a prior run's agent never routes a session
-  // to another CLI. It still supplies the model when agent and side match.
-  const agent = config.extractAgent ?? sessionHarness(deps.env) ?? 'claude';
-  // The side this run records: the agent that actually runs it, falling back
-  // to the session's side when the agent names its own provider (dsh, codex).
-  const side = agentSide(agent, deps.env) ?? memorySide(deps.env.KYOTEN_AGENT);
   const model = modelFor({
     agent,
     configured: config.extractAgent,
@@ -405,7 +426,7 @@ export function consolidate(deps) {
     cancel: () => !deps.force && Boolean(savingOff(readConfig(dir), session)),
   });
   if (result.cancelled) {
-    const run = { ...base, status: 'off', agent, model };
+    const run = { ...base, status: 'off', agent, model, side };
     appendJournal(dir, run);
     return run;
   }
@@ -417,6 +438,7 @@ export function consolidate(deps) {
       status: 'off',
       agent,
       model,
+      side,
       durationMs: result.durationMs,
     };
     appendJournal(dir, run);
@@ -500,12 +522,19 @@ export function consolidateLocked(deps) {
     );
     const at = deps.now().toISOString();
     writeConsolidated(dir, { ...readConsolidated(dir), tried: at });
+    let failedAgent = consolidationAgent({}, deps.env);
+    try {
+      failedAgent = consolidationAgent(readConfig(dir), deps.env);
+    } catch {
+      // Keep the env-derived agent when config itself failed to load.
+    }
     const run = {
       at,
       job: 'consolidation',
       session: 'consolidation',
       status: 'failed',
-      side: memorySide(deps.env.KYOTEN_AGENT),
+      side:
+        agentSide(failedAgent, deps.env) ?? memorySide(deps.env.KYOTEN_AGENT),
       error: message,
     };
     appendJournal(dir, run);

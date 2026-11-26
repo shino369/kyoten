@@ -896,6 +896,75 @@ describe('consolidation on dscc', () => {
       caller: 'dscc',
     });
   });
+
+  test('should fall back to KYOTEN_CALLER_HARNESS for detached workers without session env vars', () => {
+    seed();
+    const runAgent = vi.fn(({ command }) => {
+      if (command.args.includes('mcp')) {
+        return {
+          code: 0,
+          signal: null,
+          output: '',
+          stdout:
+            'No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.\n',
+          durationMs: 1,
+        };
+      }
+      const stdout = JSON.stringify({ profile: [], ops: [] });
+      return { code: 0, signal: null, output: stdout, stdout, durationMs: 2 };
+    });
+
+    const codexRun = consolidate(
+      deps({ runAgent, env: { KYOTEN_CALLER_HARNESS: 'codex' } })
+    );
+    expect(codexRun).toMatchObject({
+      status: 'consolidated',
+      agent: 'codex',
+      side: 'normal',
+    });
+
+    const dshRun = consolidate(
+      deps({
+        runAgent: agentReturning({ profile: [], ops: [] }),
+        env: { KYOTEN_CALLER_HARNESS: 'dsh' },
+      })
+    );
+    expect(dshRun).toMatchObject({
+      status: 'consolidated',
+      agent: 'dsh',
+      side: 'normal',
+    });
+
+    appendJournal(dir, { status: 'applied', side: 'normal' });
+    const agyDeferred = consolidate(
+      deps({ env: { KYOTEN_CALLER_HARNESS: 'agy' } })
+    );
+    expect(agyDeferred).toMatchObject({
+      status: 'deferred',
+      side: 'agy',
+      foreign: ['normal'],
+    });
+  });
+
+  test('should record the provider side on skipped off and nothing runs', () => {
+    const nothingRun = consolidate(
+      deps({ env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1' } })
+    );
+    expect(nothingRun).toMatchObject({ status: 'nothing', side: 'agy' });
+    expect(readJournal(dir).at(-1)).toMatchObject({
+      status: 'nothing',
+      side: 'agy',
+    });
+
+    seed();
+    writeConfig(dir, { ...DEFAULT_CONFIG, off: true });
+    const offRun = consolidate(deps({ env: { KYOTEN_AGENT: 'dscc' } }));
+    expect(offRun).toMatchObject({ status: 'off', side: 'dscc' });
+    expect(readJournal(dir).at(-1)).toMatchObject({
+      status: 'off',
+      side: 'dscc',
+    });
+  });
 });
 
 describe('consolidateLocked', () => {
@@ -918,11 +987,44 @@ describe('consolidateLocked', () => {
 
     const run = consolidateLocked(deps({ runAgent }));
 
-    expect(run).toMatchObject({ job: 'consolidation', status: 'failed' });
+    expect(run).toMatchObject({
+      job: 'consolidation',
+      status: 'failed',
+      side: 'normal',
+    });
     expect(run?.error).toContain('the consolidation agent exited with code 1:');
     expect(run?.error).not.toContain(TOKEN);
     expect(readConsolidated(dir)).toEqual({ tried: NOW.toISOString() });
     expect(readJournal(dir).at(-1)?.status).toBe('failed');
+  });
+
+  test('should record the agent side when a directly opened agy consolidation fails', () => {
+    seed();
+    appendJournal(dir, { status: 'applied', side: 'agy' });
+    const runAgent = agentReturning('', { code: 1, output: 'boom' });
+
+    const run = consolidateLocked(
+      deps({
+        runAgent,
+        env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1' },
+      })
+    );
+
+    expect(run).toMatchObject({ status: 'failed', side: 'agy' });
+    expect(readJournal(dir).at(-1)).toMatchObject({
+      status: 'failed',
+      side: 'agy',
+    });
+  });
+
+  test('should fall back to env side when failure happens on unreadable config', () => {
+    fs.writeFileSync(path.join(dir, 'config.json'), '{bad json');
+
+    const run = consolidateLocked(
+      deps({ env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1' } })
+    );
+
+    expect(run).toMatchObject({ status: 'failed', side: 'agy' });
   });
 
   test('should record a thrown value that is not an error', () => {

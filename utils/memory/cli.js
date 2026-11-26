@@ -43,6 +43,7 @@ import {
 import {
   consolidate,
   consolidateLocked,
+  consolidationAgent,
   consolidationDue,
   foreignSides,
   readConsolidated,
@@ -1198,7 +1199,7 @@ export const COMMANDS = {
       last: consolidated?.at ?? null,
       due: consolidationDue(deps.rootDir, { now }),
       foreign: (() => {
-        const agent = extractAgent ?? sessionHarness(deps.env) ?? 'claude';
+        const agent = consolidationAgent(core.config, deps.env);
         const callSide = agentSide(agent, deps.env);
         return callSide && callSide !== 'normal'
           ? foreignSides(dirOf(deps), callSide)

@@ -903,6 +903,16 @@ describe('consolidate and undo', () => {
     );
   });
 
+  test('should name the sides when KYOTEN_CALLER_HARNESS identifies agy', () => {
+    appendJournal(dir, { status: 'applied', side: 'normal' });
+
+    const json = runJson(['status'], {
+      env: { ...ENV, KYOTEN_CALLER_HARNESS: 'agy' },
+    });
+
+    expect(json.consolidation.foreign).toEqual(['normal']);
+  });
+
   test('should say when consolidation is due', () => {
     for (let i = 0; i < 20; i++)
       save({ text: `Filler fact ${i} about the build.`, tags: [`f${i}`] });

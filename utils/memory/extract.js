@@ -652,6 +652,7 @@ export function extractEntry(entry, deps) {
   // the entry stays queued, untouched, for a worker of the matching side.
   const config = readConfig(dir);
   const agent = config.extractAgent ?? harness;
+  const side = agentSide(agent, deps.env) ?? memorySide(entry.kyotenAgent);
   const off = savingOff(config, session);
   if (!off) {
     const deferred = deferredRun(agent, entry.kyotenAgent, deps.env, base);
@@ -660,8 +661,14 @@ export function extractEntry(entry, deps) {
 
   const from = readOffsets(dir)[session]?.offset ?? 0;
   const chunk = readNewLines(transcript, from);
-  if (!chunk) return settle({ ...base, status: 'missing' }, null);
-  const offRun = { ...base, status: 'off', from: chunk.start, to: chunk.end };
+  if (!chunk) return settle({ ...base, status: 'missing', side }, null);
+  const offRun = {
+    ...base,
+    status: 'off',
+    side,
+    from: chunk.start,
+    to: chunk.end,
+  };
   if (off || savingOff(readConfig(dir), session))
     return settle(offRun, chunk.end);
   if (!chunk.text) return settle({ ...base, status: 'empty' }, null);
@@ -674,7 +681,7 @@ export function extractEntry(entry, deps) {
     dropped: condensed.dropped,
   };
   if (isTrivial(condensed.items)) {
-    return settle({ ...base, status: 'trivial', ...range }, chunk.end);
+    return settle({ ...base, status: 'trivial', side, ...range }, chunk.end);
   }
 
   const cwd = condensed.cwd ?? entry.cwd;
@@ -727,7 +734,7 @@ export function extractEntry(entry, deps) {
     {
       ...base,
       status: 'applied',
-      side: agentSide(agent, deps.env) ?? memorySide(entry.kyotenAgent),
+      side,
       ...range,
       agent,
       model,

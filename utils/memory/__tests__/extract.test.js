@@ -1165,6 +1165,45 @@ describe('extractEntry', () => {
       });
     });
 
+    test('should record the provider side on skipped missing, off, and trivial runs', () => {
+      const missingRun = extractEntry(
+        queued({ harness: 'agy', kyotenAgent: null }),
+        deps()
+      );
+      expect(missingRun).toMatchObject({ status: 'missing', side: 'agy' });
+      expect(readJournal(dir).at(-1)).toMatchObject({
+        status: 'missing',
+        side: 'agy',
+      });
+
+      writeTranscript([
+        {
+          type: 'user',
+          message: { role: 'user', content: 'hi' },
+        },
+      ]);
+      const trivialRun = extractEntry(
+        queued({ harness: 'agy', kyotenAgent: null }),
+        deps()
+      );
+      expect(trivialRun).toMatchObject({ status: 'trivial', side: 'agy' });
+      expect(readJournal(dir).at(-1)).toMatchObject({
+        status: 'trivial',
+        side: 'agy',
+      });
+
+      writeConfig(dir, { ...DEFAULT_CONFIG, off: true });
+      const offRun = extractEntry(
+        queued({ harness: 'claude', kyotenAgent: 'dscc' }),
+        deps({ env: { KYOTEN_AGENT: 'dscc' } })
+      );
+      expect(offRun).toMatchObject({ status: 'off', side: 'dscc' });
+      expect(readJournal(dir).at(-1)).toMatchObject({
+        status: 'off',
+        side: 'dscc',
+      });
+    });
+
     test('should not pair extractModel with a session on another agent', () => {
       writeCodexSession();
       writeConfig(dir, {

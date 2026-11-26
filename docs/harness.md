@@ -474,9 +474,11 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   dscc. A mismatching entry stays queued for a matching worker without recording an attempt.
   Consolidation on a dscc or agy worker sends only notes whose applied extraction runs are all from
   that same side; a foreign or `unknown` side defers (naming the sides and the flag as the Fix), and
-  `pnpm memory consolidate --allow-cross-side` sends them to this session's provider anyway, with a
-  warning. A normal claude worker still consolidates every side; dsh and codex name their own
-  providers, so no side is inferred for them. Consolidation is paused while saving is off
+  `pnpm memory consolidate --allow-cross-side` sends them to this session's provider for that run,
+  with a warning (the consent is per-run because notes from those sides remain in the store). A
+  normal claude worker still consolidates every side; dsh and codex name their own providers, so
+  they sit outside the dscc/agy side guard (consolidating without `--allow-cross-side`, and dsh
+  sessions record `normal`). Consolidation is paused while saving is off
   everywhere (`pnpm memory off`; it stays due and runs once saving is back on); a manual
   `pnpm memory consolidate` then refuses with a Fix line unless `--force` (a `--dry-run` is always
   allowed). Consolidation reuses the last run's model only when that run used the same agent and
