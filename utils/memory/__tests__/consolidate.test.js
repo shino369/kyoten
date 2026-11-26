@@ -433,7 +433,7 @@ describe('consolidate', () => {
       expect(run).toMatchObject({ agent: 'claude', model: 'old-model' });
     });
 
-    test('should follow the last applied run, with its model', () => {
+    test('should use the session harness, not the last applied run', () => {
       seed();
       appendJournal(dir, {
         at: 'x',
@@ -446,18 +446,12 @@ describe('consolidate', () => {
 
       const run = consolidate(deps({ runAgent }));
 
-      expect(lastCall(runAgent).command.agent).toBe('agy');
-      expect(lastCall(runAgent).command.args.slice(-2)).toEqual([
-        '--model',
-        'gemini-3.8-flash-low',
-      ]);
-      expect(run).toMatchObject({
-        agent: 'agy',
-        model: 'gemini-3.8-flash-low',
-      });
+      expect(lastCall(runAgent).command.agent).toBe('claude');
+      expect(lastCall(runAgent).command.args).not.toContain('--model');
+      expect(run).toMatchObject({ agent: 'claude', model: null });
     });
 
-    test('should omit any legacy journal model when following a dsh run', () => {
+    test('should omit any legacy journal model when consolidating on dsh', () => {
       seed();
       appendJournal(dir, {
         at: 'x',
@@ -467,20 +461,22 @@ describe('consolidate', () => {
       });
       const runAgent = answering();
 
-      const run = consolidate(deps({ runAgent }));
+      const run = consolidate(
+        deps({ runAgent, env: { DSH_SESSION_ID: 'dsh-1' } })
+      );
 
       expect(lastCall(runAgent).command.agent).toBe('dsh');
       expect(lastCall(runAgent).command.args).not.toContain('--model');
       expect(run).toMatchObject({ agent: 'dsh', model: null });
     });
 
-    test('should not pair extractModel with the last run on another agent', () => {
+    test('should pair extractModel with the default agent, not the last run', () => {
       seed();
       appendJournal(dir, {
         at: 'x',
         status: 'applied',
-        agent: 'dsh',
-        model: null,
+        agent: 'agy',
+        model: 'gemini-3.8-flash-low',
       });
       writeConfig(dir, {
         ...DEFAULT_CONFIG,
@@ -489,28 +485,28 @@ describe('consolidate', () => {
 
       const run = consolidate(deps({ runAgent: answering() }));
 
-      expect(run).toMatchObject({ agent: 'dsh', model: null });
+      expect(run).toMatchObject({
+        agent: 'claude',
+        model: 'claude-sonnet-5-5',
+      });
     });
 
-    test('should use the configured agent over the last run', () => {
+    test('should use the configured agent over the session harness', () => {
       seed();
-      appendJournal(dir, {
-        at: 'x',
-        status: 'applied',
-        agent: 'dsh',
-        model: 'deepseek-v4',
-      });
-      writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });
+      writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'dsh' });
       const runAgent = answering();
 
-      const run = consolidate(deps({ runAgent }));
+      const run = consolidate(
+        deps({ runAgent, env: { CLAUDE_CODE_SESSION_ID: 'cc-1' } })
+      );
 
-      expect(lastCall(runAgent).command.agent).toBe('agy');
-      expect(run).toMatchObject({ agent: 'agy', model: null });
+      expect(lastCall(runAgent).command.agent).toBe('dsh');
+      expect(run).toMatchObject({ agent: 'dsh', model: null });
     });
 
     test('should pair extractModel with the configured agent', () => {
       seed();
+      appendJournal(dir, { status: 'applied', side: 'agy' });
       writeConfig(dir, {
         ...DEFAULT_CONFIG,
         extractAgent: 'agy',
@@ -529,7 +525,9 @@ describe('consolidate', () => {
       seed();
       appendJournal(dir, { at: 'x', status: 'applied', agent: 'dsh' });
 
-      const run = consolidate(deps({ dryRun: true }));
+      const run = consolidate(
+        deps({ dryRun: true, env: { DSH_SESSION_ID: 'dsh-1' } })
+      );
 
       expect(run).toMatchObject({ agent: 'dsh', model: null });
     });
@@ -727,7 +725,12 @@ describe('consolidation on dscc', () => {
 
     const run = consolidate(deps({ runAgent, env: { KYOTEN_AGENT: 'dscc' } }));
 
-    expect(run).toMatchObject({ job: 'consolidation', status: 'deferred' });
+    expect(run).toMatchObject({
+      job: 'consolidation',
+      status: 'deferred',
+      side: 'dscc',
+      foreign: ['unknown'],
+    });
     expect(runAgent).not.toHaveBeenCalled();
     expect(readConsolidated(dir)).toBeNull();
     expect(readJournal(dir)).toEqual([]);
@@ -751,7 +754,64 @@ describe('consolidation on dscc', () => {
 
     const run = consolidate(deps({ env: { KYOTEN_AGENT: 'dscc' } }));
 
-    expect(run.status).toBe('deferred');
+    expect(run).toMatchObject({
+      status: 'deferred',
+      side: 'dscc',
+      foreign: ['unknown'],
+    });
+  });
+
+  test('should defer an agy worker on a run from another side', () => {
+    seed();
+    appendJournal(dir, { status: 'applied', side: 'normal' });
+    const runAgent = agentReturning({ profile: [], ops: [] });
+
+    const run = consolidate(
+      deps({
+        runAgent,
+        env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1', KYOTEN_AGENT: 'agy' },
+      })
+    );
+
+    expect(run).toMatchObject({
+      status: 'deferred',
+      side: 'agy',
+      foreign: ['normal'],
+    });
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  test('should consolidate an agy worker when every run was agy', () => {
+    seed();
+    appendJournal(dir, { status: 'applied', side: 'agy' });
+    const runAgent = agentReturning({ profile: [], ops: [] });
+
+    const run = consolidate(
+      deps({
+        runAgent,
+        env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1', KYOTEN_AGENT: 'agy' },
+      })
+    );
+
+    expect(run.status).toBe('consolidated');
+    expect(runAgent).toHaveBeenCalled();
+  });
+
+  test('should consolidate across sides with --allow-cross-side and record them', () => {
+    seed();
+    appendJournal(dir, { status: 'applied', side: 'normal' });
+    const runAgent = agentReturning({ profile: [], ops: [] });
+
+    const run = consolidate(
+      deps({ runAgent, env: { KYOTEN_AGENT: 'dscc' }, allowCrossSide: true })
+    );
+
+    expect(run).toMatchObject({
+      status: 'consolidated',
+      side: 'dscc',
+      crossSide: ['normal'],
+    });
+    expect(runAgent).toHaveBeenCalled();
   });
 
   test('should consolidate on a normal worker after dscc runs', () => {

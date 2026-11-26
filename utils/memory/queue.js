@@ -114,6 +114,31 @@ export function normalizeEntry(input) {
 
 /** The KYOTEN_AGENT value of a dscc session (Claude Code on DeepSeek). */
 export const DSCC_AGENT = 'dscc';
+/** The KYOTEN_AGENT value of an Antigravity session. */
+export const AGY_AGENT = 'agy';
+
+/**
+ * The provider side a session or run belongs to: `dscc`, `agy`, or `normal`
+ * (a claude without the dscc profile, codex, dsh, or no kyoten wrapper).
+ *
+ * @param {string | null | undefined} kyotenAgent
+ * @returns {'dscc' | 'agy' | 'normal'}
+ */
+export const memorySide = (kyotenAgent) =>
+  kyotenAgent === DSCC_AGENT
+    ? 'dscc'
+    : kyotenAgent === AGY_AGENT
+      ? 'agy'
+      : 'normal';
+
+/**
+ * The side a journal run recorded; `unknown` for an entry written before
+ * runs recorded one (an old or copied journal cannot be proven safe).
+ *
+ * @param {{ side?: string | null } | null | undefined} run
+ * @returns {string}
+ */
+export const runSide = (run) => run?.side ?? 'unknown';
 
 /**
  * Whether a `claude` call from this environment may handle `kyotenAgent`'s

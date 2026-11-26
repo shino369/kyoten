@@ -780,6 +780,22 @@ describe('consolidate and undo', () => {
     expect(fs.existsSync(path.join(dir, 'profile.md'))).toBe(true);
   });
 
+  test('should send cross-side notes only with --allow-cross-side', () => {
+    const runAgent = agent({ profile: [], ops: [] });
+    const env = { ...ENV, KYOTEN_AGENT: 'dscc' };
+
+    const deferred = run(['consolidate'], { runAgent, env });
+    expect(deferred.out).toContain('rerun with --allow-cross-side');
+    expect(runAgent).not.toHaveBeenCalled();
+
+    const allowed = run(['consolidate', '--allow-cross-side'], {
+      runAgent,
+      env,
+    });
+    expect(allowed.out).toContain('because --allow-cross-side was given');
+    expect(runAgent).toHaveBeenCalled();
+  });
+
   test('should print JSON, and exit 1 when consolidation failed', () => {
     const runAgent = vi.fn(() => ({
       code: 1,
@@ -842,7 +858,23 @@ describe('consolidate and undo', () => {
     expect(run(['status']).out).toMatch(
       /^Consolidation: last 2026-11-20 14:03$/m
     );
-    expect(json.consolidation).toEqual({ last: NOW.toISOString(), due: null });
+    expect(json.consolidation).toEqual({
+      last: NOW.toISOString(),
+      due: null,
+      foreign: [],
+    });
+  });
+
+  test('should name the provider sides that need --allow-cross-side', () => {
+    appendJournal(dir, { status: 'applied', side: 'normal' });
+
+    const out = run(['status'], {
+      env: { ...ENV, KYOTEN_AGENT: 'dscc' },
+    }).out;
+
+    expect(out).toMatch(
+      /^Consolidation: .*notes from normal need --allow-cross-side$/m
+    );
   });
 
   test('should say when consolidation is due', () => {

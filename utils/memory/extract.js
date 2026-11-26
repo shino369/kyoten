@@ -49,6 +49,7 @@ import {
   appendInbox,
   appendJournal,
   finishEntry,
+  memorySide,
   readAnnounced,
   readJournal,
   readOffsets,
@@ -126,6 +127,7 @@ const CHANGE_FIELDS = /** @type {const} */ ([
  * @property {() => string} tmpdir
  * @property {boolean} [dryRun] build the prompt, call and change nothing
  * @property {boolean} [force] override the saving-off guard for manual runs
+ * @property {boolean} [allowCrossSide] send notes from other provider sides
  * @property {import('./queue.js').LockOptions} [lock]
  */
 
@@ -450,10 +452,16 @@ const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
  */
 function deferredMessage(run, name) {
   if (run.side === 'agy') {
-    return `Deferred ${name}: it uses agy, which cannot be called from another agent harness (${run.caller}); run this from an agy session or a plain terminal.`;
+    return run.caller
+      ? `Deferred ${name}: it uses agy, which cannot be called from another agent harness (${run.caller}); run this from an agy session or a plain terminal.`
+      : `Deferred ${name}: it ran on agy; run this from an agy session.`;
   }
   if (run.job === 'consolidation') {
-    return 'Deferred the consolidation: this worker runs on dscc and some notes came from other sessions; run this from a session that is not dscc.';
+    const sides =
+      Array.isArray(run.foreign) && run.foreign.length > 0
+        ? run.foreign.join(', ')
+        : 'other provider sides';
+    return `Deferred the consolidation: notes from ${sides} would go to this session's provider (${run.side ?? 'this side'}); rerun with --allow-cross-side to send them.`;
   }
   return run.side === 'dscc'
     ? `Deferred ${name}: it ran on dscc; run this from a dscc session.`
@@ -484,7 +492,7 @@ export function deferredRun(agent, kyotenAgent, env, base) {
   return {
     ...base,
     status: 'deferred',
-    side: kyotenAgent === 'dscc' ? 'dscc' : 'normal',
+    side: memorySide(kyotenAgent),
   };
 }
 
@@ -524,16 +532,29 @@ export function formatRun(run) {
         (/** @type {string} */ problem) => `Skipped ${problem}`
       ),
     ];
+    const crossSide =
+      Array.isArray(run.crossSide) && run.crossSide.length > 0
+        ? [
+            `Sent notes from ${run.crossSide.join(', ')} to this session's provider (${run.side}) because --allow-cross-side was given.`,
+          ]
+        : [];
     const title =
       run.status === 'applied' ? `Extracted ${session}` : 'Consolidated memory';
-    return details.length === 0
+    return details.length === 0 && crossSide.length === 0
       ? [
           `${title}: ${run.status === 'applied' ? 'nothing new to remember' : 'nothing to change'}.`,
         ]
-      : [`${title}:`, ...details.map((line) => `  ${line}`)];
+      : [`${title}:`, ...[...details, ...crossSide].map((line) => `  ${line}`)];
   }
   if (run.status === 'dry-run') {
+    const crossSide =
+      Array.isArray(run.crossSide) && run.crossSide.length > 0
+        ? [
+            `--allow-cross-side: notes from ${run.crossSide.join(', ')} would go to this session's provider (${run.side}).`,
+          ]
+        : [];
     return [
+      ...crossSide,
       `Would send ${name} to the extraction model (${run.model ?? "the agent's default model"}):`,
       '',
       run.prompt,
@@ -698,7 +719,7 @@ export function extractEntry(entry, deps) {
     {
       ...base,
       status: 'applied',
-      side: entry.kyotenAgent === 'dscc' ? 'dscc' : 'normal',
+      side: memorySide(entry.kyotenAgent),
       ...range,
       agent,
       model,
@@ -752,6 +773,7 @@ export function runWorker(deps) {
           harness: entry.harness,
           transcript: entry.transcript,
           status: 'failed',
+          side: memorySide(entry.kyotenAgent),
           error: message,
           attempts,
           gaveUp,

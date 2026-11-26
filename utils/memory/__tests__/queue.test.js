@@ -26,6 +26,7 @@ import {
   sameProviderSide,
   finishEntry,
   kickWorker,
+  memorySide,
   normalizeEntry,
   processAlive,
   readAnnounced,
@@ -36,6 +37,7 @@ import {
   readQueue,
   registerOpen,
   retryEntry,
+  runSide,
   tryLock,
   workerRunning,
   writeAnnounced,
@@ -472,5 +474,22 @@ describe('kickWorker', () => {
 
   test('should name the open and queue folders', () => {
     expect([OPEN_DIR, QUEUE_DIR]).toEqual(['open', 'queue']);
+  });
+});
+
+describe('provider sides', () => {
+  test('should map a kyoten agent to its provider side', () => {
+    expect(memorySide('dscc')).toBe('dscc');
+    expect(memorySide('agy')).toBe('agy');
+    expect(memorySide('claude')).toBe('normal');
+    expect(memorySide('dsh')).toBe('normal');
+    expect(memorySide(undefined)).toBe('normal');
+  });
+
+  test('should read a missing run side as unknown', () => {
+    expect(runSide({ side: 'dscc' })).toBe('dscc');
+    expect(runSide({ side: 'agy' })).toBe('agy');
+    expect(runSide({})).toBe('unknown');
+    expect(runSide({ side: null })).toBe('unknown');
   });
 });

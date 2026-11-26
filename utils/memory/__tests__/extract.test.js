@@ -867,6 +867,25 @@ describe('formatChange and formatRun', () => {
     ).toBe('  Profile: 1 line (memory/profile.md)');
   });
 
+  test('should warn which other sides --allow-cross-side sent', () => {
+    expect(
+      formatRun({
+        job: 'consolidation',
+        status: 'consolidated',
+        side: 'dscc',
+        crossSide: ['normal', 'unknown'],
+        changes: [],
+        profile: 0,
+        quarantined: 0,
+        refused: 0,
+        invalid: [],
+      })
+    ).toEqual([
+      'Consolidated memory:',
+      "  Sent notes from normal, unknown to this session's provider (dscc) because --allow-cross-side was given.",
+    ]);
+  });
+
   test('should report a consolidation that failed or had nothing to do', () => {
     expect(
       formatRun({ job: 'consolidation', status: 'failed', error: 'timeout' })
@@ -882,6 +901,18 @@ describe('formatChange and formatRun', () => {
         prompt: 'P',
       })[0]
     ).toBe('Would send the consolidation to the extraction model (m):');
+    expect(
+      formatRun({
+        job: 'consolidation',
+        status: 'dry-run',
+        side: 'dscc',
+        crossSide: ['normal'],
+        model: 'm',
+        prompt: 'P',
+      })[0]
+    ).toBe(
+      "--allow-cross-side: notes from normal would go to this session's provider (dscc)."
+    );
   });
 
   test('should print the prompt of a dry run', () => {
@@ -1568,6 +1599,15 @@ describe('provider sides', () => {
     expect(readJournal(dir).map((run) => run.side)).toEqual(['dscc', 'normal']);
   });
 
+  test('should record an agy side on an applied run', () => {
+    richSession();
+
+    expect(extractEntry(queued({ kyotenAgent: 'agy' }), deps()).status).toBe(
+      'applied'
+    );
+    expect(readJournal(dir).map((run) => run.side)).toEqual(['agy']);
+  });
+
   test('should extract an old entry without a side on a normal worker', () => {
     richSession();
     const entry = { ...queued() };
@@ -1639,12 +1679,19 @@ describe('provider sides', () => {
       'Deferred s: it did not run on dscc; run this from a session that is not dscc.',
     ]);
     expect(
+      formatRun({ status: 'deferred', session: 's', side: 'agy' })
+    ).toEqual(['Deferred s: it ran on agy; run this from an agy session.']);
+    expect(
       formatRun({
         status: 'deferred',
         job: 'consolidation',
         session: 'consolidation',
+        side: 'dscc',
+        foreign: ['normal', 'unknown'],
       })[0]
-    ).toMatch(/^Deferred the consolidation: .*not dscc\.$/);
+    ).toBe(
+      "Deferred the consolidation: notes from normal, unknown would go to this session's provider (dscc); rerun with --allow-cross-side to send them."
+    );
   });
 
   test('worker should skip deferred entries, finish the others, and end', () => {

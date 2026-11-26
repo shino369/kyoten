@@ -200,10 +200,12 @@ Extraction and consolidation
                                 be sent to the model and changes nothing
   inbox [--reset]               Changes extraction held back for you to review (they read
                                 like instructions); --reset clears the list
-  consolidate [--dry-run] [--force]
+  consolidate [--dry-run] [--force] [--allow-cross-side]
                                 Tidy the notes and rewrite the profile now (normally weekly,
                                 in the background; never while saving is off, --force
-                                overrides for a manual run)
+                                overrides for a manual run). Notes from another provider
+                                side defer; --allow-cross-side sends them to this
+                                session's provider anyway
   undo [--dry-run]              Revert the last extraction, consolidation, import, or persona
                                 compaction (notes saved since are kept)
 
