@@ -7,6 +7,7 @@ import path from 'path';
 import { vi } from 'vitest';
 import {
   CACHE_DIR,
+  ID_RE,
   LIMITS,
   LOG_FILE,
   MemoryError,
@@ -15,10 +16,13 @@ import {
   USAGE_FILE,
   addNote,
   checkNote,
+  compareNoteIds,
   deleteNote,
   isStale,
+  isValidNoteId,
   loadNotes,
   memoryDir,
+  mergeSyncedOps,
   noteHistory,
   readLog,
   readUsage,
@@ -993,6 +997,231 @@ describe('memory store', () => {
 
       expect(readUsage(dir).m1.hits).toBe(1);
       expect(readUsage(dir).m2.hits).toBe(1);
+    });
+  });
+
+  describe('v2 global IDs and sync replay', () => {
+    test('should validate legacy and device-scoped v2 note IDs and sort deterministically', () => {
+      expect(ID_RE.test('m1')).toBe(true);
+      expect(ID_RE.test('t12')).toBe(true);
+      expect(isValidNoteId('m-a3f1-1')).toBe(true);
+      expect(isValidNoteId('t-deadbeef-42')).toBe(true);
+      expect(isValidNoteId('m-a3f1-0')).toBe(false);
+      expect(isValidNoteId('x-a3f1-1')).toBe(false);
+      expect(isValidNoteId(123)).toBe(false);
+
+      const ids = [
+        'm-b001-2',
+        'm10',
+        'm-a3f1-10',
+        'm2',
+        'm-a3f1-2',
+        't-a3f1-2',
+      ];
+      expect([...ids].sort(compareNoteIds)).toEqual([
+        'm2',
+        'm10',
+        'm-a3f1-2',
+        't-a3f1-2',
+        'm-a3f1-10',
+        'm-b001-2',
+      ]);
+      expect(compareNoteIds('bad-a', 'bad-b')).toBeLessThan(0);
+    });
+
+    test('should allocate device-scoped IDs and stamp opId when deviceId is provided', () => {
+      addNote(dir, input(), { now: NOW });
+      const first = addNote(
+        dir,
+        input({
+          text: 'User prefers dark mode everywhere.',
+          scope: 'user',
+          type: 'preference',
+        }),
+        { now: NOW, deviceId: 'A3F19999' }
+      );
+      const second = addNote(
+        dir,
+        input({
+          text: 'Completed remote design digest.',
+          scope: 'user',
+          type: 'episode',
+          source: { via: 'digest', task: 'remote-261127' },
+        }),
+        { now: LATER, deviceId: 'a3f19999', merge: false, opId: 'custom-op-2' }
+      );
+
+      expect(first.note.id).toBe('m-a3f1-1');
+      expect(second.note.id).toBe('t-a3f1-2');
+      const ops = logOps();
+      expect(ops[1].device).toBe('a3f19999');
+      expect(typeof ops[1].opId).toBe('string');
+      expect(ops[2].opId).toBe('custom-op-2');
+
+      expect(() => addNote(dir, input(), { deviceId: 'not-hex!' })).toThrow(
+        /Invalid deviceId/
+      );
+    });
+
+    test('should deduplicate opId, order add before mutations, and enforce per-field LWW', () => {
+      const addOp = {
+        op: 'add',
+        opId: 'dev1-1',
+        at: '2026-11-20T10:00:00.000Z',
+        note: {
+          id: 'm-a3f1-1',
+          text: 'Initial fact text.',
+          scope: 'user',
+          repo: null,
+          type: 'fact',
+          tags: ['alpha'],
+          triggers: [],
+          source: { via: 'sync' },
+          pinned: false,
+          supersedes: null,
+        },
+      };
+      const newerTextOp = {
+        op: 'update',
+        opId: 'dev2-2',
+        id: 'm-a3f1-1',
+        at: '2026-11-22T10:00:00.000Z',
+        set: { text: 'Newer text wins.' },
+      };
+      const olderTextAndTagsOp = {
+        op: 'update',
+        opId: 'dev1-2',
+        id: 'm-a3f1-1',
+        at: '2026-11-21T10:00:00.000Z',
+        set: { text: 'Stale text loses.', tags: ['alpha', 'beta'] },
+      };
+      const duplicateOp = { ...newerTextOp };
+      const pinOp = {
+        op: 'pin',
+        opId: 'dev2-3',
+        id: 'm-a3f1-1',
+        at: '2026-11-23T10:00:00.000Z',
+        pinned: true,
+      };
+      const checkOp = {
+        op: 'check',
+        opId: 'dev2-4',
+        id: 'm-a3f1-1',
+        at: '2026-11-24T10:00:00.000Z',
+      };
+
+      // Deliberately out of causal and chronological order with a duplicate
+      const result = replay([
+        newerTextOp,
+        duplicateOp,
+        checkOp,
+        olderTextAndTagsOp,
+        pinOp,
+        addOp,
+      ]);
+
+      expect(result.problems).toEqual([]);
+      expect(result.notes).toHaveLength(1);
+      expect(result.notes[0]).toMatchObject({
+        id: 'm-a3f1-1',
+        text: 'Newer text wins.',
+        tags: ['alpha', 'beta'],
+        pinned: true,
+        updated: '2026-11-22',
+        checked: '2026-11-24',
+        status: 'active',
+      });
+    });
+
+    test('should merge synced ops idempotently and refuse machine scope or secrets', () => {
+      const validAdd = {
+        op: 'add',
+        opId: 'peer1-op1',
+        device: 'peer1234',
+        at: '2026-11-20T10:00:00.000Z',
+        note: {
+          id: 'm-b001-1',
+          text: 'User prefers tabs over spaces in Python.',
+          scope: 'user',
+          repo: null,
+          type: 'preference',
+          tags: ['python'],
+          triggers: [],
+          source: { via: 'sync' },
+          pinned: false,
+          supersedes: null,
+        },
+      };
+      const machineAdd = {
+        op: 'add',
+        opId: 'peer1-op2',
+        at: '2026-11-20T10:01:00.000Z',
+        note: {
+          id: 'm-b001-2',
+          text: 'Local machine path only.',
+          scope: 'machine',
+          repo: null,
+          type: 'fact',
+          tags: [],
+          triggers: [],
+          source: { via: 'sync' },
+          pinned: false,
+          supersedes: null,
+        },
+      };
+      const secretAdd = {
+        op: 'add',
+        opId: 'peer1-op3',
+        at: '2026-11-20T10:02:00.000Z',
+        note: {
+          id: 'm-b001-3',
+          text: `Token is ${FAKE_GH_TOKEN}`,
+          scope: 'user',
+          repo: null,
+          type: 'fact',
+          tags: [],
+          triggers: [],
+          source: { via: 'sync' },
+          pinned: false,
+          supersedes: null,
+        },
+      };
+      const badUpdate = {
+        op: 'update',
+        opId: 'peer1-op4',
+        id: 'm-b001-999',
+        at: '2026-11-20T10:03:00.000Z',
+        set: { text: 'Missing target.' },
+      };
+      const malformed = { op: 'add', at: 123 };
+
+      const first = mergeSyncedOps(
+        dir,
+        /** @type {any} */ ([
+          validAdd,
+          machineAdd,
+          secretAdd,
+          badUpdate,
+          malformed,
+        ]),
+        { now: LATER }
+      );
+      expect(first.applied).toBe(1);
+      expect(first.refused).toBe(2);
+      expect(first.skipped).toBe(2);
+      expect(first.problems).toHaveLength(4);
+
+      const second = mergeSyncedOps(dir, [validAdd], { now: LATER });
+      expect(second).toEqual({
+        applied: 0,
+        skipped: 1,
+        refused: 0,
+        problems: [],
+      });
+
+      const loaded = loadNotes(dir).notes;
+      expect(loaded.map((n) => n.id)).toEqual(['m-b001-1']);
+      expect(logOps()[0].syncedAt).toBe(LATER.toISOString());
     });
   });
 });

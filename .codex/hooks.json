@@ -14,6 +14,11 @@
             "type": "command",
             "command": "node \"$(git rev-parse --show-toplevel)/utils/memory/hook.js\" --harness codex",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/utils/remote/hook.js\" --harness codex",
+            "timeout": 5
           }
         ]
       }
@@ -24,6 +29,11 @@
           {
             "type": "command",
             "command": "node \"$(git rev-parse --show-toplevel)/utils/memory/hook.js\" --harness codex",
+            "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/utils/remote/hook.js\" --harness codex",
             "timeout": 3
           }
         ]
@@ -45,6 +55,11 @@
           {
             "type": "command",
             "command": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/context_monitor.js\" --harness codex",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/utils/remote/hook.js\" --harness codex",
             "timeout": 5
           }
         ]
@@ -127,6 +142,11 @@
             "type": "command",
             "command": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/task_loop.js\" --harness codex",
             "timeout": 300
+          },
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/utils/remote/hook.js\" --harness codex",
+            "timeout": 5
           }
         ]
       }

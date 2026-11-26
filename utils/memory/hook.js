@@ -93,7 +93,7 @@ export const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 /** Characters of a failed command's output used in the query. */
 export const ERROR_CHARS = 600;
 const EXIT_CODE_RE = /\bexit code:?\s*(-?\d+)/i;
-const NOTE_ID_RE = /^- ([mt][1-9]\d*) \(/;
+const NOTE_ID_RE = /^- ([mt](?:[1-9]\d*|-[0-9a-f]{4,8}-[1-9]\d*)) \(/;
 /** Repeated at every typed prompt, so progress notes keep the persona. */
 export const PERSONA_REMINDER =
   '[Persona] Every message to the user, progress notes between tool calls included, follows the Personalization section.';
