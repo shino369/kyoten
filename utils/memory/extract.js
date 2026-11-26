@@ -782,6 +782,12 @@ export function runWorker(deps) {
           error instanceof Error ? error.message : String(error)
         );
         const { attempts, gaveUp } = retryEntry(dir, entry, message);
+        let failedAgent = entry.harness;
+        try {
+          failedAgent = readConfig(dir).extractAgent ?? entry.harness;
+        } catch {
+          // Keep the entry harness when config itself failed to load.
+        }
         const run = {
           at: deps.now().toISOString(),
           session: entry.session,
@@ -789,10 +795,7 @@ export function runWorker(deps) {
           transcript: entry.transcript,
           status: 'failed',
           side:
-            agentSide(
-              readConfig(dir).extractAgent ?? entry.harness,
-              deps.env
-            ) ?? memorySide(entry.kyotenAgent),
+            agentSide(failedAgent, deps.env) ?? memorySide(entry.kyotenAgent),
           error: message,
           attempts,
           gaveUp,

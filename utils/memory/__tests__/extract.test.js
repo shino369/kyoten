@@ -1831,6 +1831,46 @@ describe('runWorker', () => {
     });
   });
 
+  test('should journal failures and continue when config.json is unreadable', () => {
+    richSession();
+    queued({ session: 'agy-sess', harness: 'agy', kyotenAgent: null });
+    const other = path.join(root, 'other.jsonl');
+    fs.copyFileSync(transcript, other);
+    enqueue(dir, {
+      session: 'codex-sess',
+      harness: 'codex',
+      transcript: other,
+      cwd: null,
+      at: '2026-11-20T11:00:00.000Z',
+      kyotenAgent: null,
+    });
+    fs.writeFileSync(path.join(dir, CONFIG_FILE), '{bad json');
+
+    const runs = runWorker(deps());
+
+    expect(runs).toEqual([
+      expect.objectContaining({
+        session: 'codex-sess',
+        status: 'failed',
+        side: 'normal',
+        attempts: 1,
+      }),
+      expect.objectContaining({
+        session: 'agy-sess',
+        status: 'failed',
+        side: 'agy',
+        attempts: 1,
+      }),
+    ]);
+    expect(readJournal(dir)).toEqual(runs);
+    expect(
+      readQueue(dir).map((entry) => [entry.session, entry.attempts])
+    ).toEqual([
+      ['codex-sess', 1],
+      ['agy-sess', 1],
+    ]);
+  });
+
   test('should return null while another worker runs', () => {
     queued();
     tryLock(dir, { pid: 999, isAlive: () => true });
