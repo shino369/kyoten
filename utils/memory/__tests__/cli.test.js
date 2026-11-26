@@ -109,8 +109,9 @@ function run(argv, deps = {}) {
   return { code, out: logs.join('\n') };
 }
 
-/** @param {string[]} argv */
-const runJson = (argv) => JSON.parse(run([...argv, '--json']).out);
+/** @param {string[]} argv @param {object} [deps] */
+const runJson = (argv, deps = {}) =>
+  JSON.parse(run([...argv, '--json'], deps).out);
 
 const notes = () => loadNotes(dir).notes;
 const read = (/** @type {string} */ file) =>
@@ -780,6 +781,24 @@ describe('consolidate and undo', () => {
     expect(fs.existsSync(path.join(dir, 'profile.md'))).toBe(true);
   });
 
+  test('should send cross-side notes only with --allow-cross-side', () => {
+    const runAgent = agent({ profile: [], ops: [] });
+    const env = { ...ENV, KYOTEN_AGENT: 'dscc' };
+
+    const deferred = run(['consolidate'], { runAgent, env });
+    expect(deferred.out).toContain(
+      'Fix: pnpm memory consolidate --allow-cross-side'
+    );
+    expect(runAgent).not.toHaveBeenCalled();
+
+    const allowed = run(['consolidate', '--allow-cross-side'], {
+      runAgent,
+      env,
+    });
+    expect(allowed.out).toContain('because --allow-cross-side was given');
+    expect(runAgent).toHaveBeenCalled();
+  });
+
   test('should print JSON, and exit 1 when consolidation failed', () => {
     const runAgent = vi.fn(() => ({
       code: 1,
@@ -842,7 +861,56 @@ describe('consolidate and undo', () => {
     expect(run(['status']).out).toMatch(
       /^Consolidation: last 2026-11-20 14:03$/m
     );
-    expect(json.consolidation).toEqual({ last: NOW.toISOString(), due: null });
+    expect(json.consolidation).toEqual({
+      last: NOW.toISOString(),
+      due: null,
+      foreign: [],
+    });
+  });
+
+  test('should name the provider sides that need --allow-cross-side', () => {
+    appendJournal(dir, { status: 'applied', side: 'normal' });
+
+    const out = run(['status'], {
+      env: { ...ENV, KYOTEN_AGENT: 'dscc' },
+    }).out;
+
+    expect(out).toMatch(
+      /^Consolidation: .*notes from normal need --allow-cross-side$/m
+    );
+  });
+
+  test('should follow the agent that will run when naming the sides', () => {
+    appendJournal(dir, { status: 'applied', side: 'normal' });
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'dsh' });
+
+    const json = runJson(['status'], {
+      env: { ...ENV, KYOTEN_AGENT: 'dscc' },
+    });
+
+    expect(json.consolidation.foreign).toEqual([]);
+  });
+
+  test('should name the sides for a directly opened Antigravity session', () => {
+    appendJournal(dir, { status: 'applied', side: 'normal' });
+
+    const out = run(['status'], {
+      env: { ...ENV, ANTIGRAVITY_CONVERSATION_ID: 'agy-1' },
+    }).out;
+
+    expect(out).toMatch(
+      /^Consolidation: .*notes from normal need --allow-cross-side$/m
+    );
+  });
+
+  test('should name the sides when KYOTEN_CALLER_HARNESS identifies agy', () => {
+    appendJournal(dir, { status: 'applied', side: 'normal' });
+
+    const json = runJson(['status'], {
+      env: { ...ENV, KYOTEN_CALLER_HARNESS: 'agy' },
+    });
+
+    expect(json.consolidation.foreign).toEqual(['normal']);
   });
 
   test('should say when consolidation is due', () => {

@@ -43,7 +43,9 @@ import {
 import {
   consolidate,
   consolidateLocked,
+  consolidationAgent,
   consolidationDue,
+  foreignSides,
   readConsolidated,
 } from './consolidate.js';
 import {
@@ -82,6 +84,7 @@ import {
   writePersonalization,
 } from './personalize.js';
 import {
+  agentSide,
   clearInbox,
   enqueue,
   readInbox,
@@ -157,10 +160,12 @@ Extraction and consolidation
                                 be sent to the model and changes nothing
   inbox [--reset]               Changes extraction held back for you to review (they read
                                 like instructions); --reset clears the list
-  consolidate [--dry-run] [--force]
+  consolidate [--dry-run] [--force] [--allow-cross-side]
                                 Tidy the notes and rewrite the profile now (normally weekly,
                                 in the background; never while saving is off, --force
-                                overrides for a manual run)
+                                overrides for a manual run). Notes from another provider
+                                side defer; --allow-cross-side sends them to this
+                                session's provider anyway
   undo [--dry-run]              Revert the last extraction, consolidation, import, or persona
                                 compaction (notes saved since are kept)
 
@@ -271,6 +276,7 @@ const BOOLEAN_FLAGS = {
   '--session': 'session',
   '--dry-run': 'dryRun',
   '--allow-secrets': 'allowSecrets',
+  '--allow-cross-side': 'allowCrossSide',
   '--replace': 'replace',
   '--json': 'json',
   '--help': 'help',
@@ -308,7 +314,7 @@ const FIRST_NOTE =
  *   stale: boolean, all: boolean, reset: boolean, show: boolean,
  *   presets: boolean, on?: boolean, off?: boolean, compact: boolean, audit: boolean,
  *   session: boolean, dryRun: boolean,
- *   allowSecrets: boolean, replace: boolean, json: boolean, help: boolean,
+ *   allowSecrets: boolean, allowCrossSide: boolean, replace: boolean, json: boolean, help: boolean,
  * }} Options
  *
  * @typedef {{
@@ -349,6 +355,7 @@ export function parseArgs(argv) {
     session: false,
     dryRun: false,
     allowSecrets: false,
+    allowCrossSide: false,
     replace: false,
     json: false,
     help: false,
@@ -1078,6 +1085,7 @@ export const COMMANDS = {
       runAgent: deps.runAgent,
       dryRun: options.dryRun,
       force: options.force,
+      allowCrossSide: options.allowCrossSide,
     });
     const run = options.dryRun
       ? consolidate(extractDeps)
@@ -1190,6 +1198,13 @@ export const COMMANDS = {
     const consolidation = {
       last: consolidated?.at ?? null,
       due: consolidationDue(deps.rootDir, { now }),
+      foreign: (() => {
+        const agent = consolidationAgent(core.config, deps.env);
+        const callSide = agentSide(agent, deps.env);
+        return callSide && callSide !== 'normal'
+          ? foreignSides(dirOf(deps), callSide)
+          : [];
+      })(),
     };
     const lastRun = extraction.running
       ? 'running now'
@@ -1231,7 +1246,7 @@ export const COMMANDS = {
           agentLine(extractAgent),
           `Extraction model: ${extractModel ?? "the main session's model"}`,
           `Extraction: ${plural(extraction.queued, 'session')} queued; ${lastRun}`,
-          `Consolidation: ${consolidation.last ? `last ${localTime(consolidation.last)}` : 'not yet'}${consolidation.due ? `; due (${consolidation.due})` : ''}`,
+          `Consolidation: ${consolidation.last ? `last ${localTime(consolidation.last)}` : 'not yet'}${consolidation.due ? `; due (${consolidation.due})` : ''}${consolidation.foreign.length > 0 ? `; notes from ${consolidation.foreign.join(', ')} need --allow-cross-side` : ''}`,
           ...(extraction.inbox > 0
             ? [
                 `Inbox: ${plural(extraction.inbox, 'change')} held for review (pnpm memory inbox)`,

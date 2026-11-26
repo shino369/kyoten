@@ -867,6 +867,25 @@ describe('formatChange and formatRun', () => {
     ).toBe('  Profile: 1 line (memory/profile.md)');
   });
 
+  test('should warn which other sides --allow-cross-side sent', () => {
+    expect(
+      formatRun({
+        job: 'consolidation',
+        status: 'consolidated',
+        side: 'dscc',
+        crossSide: ['normal', 'unknown'],
+        changes: [],
+        profile: 0,
+        quarantined: 0,
+        refused: 0,
+        invalid: [],
+      })
+    ).toEqual([
+      'Consolidated memory:',
+      "  Sent notes from normal, unknown to this session's provider (dscc) because --allow-cross-side was given.",
+    ]);
+  });
+
   test('should report a consolidation that failed or had nothing to do', () => {
     expect(
       formatRun({ job: 'consolidation', status: 'failed', error: 'timeout' })
@@ -882,6 +901,18 @@ describe('formatChange and formatRun', () => {
         prompt: 'P',
       })[0]
     ).toBe('Would send the consolidation to the extraction model (m):');
+    expect(
+      formatRun({
+        job: 'consolidation',
+        status: 'dry-run',
+        side: 'dscc',
+        crossSide: ['normal'],
+        model: 'm',
+        prompt: 'P',
+      })[0]
+    ).toBe(
+      "--allow-cross-side: notes from normal would go to this session's provider (dscc)."
+    );
   });
 
   test('should print the prompt of a dry run', () => {
@@ -1131,6 +1162,45 @@ describe('extractEntry', () => {
       expect(run).toMatchObject({
         agent: 'claude',
         model: 'us.anthropic.claude-opus-5-5',
+      });
+    });
+
+    test('should record the provider side on skipped missing, off, and trivial runs', () => {
+      const missingRun = extractEntry(
+        queued({ harness: 'agy', kyotenAgent: null }),
+        deps()
+      );
+      expect(missingRun).toMatchObject({ status: 'missing', side: 'agy' });
+      expect(readJournal(dir).at(-1)).toMatchObject({
+        status: 'missing',
+        side: 'agy',
+      });
+
+      writeTranscript([
+        {
+          type: 'user',
+          message: { role: 'user', content: 'hi' },
+        },
+      ]);
+      const trivialRun = extractEntry(
+        queued({ harness: 'agy', kyotenAgent: null }),
+        deps()
+      );
+      expect(trivialRun).toMatchObject({ status: 'trivial', side: 'agy' });
+      expect(readJournal(dir).at(-1)).toMatchObject({
+        status: 'trivial',
+        side: 'agy',
+      });
+
+      writeConfig(dir, { ...DEFAULT_CONFIG, off: true });
+      const offRun = extractEntry(
+        queued({ harness: 'claude', kyotenAgent: 'dscc' }),
+        deps({ env: { KYOTEN_AGENT: 'dscc' } })
+      );
+      expect(offRun).toMatchObject({ status: 'off', side: 'dscc' });
+      expect(readJournal(dir).at(-1)).toMatchObject({
+        status: 'off',
+        side: 'dscc',
       });
     });
 
@@ -1568,6 +1638,19 @@ describe('provider sides', () => {
     expect(readJournal(dir).map((run) => run.side)).toEqual(['dscc', 'normal']);
   });
 
+  test('should record the side of the agent that ran, not the session', () => {
+    richSession();
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });
+
+    const run = extractEntry(
+      queued(),
+      deps({ runAgent: agentReturning({ ops: [] }) })
+    );
+
+    expect(run).toMatchObject({ status: 'applied', side: 'agy' });
+    expect(readJournal(dir).map((entry) => entry.side)).toEqual(['agy']);
+  });
+
   test('should extract an old entry without a side on a normal worker', () => {
     richSession();
     const entry = { ...queued() };
@@ -1639,12 +1722,32 @@ describe('provider sides', () => {
       'Deferred s: it did not run on dscc; run this from a session that is not dscc.',
     ]);
     expect(
+      formatRun({ status: 'deferred', session: 's', side: 'agy' })
+    ).toEqual(['Deferred s: it ran on agy; run this from an agy session.']);
+    expect(
       formatRun({
         status: 'deferred',
         job: 'consolidation',
         session: 'consolidation',
-      })[0]
-    ).toMatch(/^Deferred the consolidation: .*not dscc\.$/);
+        side: 'dscc',
+        foreign: ['normal', 'unknown'],
+      })
+    ).toEqual([
+      "Deferred the consolidation: notes from normal, unknown would go to this session's provider (dscc).",
+      'Fix: pnpm memory consolidate --allow-cross-side',
+    ]);
+    expect(
+      formatRun({
+        status: 'deferred',
+        job: 'consolidation',
+        session: 'consolidation',
+        side: 'agy',
+        foreign: ['normal'],
+      })
+    ).toEqual([
+      "Deferred the consolidation: notes from normal would go to this session's provider (agy).",
+      'Fix: pnpm memory consolidate --allow-cross-side',
+    ]);
   });
 
   test('worker should skip deferred entries, finish the others, and end', () => {
@@ -1726,6 +1829,46 @@ describe('runWorker', () => {
       status: 'failed',
       error: 'plain failure',
     });
+  });
+
+  test('should journal failures and continue when config.json is unreadable', () => {
+    richSession();
+    queued({ session: 'agy-sess', harness: 'agy', kyotenAgent: null });
+    const other = path.join(root, 'other.jsonl');
+    fs.copyFileSync(transcript, other);
+    enqueue(dir, {
+      session: 'codex-sess',
+      harness: 'codex',
+      transcript: other,
+      cwd: null,
+      at: '2026-11-20T11:00:00.000Z',
+      kyotenAgent: null,
+    });
+    fs.writeFileSync(path.join(dir, CONFIG_FILE), '{bad json');
+
+    const runs = runWorker(deps());
+
+    expect(runs).toEqual([
+      expect.objectContaining({
+        session: 'codex-sess',
+        status: 'failed',
+        side: 'normal',
+        attempts: 1,
+      }),
+      expect.objectContaining({
+        session: 'agy-sess',
+        status: 'failed',
+        side: 'agy',
+        attempts: 1,
+      }),
+    ]);
+    expect(readJournal(dir)).toEqual(runs);
+    expect(
+      readQueue(dir).map((entry) => [entry.session, entry.attempts])
+    ).toEqual([
+      ['codex-sess', 1],
+      ['agy-sess', 1],
+    ]);
   });
 
   test('should return null while another worker runs', () => {

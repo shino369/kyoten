@@ -15,14 +15,14 @@
 import fs from 'fs';
 import path from 'path';
 import { answerOf } from '../agent/cli.js';
-import { foreignHarnessForAgy } from '../loop/adapters.js';
+import { CALLER_HARNESS_ENV } from '../loop/adapters.js';
 import { findSecrets, redactSecrets } from '../redact.js';
 import {
   sessionFromEnv,
   sessionHarness,
   writeFileAtomic,
 } from '../task/store.js';
-import { callAgent } from './agent-call.js';
+import { CALL_AGENTS, callAgent } from './agent-call.js';
 import { readConfig, savingOff } from './config.js';
 import { looksLikeInstruction } from './instructions.js';
 import { kindLabel, refreshAfterWrite, shorten } from './context.js';
@@ -35,9 +35,12 @@ import {
 } from './extract.js';
 import {
   EXTRACT_DIR,
+  agentSide,
   appendInbox,
   appendJournal,
+  memorySide,
   readJournal,
+  runSide,
   tryLock,
 } from './queue.js';
 import { PROFILE_FILE, renderStored } from './render.js';
@@ -281,10 +284,11 @@ export function cleanProfile(lines) {
 
 /**
  * The agent, model, and provider side of the latest applied journal run. Old
- * runs have no `agent` field (they ran on claude) and no `side` (not dscc).
+ * runs have no `agent` field (they ran on claude) and no `side`, which model
+ * reuse keeps as `normal`; the provider guard reads such runs as `unknown`.
  *
  * @param {string} dir
- * @returns {{ agent: string, model: string | null, side: 'dscc' | 'normal' } | null}
+ * @returns {{ agent: string, model: string | null, side: string } | null}
  */
 function lastRun(dir) {
   const run = readJournal(dir)
@@ -296,19 +300,47 @@ function lastRun(dir) {
   return {
     agent: typeof run.agent === 'string' ? run.agent : 'claude',
     model: typeof run.model === 'string' ? run.model : null,
-    side: run.side === 'dscc' ? 'dscc' : 'normal',
+    side: typeof run.side === 'string' ? run.side : 'normal',
   };
 }
 
 /**
- * Whether the journal has applied extraction runs and all came from dscc.
+ * The provider sides of the applied extraction runs that are not `side`,
+ * oldest first. `unknown` when the journal has no applied run: nothing proves
+ * that those notes came from the worker's side.
  *
  * @param {string} dir
- * @returns {boolean}
+ * @param {string} side
+ * @returns {string[]}
  */
-function onlyDsccRuns(dir) {
+export function foreignSides(dir, side) {
   const runs = readJournal(dir).filter((item) => item.status === 'applied');
-  return runs.length > 0 && runs.every((item) => item.side === 'dscc');
+  if (runs.length === 0) return ['unknown'];
+  return [
+    ...new Set(
+      runs.map((item) => runSide(item)).filter((value) => value !== side)
+    ),
+  ];
+}
+
+/**
+ * The CLI that runs consolidation in this environment: `--extract-agent`,
+ * else this session's harness (falling back to `KYOTEN_CALLER_HARNESS` passed
+ * by memory hooks to detached workers), else `claude`.
+ *
+ * @param {{ extractAgent?: string | null }} config
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {string}
+ */
+export function consolidationAgent(config, env) {
+  if (config.extractAgent) return config.extractAgent;
+  const session = sessionHarness(env);
+  if (session) return session;
+  const caller = env[CALLER_HARNESS_ENV]?.trim();
+  if (caller && CALL_AGENTS.includes(/** @type {any} */ (caller))) {
+    return caller;
+  }
+  return 'claude';
 }
 
 /**
@@ -325,14 +357,21 @@ export function consolidate(deps) {
   const base = { at, job: 'consolidation', session: 'consolidation' };
   const config = readConfig(dir);
   const session = sessionFromEnv(deps.env);
+  // The session's own agent, unless --extract-agent assigns one: one CLI and
+  // one provider per session, so a prior run's agent never routes a session
+  // to another CLI. It still supplies the model when agent and side match.
+  const agent = consolidationAgent(config, deps.env);
+  // The side this run records: the agent that actually runs it, falling back
+  // to the session's side when the agent names its own provider (dsh, codex).
+  const side = agentSide(agent, deps.env) ?? memorySide(deps.env.KYOTEN_AGENT);
   if (!deps.dryRun && !deps.force && savingOff(config, session)) {
-    const run = { ...base, status: 'off' };
+    const run = { ...base, status: 'off', side };
     appendJournal(dir, run);
     return run;
   }
   const { shown, groups } = consolidationInput(loadNotes(dir).notes);
   if (shown.length === 0) {
-    const run = { ...base, status: 'nothing' };
+    const run = { ...base, status: 'nothing', side };
     if (deps.dryRun) return run;
     writeConsolidated(dir, { at, ops: countOps(dir) });
     appendJournal(dir, run);
@@ -340,11 +379,6 @@ export function consolidate(deps) {
   }
   const prompt = buildConsolidationPrompt({ shown, groups });
   const last = lastRun(dir);
-  const side = deps.env.KYOTEN_AGENT === 'dscc' ? 'dscc' : 'normal';
-  const foreignCaller = foreignHarnessForAgy(deps.env);
-  const lastAgent = last?.agent === 'agy' && foreignCaller ? null : last?.agent;
-  const agent =
-    config.extractAgent ?? lastAgent ?? sessionHarness(deps.env) ?? 'claude';
   const model = modelFor({
     agent,
     configured: config.extractAgent,
@@ -352,22 +386,35 @@ export function consolidate(deps) {
     // A model name only fits the provider it ran on: never from the other side.
     ownModel: last?.agent === agent && last.side === side ? last.model : null,
   });
-  // The claude CLI sends the notes to the provider its environment names. A
-  // dscc worker may therefore consolidate with claude only when every applied
-  // extraction run came from the dscc side (runs without a `side`, and a
-  // journal without any run, count as not dscc), so a dscc-only user is
-  // consolidated while notes that came from normal sessions never go to
-  // DeepSeek; otherwise the call waits for a normal worker (still due). A
-  // normal worker always consolidates: notes from dscc sessions were already
-  // extracted on DeepSeek, and the user also uses Anthropic.
-  const deferred = deferredRun(
-    agent,
-    deps.env.KYOTEN_AGENT === 'dscc' && onlyDsccRuns(dir) ? 'dscc' : null,
-    deps.env,
-    base
-  );
-  if (deferred) return deferred;
-  if (deps.dryRun) return { ...base, status: 'dry-run', agent, model, prompt };
+  // Google Antigravity Terms of Service: only an agy session may call agy.
+  if (agent === 'agy') {
+    const tos = deferredRun(agent, null, deps.env, base);
+    if (tos) return tos;
+  }
+  // The provider that receives the notes: the claude CLI sends them to the
+  // provider its environment names. dscc and agy workers consolidate only
+  // notes from their own side; a lingering run from another side (or a journal
+  // without a side) waits for --allow-cross-side. A normal claude worker keeps
+  // its legacy right to consolidate all sides, and dsh/codex name their own
+  // providers, so no side is inferred for them.
+  const callSide = agentSide(agent, deps.env);
+  const foreign =
+    callSide && callSide !== 'normal' ? foreignSides(dir, callSide) : [];
+  if (foreign.length > 0 && !deps.allowCrossSide) {
+    return { ...base, status: 'deferred', side: callSide, foreign };
+  }
+  const crossSide = foreign.length > 0 && deps.allowCrossSide ? foreign : [];
+  if (deps.dryRun) {
+    return {
+      ...base,
+      status: 'dry-run',
+      side,
+      agent,
+      model,
+      prompt,
+      ...(crossSide.length > 0 ? { crossSide } : {}),
+    };
+  }
 
   const command = extractCommand({
     agent,
@@ -379,7 +426,7 @@ export function consolidate(deps) {
     cancel: () => !deps.force && Boolean(savingOff(readConfig(dir), session)),
   });
   if (result.cancelled) {
-    const run = { ...base, status: 'off', agent, model };
+    const run = { ...base, status: 'off', agent, model, side };
     appendJournal(dir, run);
     return run;
   }
@@ -391,6 +438,7 @@ export function consolidate(deps) {
       status: 'off',
       agent,
       model,
+      side,
       durationMs: result.durationMs,
     };
     appendJournal(dir, run);
@@ -432,6 +480,7 @@ export function consolidate(deps) {
     agent,
     model,
     side,
+    ...(crossSide.length > 0 ? { crossSide } : {}),
     changes,
     profile: profile.lines.length,
     quarantined: checked.quarantined.length,
@@ -473,11 +522,19 @@ export function consolidateLocked(deps) {
     );
     const at = deps.now().toISOString();
     writeConsolidated(dir, { ...readConsolidated(dir), tried: at });
+    let failedAgent = consolidationAgent({}, deps.env);
+    try {
+      failedAgent = consolidationAgent(readConfig(dir), deps.env);
+    } catch {
+      // Keep the env-derived agent when config itself failed to load.
+    }
     const run = {
       at,
       job: 'consolidation',
       session: 'consolidation',
       status: 'failed',
+      side:
+        agentSide(failedAgent, deps.env) ?? memorySide(deps.env.KYOTEN_AGENT),
       error: message,
     };
     appendJournal(dir, run);

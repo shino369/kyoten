@@ -48,7 +48,9 @@ import {
   MAX_ATTEMPTS,
   appendInbox,
   appendJournal,
+  agentSide,
   finishEntry,
+  memorySide,
   readAnnounced,
   readJournal,
   readOffsets,
@@ -126,6 +128,7 @@ const CHANGE_FIELDS = /** @type {const} */ ([
  * @property {() => string} tmpdir
  * @property {boolean} [dryRun] build the prompt, call and change nothing
  * @property {boolean} [force] override the saving-off guard for manual runs
+ * @property {boolean} [allowCrossSide] send notes from other provider sides
  * @property {import('./queue.js').LockOptions} [lock]
  */
 
@@ -449,11 +452,17 @@ const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
  * @param {string} name
  */
 function deferredMessage(run, name) {
-  if (run.side === 'agy') {
-    return `Deferred ${name}: it uses agy, which cannot be called from another agent harness (${run.caller}); run this from an agy session or a plain terminal.`;
+  if (
+    run.job === 'consolidation' &&
+    Array.isArray(run.foreign) &&
+    run.foreign.length > 0
+  ) {
+    return `Deferred the consolidation: notes from ${run.foreign.join(', ')} would go to this session's provider (${run.side ?? 'this side'}).`;
   }
-  if (run.job === 'consolidation') {
-    return 'Deferred the consolidation: this worker runs on dscc and some notes came from other sessions; run this from a session that is not dscc.';
+  if (run.side === 'agy') {
+    return run.caller
+      ? `Deferred ${name}: it uses agy, which cannot be called from another agent harness (${run.caller}); run this from an agy session or a plain terminal.`
+      : `Deferred ${name}: it ran on agy; run this from an agy session.`;
   }
   return run.side === 'dscc'
     ? `Deferred ${name}: it ran on dscc; run this from a dscc session.`
@@ -484,7 +493,7 @@ export function deferredRun(agent, kyotenAgent, env, base) {
   return {
     ...base,
     status: 'deferred',
-    side: kyotenAgent === 'dscc' ? 'dscc' : 'normal',
+    side: memorySide(kyotenAgent),
   };
 }
 
@@ -524,16 +533,29 @@ export function formatRun(run) {
         (/** @type {string} */ problem) => `Skipped ${problem}`
       ),
     ];
+    const crossSide =
+      Array.isArray(run.crossSide) && run.crossSide.length > 0
+        ? [
+            `Sent notes from ${run.crossSide.join(', ')} to this session's provider (${run.side}) because --allow-cross-side was given.`,
+          ]
+        : [];
     const title =
       run.status === 'applied' ? `Extracted ${session}` : 'Consolidated memory';
-    return details.length === 0
+    return details.length === 0 && crossSide.length === 0
       ? [
           `${title}: ${run.status === 'applied' ? 'nothing new to remember' : 'nothing to change'}.`,
         ]
-      : [`${title}:`, ...details.map((line) => `  ${line}`)];
+      : [`${title}:`, ...[...details, ...crossSide].map((line) => `  ${line}`)];
   }
   if (run.status === 'dry-run') {
+    const crossSide =
+      Array.isArray(run.crossSide) && run.crossSide.length > 0
+        ? [
+            `--allow-cross-side: notes from ${run.crossSide.join(', ')} would go to this session's provider (${run.side}).`,
+          ]
+        : [];
     return [
+      ...crossSide,
       `Would send ${name} to the extraction model (${run.model ?? "the agent's default model"}):`,
       '',
       run.prompt,
@@ -555,7 +577,14 @@ export function formatRun(run) {
     empty: `Nothing new in ${session}.`,
     nothing: 'Nothing to consolidate yet.',
   };
-  if (run.status === 'deferred') return [deferredMessage(run, name)];
+  if (run.status === 'deferred') {
+    return [
+      deferredMessage(run, name),
+      ...(Array.isArray(run.foreign) && run.foreign.length > 0
+        ? ['Fix: pnpm memory consolidate --allow-cross-side']
+        : []),
+    ];
+  }
   return [skipped[run.status]];
 }
 
@@ -623,6 +652,7 @@ export function extractEntry(entry, deps) {
   // the entry stays queued, untouched, for a worker of the matching side.
   const config = readConfig(dir);
   const agent = config.extractAgent ?? harness;
+  const side = agentSide(agent, deps.env) ?? memorySide(entry.kyotenAgent);
   const off = savingOff(config, session);
   if (!off) {
     const deferred = deferredRun(agent, entry.kyotenAgent, deps.env, base);
@@ -631,8 +661,14 @@ export function extractEntry(entry, deps) {
 
   const from = readOffsets(dir)[session]?.offset ?? 0;
   const chunk = readNewLines(transcript, from);
-  if (!chunk) return settle({ ...base, status: 'missing' }, null);
-  const offRun = { ...base, status: 'off', from: chunk.start, to: chunk.end };
+  if (!chunk) return settle({ ...base, status: 'missing', side }, null);
+  const offRun = {
+    ...base,
+    status: 'off',
+    side,
+    from: chunk.start,
+    to: chunk.end,
+  };
   if (off || savingOff(readConfig(dir), session))
     return settle(offRun, chunk.end);
   if (!chunk.text) return settle({ ...base, status: 'empty' }, null);
@@ -645,7 +681,7 @@ export function extractEntry(entry, deps) {
     dropped: condensed.dropped,
   };
   if (isTrivial(condensed.items)) {
-    return settle({ ...base, status: 'trivial', ...range }, chunk.end);
+    return settle({ ...base, status: 'trivial', side, ...range }, chunk.end);
   }
 
   const cwd = condensed.cwd ?? entry.cwd;
@@ -698,7 +734,7 @@ export function extractEntry(entry, deps) {
     {
       ...base,
       status: 'applied',
-      side: entry.kyotenAgent === 'dscc' ? 'dscc' : 'normal',
+      side,
       ...range,
       agent,
       model,
@@ -746,12 +782,20 @@ export function runWorker(deps) {
           error instanceof Error ? error.message : String(error)
         );
         const { attempts, gaveUp } = retryEntry(dir, entry, message);
+        let failedAgent = entry.harness;
+        try {
+          failedAgent = readConfig(dir).extractAgent ?? entry.harness;
+        } catch {
+          // Keep the entry harness when config itself failed to load.
+        }
         const run = {
           at: deps.now().toISOString(),
           session: entry.session,
           harness: entry.harness,
           transcript: entry.transcript,
           status: 'failed',
+          side:
+            agentSide(failedAgent, deps.env) ?? memorySide(entry.kyotenAgent),
           error: message,
           attempts,
           gaveUp,

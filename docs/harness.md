@@ -460,21 +460,29 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   pairs with the configured agent (claude by default; cleared when switching `--extract-agent`
   alone, and not accepted for DSH, which chooses its model in its profile); otherwise the session's
   own model is used.
-  Consolidation uses the configured agent, falling back to the last applied run's agent,
-  the current session's CLI, and then Claude. Persona compaction and audit accept an explicit
+  Consolidation runs on the current session's CLI (claude, codex, dsh, or agy), or on the agent
+  `--extract-agent` assigns; it never inherits the last run's agent, so one session never calls
+  another CLI by accident. Persona compaction and audit accept an explicit
   `--agent` and otherwise follow the memory configuration and session. Codex needs zero configured
   MCP servers. A missing CLI or failed check prints commands for switching agents. The next session
   announces saved notes and shows when instruction-like changes are waiting in `memory/inbox.jsonl`.
   Secrets are refused.
-  The queue records each session's `KYOTEN_AGENT`. The `claude` CLI sends a transcript to the
-  provider its environment names. When extraction uses the Claude CLI, dscc sessions are extracted
-  by dscc workers and other sessions by workers outside dscc. A mismatching entry stays queued for
-  a matching worker without recording an attempt. A dscc worker defers Claude consolidation until
-  every applied extraction run in the journal is marked as dscc. Consolidation is paused while saving is off
+  Every run records its provider side: `dscc` (Claude Code on DeepSeek), `agy` (Google), or
+  `normal` (anything else); journal lines from before sides were recorded read as `unknown`.
+  The `claude` CLI sends a transcript to the provider its environment names. When extraction uses
+  the Claude CLI, dscc sessions are extracted by dscc workers and other sessions by workers outside
+  dscc. A mismatching entry stays queued for a matching worker without recording an attempt.
+  Consolidation on a dscc or agy worker sends only notes whose applied extraction runs are all from
+  that same side; a foreign or `unknown` side defers (naming the sides and the flag as the Fix), and
+  `pnpm memory consolidate --allow-cross-side` sends them to this session's provider for that run,
+  with a warning (the consent is per-run because notes from those sides remain in the store). A
+  normal claude worker still consolidates every side; dsh and codex name their own providers, so
+  they sit outside the dscc/agy side guard (consolidating without `--allow-cross-side`, and dsh
+  sessions record `normal`). Consolidation is paused while saving is off
   everywhere (`pnpm memory off`; it stays due and runs once saving is back on); a manual
   `pnpm memory consolidate` then refuses with a Fix line unless `--force` (a `--dry-run` is always
-  allowed). Consolidation reuses the last run's model only from a run on the same provider side
-  (dscc or not) as the worker.
+  allowed). Consolidation reuses the last run's model only when that run used the same agent and
+  side as the worker. `pnpm memory status` names the sides that need `--allow-cross-side`.
   Memory jobs build their isolation arguments without a double quote, so they start through
   Windows `.cmd` shims (which refuse `"`): Codex gets bare or single-quoted TOML values, and Claude
   and Antigravity each get a relative path to their settings file in the job's temporary folder.
