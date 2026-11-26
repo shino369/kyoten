@@ -34,6 +34,7 @@ import {
 } from './extract.js';
 import {
   EXTRACT_DIR,
+  agentSide,
   appendInbox,
   appendJournal,
   memorySide,
@@ -350,11 +351,13 @@ export function consolidate(deps) {
   }
   const prompt = buildConsolidationPrompt({ shown, groups });
   const last = lastRun(dir);
-  const side = memorySide(deps.env.KYOTEN_AGENT);
   // The session's own agent, unless --extract-agent assigns one: one CLI and
   // one provider per session, so a prior run's agent never routes a session
   // to another CLI. It still supplies the model when agent and side match.
   const agent = config.extractAgent ?? sessionHarness(deps.env) ?? 'claude';
+  // The side this run records: the agent that actually runs it, falling back
+  // to the session's side when the agent names its own provider (dsh, codex).
+  const side = agentSide(agent, deps.env) ?? memorySide(deps.env.KYOTEN_AGENT);
   const model = modelFor({
     agent,
     configured: config.extractAgent,
@@ -373,18 +376,11 @@ export function consolidate(deps) {
   // without a side) waits for --allow-cross-side. A normal claude worker keeps
   // its legacy right to consolidate all sides, and dsh/codex name their own
   // providers, so no side is inferred for them.
-  const agentSide =
-    agent === 'agy'
-      ? 'agy'
-      : agent === 'claude'
-        ? deps.env.KYOTEN_AGENT === 'dscc'
-          ? 'dscc'
-          : 'normal'
-        : null;
+  const callSide = agentSide(agent, deps.env);
   const foreign =
-    agentSide && agentSide !== 'normal' ? foreignSides(dir, agentSide) : [];
+    callSide && callSide !== 'normal' ? foreignSides(dir, callSide) : [];
   if (foreign.length > 0 && !deps.allowCrossSide) {
-    return { ...base, status: 'deferred', side: agentSide, foreign };
+    return { ...base, status: 'deferred', side: callSide, foreign };
   }
   const crossSide = foreign.length > 0 && deps.allowCrossSide ? foreign : [];
   if (deps.dryRun) {

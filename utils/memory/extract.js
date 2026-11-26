@@ -48,6 +48,7 @@ import {
   MAX_ATTEMPTS,
   appendInbox,
   appendJournal,
+  agentSide,
   finishEntry,
   memorySide,
   readAnnounced,
@@ -451,17 +452,17 @@ const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
  * @param {string} name
  */
 function deferredMessage(run, name) {
+  if (
+    run.job === 'consolidation' &&
+    Array.isArray(run.foreign) &&
+    run.foreign.length > 0
+  ) {
+    return `Deferred the consolidation: notes from ${run.foreign.join(', ')} would go to this session's provider (${run.side ?? 'this side'}).`;
+  }
   if (run.side === 'agy') {
     return run.caller
       ? `Deferred ${name}: it uses agy, which cannot be called from another agent harness (${run.caller}); run this from an agy session or a plain terminal.`
       : `Deferred ${name}: it ran on agy; run this from an agy session.`;
-  }
-  if (run.job === 'consolidation') {
-    const sides =
-      Array.isArray(run.foreign) && run.foreign.length > 0
-        ? run.foreign.join(', ')
-        : 'other provider sides';
-    return `Deferred the consolidation: notes from ${sides} would go to this session's provider (${run.side ?? 'this side'}); rerun with --allow-cross-side to send them.`;
   }
   return run.side === 'dscc'
     ? `Deferred ${name}: it ran on dscc; run this from a dscc session.`
@@ -576,7 +577,14 @@ export function formatRun(run) {
     empty: `Nothing new in ${session}.`,
     nothing: 'Nothing to consolidate yet.',
   };
-  if (run.status === 'deferred') return [deferredMessage(run, name)];
+  if (run.status === 'deferred') {
+    return [
+      deferredMessage(run, name),
+      ...(Array.isArray(run.foreign) && run.foreign.length > 0
+        ? ['Fix: pnpm memory consolidate --allow-cross-side']
+        : []),
+    ];
+  }
   return [skipped[run.status]];
 }
 
@@ -719,7 +727,7 @@ export function extractEntry(entry, deps) {
     {
       ...base,
       status: 'applied',
-      side: memorySide(entry.kyotenAgent),
+      side: agentSide(agent, deps.env) ?? memorySide(entry.kyotenAgent),
       ...range,
       agent,
       model,
@@ -773,7 +781,11 @@ export function runWorker(deps) {
           harness: entry.harness,
           transcript: entry.transcript,
           status: 'failed',
-          side: memorySide(entry.kyotenAgent),
+          side:
+            agentSide(
+              readConfig(dir).extractAgent ?? entry.harness,
+              deps.env
+            ) ?? memorySide(entry.kyotenAgent),
           error: message,
           attempts,
           gaveUp,

@@ -785,7 +785,9 @@ describe('consolidate and undo', () => {
     const env = { ...ENV, KYOTEN_AGENT: 'dscc' };
 
     const deferred = run(['consolidate'], { runAgent, env });
-    expect(deferred.out).toContain('rerun with --allow-cross-side');
+    expect(deferred.out).toContain(
+      'Fix: pnpm memory consolidate --allow-cross-side'
+    );
     expect(runAgent).not.toHaveBeenCalled();
 
     const allowed = run(['consolidate', '--allow-cross-side'], {

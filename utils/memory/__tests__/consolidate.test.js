@@ -797,6 +797,19 @@ describe('consolidation on dscc', () => {
     expect(runAgent).toHaveBeenCalled();
   });
 
+  test('should record the agy side for a directly opened Antigravity session', () => {
+    seed();
+    appendJournal(dir, { status: 'applied', side: 'agy' });
+    const runAgent = agentReturning({ profile: [], ops: [] });
+
+    const run = consolidate(
+      deps({ runAgent, env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1' } })
+    );
+
+    expect(run).toMatchObject({ status: 'consolidated', side: 'agy' });
+    expect(runAgent).toHaveBeenCalled();
+  });
+
   test('should consolidate across sides with --allow-cross-side and record them', () => {
     seed();
     appendJournal(dir, { status: 'applied', side: 'normal' });

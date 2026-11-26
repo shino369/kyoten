@@ -1599,13 +1599,17 @@ describe('provider sides', () => {
     expect(readJournal(dir).map((run) => run.side)).toEqual(['dscc', 'normal']);
   });
 
-  test('should record an agy side on an applied run', () => {
+  test('should record the side of the agent that ran, not the session', () => {
     richSession();
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });
 
-    expect(extractEntry(queued({ kyotenAgent: 'agy' }), deps()).status).toBe(
-      'applied'
+    const run = extractEntry(
+      queued(),
+      deps({ runAgent: agentReturning({ ops: [] }) })
     );
-    expect(readJournal(dir).map((run) => run.side)).toEqual(['agy']);
+
+    expect(run).toMatchObject({ status: 'applied', side: 'agy' });
+    expect(readJournal(dir).map((entry) => entry.side)).toEqual(['agy']);
   });
 
   test('should extract an old entry without a side on a normal worker', () => {
@@ -1688,10 +1692,23 @@ describe('provider sides', () => {
         session: 'consolidation',
         side: 'dscc',
         foreign: ['normal', 'unknown'],
-      })[0]
-    ).toBe(
-      "Deferred the consolidation: notes from normal, unknown would go to this session's provider (dscc); rerun with --allow-cross-side to send them."
-    );
+      })
+    ).toEqual([
+      "Deferred the consolidation: notes from normal, unknown would go to this session's provider (dscc).",
+      'Fix: pnpm memory consolidate --allow-cross-side',
+    ]);
+    expect(
+      formatRun({
+        status: 'deferred',
+        job: 'consolidation',
+        session: 'consolidation',
+        side: 'agy',
+        foreign: ['normal'],
+      })
+    ).toEqual([
+      "Deferred the consolidation: notes from normal would go to this session's provider (agy).",
+      'Fix: pnpm memory consolidate --allow-cross-side',
+    ]);
   });
 
   test('worker should skip deferred entries, finish the others, and end', () => {

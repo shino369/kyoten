@@ -132,6 +132,24 @@ export const memorySide = (kyotenAgent) =>
       : 'normal';
 
 /**
+ * The side the run itself uses: `agy` (Google), or `claude`'s provider by its
+ * environment (`dscc` or `normal`). dsh and codex name their own providers,
+ * so no side is inferred for them.
+ *
+ * @param {string} agent
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {'dscc' | 'agy' | 'normal' | null}
+ */
+export const agentSide = (agent, env) =>
+  agent === AGY_AGENT
+    ? 'agy'
+    : agent === 'claude'
+      ? env.KYOTEN_AGENT === DSCC_AGENT
+        ? 'dscc'
+        : 'normal'
+      : null;
+
+/**
  * The side a journal run recorded; `unknown` for an entry written before
  * runs recorded one (an old or copied journal cannot be proven safe).
  *
