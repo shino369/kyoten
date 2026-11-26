@@ -122,6 +122,11 @@
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/utils/memory/hook.js --harness claude",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/utils/remote/hook.js --harness claude",
+            "timeout": 5
           }
         ]
       }
@@ -132,6 +137,11 @@
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/utils/memory/hook.js --harness claude",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/utils/remote/hook.js --harness claude",
             "timeout": 5
           }
         ]
@@ -155,6 +165,11 @@
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/task_loop.js --harness claude",
             "timeout": 300
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/utils/remote/hook.js --harness claude",
+            "timeout": 5
           }
         ]
       }
@@ -175,6 +190,11 @@
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/utils/memory/hook.js --harness claude",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/utils/remote/hook.js --harness claude",
             "timeout": 5
           }
         ]

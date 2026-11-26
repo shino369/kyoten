@@ -11,10 +11,12 @@ Run `pnpm docs:cli` to refresh this reference from the workspace CLI help. Run `
 - [`pnpm kyoten`](#pnpm-kyoten)
 - [`pnpm loop`](#pnpm-loop)
 - [`pnpm memory`](#pnpm-memory)
+- [`pnpm remote`](#pnpm-remote)
 - [`pnpm skills:add`](#pnpm-skillsadd)
 - [`pnpm skills:install`](#pnpm-skillsinstall)
 - [`pnpm skills:link`](#pnpm-skillslink)
 - [`pnpm swarm`](#pnpm-swarm)
+- [`pnpm sync`](#pnpm-sync)
 - [`pnpm task`](#pnpm-task)
 - [`pnpm tools`](#pnpm-tools)
 - [`pnpm workspace:setup` and `pnpm workspace:check`](#pnpm-workspacesetup-and-pnpm-workspacecheck)
@@ -270,6 +272,30 @@ Options
   --help, -h                   Show this help (also pnpm memory help)
 ```
 
+## `pnpm remote`
+
+```text
+Usage: pnpm remote <command> [options]
+
+Manage OSC 7501 status hooks (Herdr/Rex) and host-direct E2EE Web Push alerts.
+
+Commands
+  status [--json]
+  osc7501 on|off
+  vapid init [--subject <mailto:...|https://...>] [--force] [--json]
+  vapid show [--json]
+  push on|off
+  push add --endpoint <url> --p256dh <key> --auth <secret> [--label <name>]
+  push remove <id>
+  push list [--json]
+  push test [--title <text>] [--body <text>] [--dry-run] [--json]
+  help
+
+Options
+  --help, -h   Show this help
+  --json       Machine-readable JSON output
+```
+
 ## `pnpm skills:add`
 
 ```text
@@ -350,6 +376,31 @@ Options
 
 Exit code: 0 when every step is done and the final verify passes, else 1.
 Logs: tasks/<task>/swarm/run-*/ (<step>.log, <step>.result.json)
+```
+
+## `pnpm sync`
+
+```text
+Usage: pnpm sync <command> [options]
+
+Zero-trust E2EE Git Vault sync for personal memory and personas.
+
+Commands
+  init --vault <url-or-path> [--name <name>] [--zone personal|work]
+       [--mode full|receive|off] [--compartments <list>] [--root-key <b64>]
+  status [--json]
+  mode <full|receive|off>
+  push [--dry-run] [--json]
+  pull [--dry-run] [--json]
+  device list [--json]
+  device add --pubkey <file-or-json> [--name <name>] [--zone personal|work]
+             [--compartments <list>]
+  device revoke <device-id>
+  help
+
+Options
+  --help, -h   Show this help
+  --json       Machine-readable JSON output
 ```
 
 ## `pnpm task`
