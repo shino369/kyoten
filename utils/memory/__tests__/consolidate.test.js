@@ -827,6 +827,25 @@ describe('consolidation on dscc', () => {
     expect(runAgent).toHaveBeenCalled();
   });
 
+  test('should record the provider side on a cross-side dry run', () => {
+    seed();
+    appendJournal(dir, { status: 'applied', side: 'normal' });
+
+    const run = consolidate(
+      deps({
+        dryRun: true,
+        allowCrossSide: true,
+        env: { KYOTEN_AGENT: 'dscc' },
+      })
+    );
+
+    expect(run).toMatchObject({
+      status: 'dry-run',
+      side: 'dscc',
+      crossSide: ['normal'],
+    });
+  });
+
   test('should consolidate on a normal worker after dscc runs', () => {
     seed();
     appendJournal(dir, { status: 'applied', side: 'dscc' });

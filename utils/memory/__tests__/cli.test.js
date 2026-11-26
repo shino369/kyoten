@@ -109,8 +109,9 @@ function run(argv, deps = {}) {
   return { code, out: logs.join('\n') };
 }
 
-/** @param {string[]} argv */
-const runJson = (argv) => JSON.parse(run([...argv, '--json']).out);
+/** @param {string[]} argv @param {object} [deps] */
+const runJson = (argv, deps = {}) =>
+  JSON.parse(run([...argv, '--json'], deps).out);
 
 const notes = () => loadNotes(dir).notes;
 const read = (/** @type {string} */ file) =>
@@ -872,6 +873,29 @@ describe('consolidate and undo', () => {
 
     const out = run(['status'], {
       env: { ...ENV, KYOTEN_AGENT: 'dscc' },
+    }).out;
+
+    expect(out).toMatch(
+      /^Consolidation: .*notes from normal need --allow-cross-side$/m
+    );
+  });
+
+  test('should follow the agent that will run when naming the sides', () => {
+    appendJournal(dir, { status: 'applied', side: 'normal' });
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'dsh' });
+
+    const json = runJson(['status'], {
+      env: { ...ENV, KYOTEN_AGENT: 'dscc' },
+    });
+
+    expect(json.consolidation.foreign).toEqual([]);
+  });
+
+  test('should name the sides for a directly opened Antigravity session', () => {
+    appendJournal(dir, { status: 'applied', side: 'normal' });
+
+    const out = run(['status'], {
+      env: { ...ENV, ANTIGRAVITY_CONVERSATION_ID: 'agy-1' },
     }).out;
 
     expect(out).toMatch(

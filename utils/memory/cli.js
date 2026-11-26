@@ -83,9 +83,9 @@ import {
   writePersonalization,
 } from './personalize.js';
 import {
+  agentSide,
   clearInbox,
   enqueue,
-  memorySide,
   readInbox,
   readJournal,
   readOpen,
@@ -1198,8 +1198,11 @@ export const COMMANDS = {
       last: consolidated?.at ?? null,
       due: consolidationDue(deps.rootDir, { now }),
       foreign: (() => {
-        const side = memorySide(deps.env.KYOTEN_AGENT);
-        return side === 'normal' ? [] : foreignSides(dirOf(deps), side);
+        const agent = extractAgent ?? sessionHarness(deps.env) ?? 'claude';
+        const callSide = agentSide(agent, deps.env);
+        return callSide && callSide !== 'normal'
+          ? foreignSides(dirOf(deps), callSide)
+          : [];
       })(),
     };
     const lastRun = extraction.running

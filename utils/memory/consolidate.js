@@ -387,7 +387,7 @@ export function consolidate(deps) {
     return {
       ...base,
       status: 'dry-run',
-      side: agentSide ?? side,
+      side,
       agent,
       model,
       prompt,
