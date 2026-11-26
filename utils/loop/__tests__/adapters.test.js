@@ -767,7 +767,7 @@ describe('runAgent', () => {
     }
     expect(spawn).not.toHaveBeenCalled();
 
-    // agy -> others is allowed.
+    // agy -> others is allowed, and does not leak KYOTEN_AGENT=agy to the child.
     runAgent({
       command: buildCommand({ agent: 'codex', mode: 'read' }),
       cwd: '/wt',
@@ -777,6 +777,31 @@ describe('runAgent', () => {
       spawn,
     });
     expect(spawn).toHaveBeenCalledTimes(1);
+    const callEnv = (/** @type {number} */ n) =>
+      /** @type {any} */ (spawn.mock.calls[n])?.[2]?.env;
+    expect(callEnv(0).KYOTEN_AGENT).toBeUndefined();
+    expect(callEnv(0)[CALLER_HARNESS_ENV]).toBe('codex');
+
+    // dscc -> claude keeps KYOTEN_AGENT=dscc; agy -> agy keeps KYOTEN_AGENT=agy.
+    runAgent({
+      command: buildCommand({ agent: 'claude', mode: 'read' }),
+      cwd: '/wt',
+      prompt: 'p',
+      timeoutMs: 1000,
+      env: { KYOTEN_AGENT: 'dscc' },
+      spawn,
+    });
+    expect(callEnv(1).KYOTEN_AGENT).toBe('dscc');
+
+    runAgent({
+      command: agyCmd,
+      cwd: '/wt',
+      prompt: 'p',
+      timeoutMs: 1000,
+      env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1', KYOTEN_AGENT: 'agy' },
+      spawn,
+    });
+    expect(callEnv(2).KYOTEN_AGENT).toBe('agy');
     expect(foreignHarnessForAgy({})).toBeNull();
     expect(
       foreignHarnessForAgy({

@@ -186,9 +186,10 @@ const HEREDOC_RE = /^<<(?!<)(-?)[ \t]*(['"]?)([A-Za-z0-9_.-]+)\2/;
  * delimiter line, or to the end when that line never comes (as in bash).
  *
  * @param {string} line
+ * @param {{ windowsPaths?: boolean }} [options]
  * @returns {{ commands: string[][], nested: string[] }}
  */
-function tokenize(line) {
+function tokenize(line, { windowsPaths = false } = {}) {
   /** @type {string[][]} */
   const commands = [];
   /** @type {string[]} */
@@ -259,7 +260,7 @@ function tokenize(line) {
       const next = line[i + 1];
       if (
         word !== null &&
-        /^(?:[A-Za-z]:|\.{1,2}|\\)/.test(word) &&
+        (windowsPaths || /^(?:[A-Za-z]:|\.{1,2}|\\)/.test(word)) &&
         next &&
         !/[\s'"\\]/.test(next) &&
         !SEPARATORS.has(next)
@@ -292,9 +293,10 @@ function tokenize(line) {
  * as it is too, so a `sudo` rule still matches.
  *
  * @param {string[]} input
+ * @param {string} platform
  * @returns {string[][]}
  */
-function realCommands(input) {
+function realCommands(input, platform) {
   /** @type {string[][]} */
   const found = [];
   let words = input;
@@ -304,8 +306,12 @@ function realCommands(input) {
     }
     if (words.length === 0) return found;
     const base = words[0].split(/[\\/]/).pop() || words[0];
-    const ext = /\.(?:exe|cmd|bat)$/i;
-    const command = ext.test(base) ? base.replace(ext, '').toLowerCase() : base;
+    const ext = /\.(?:exe|cmd|bat|ps1)$/i;
+    const stripped = base.replace(ext, '');
+    const command =
+      platform === 'win32' || ext.test(base)
+        ? stripped.toLowerCase()
+        : stripped;
     words = [command, ...words.slice(1)];
     const [first] = words;
     if (first === 'rtk') {
@@ -316,7 +322,7 @@ function realCommands(input) {
         // `rtk run` passes its words to `sh -c`, quoted as one or not.
         let line = words.slice(1);
         while (line[0]?.startsWith('-')) line = line.slice(1);
-        return [...found, ...simpleCommands(line.join(' '))];
+        return [...found, ...simpleCommands(line.join(' '), platform)];
       }
       if (RTK_PASSTHROUGH.includes(words[0])) words = words.slice(1);
       continue;
@@ -338,7 +344,7 @@ function realCommands(input) {
     words = ['git', ...words.slice(i)];
   }
   if (SHELLS.has(words[0]) && /^-\w*c$/.test(words[1] ?? '')) {
-    return [...found, ...simpleCommands(words[2] ?? '')];
+    return [...found, ...simpleCommands(words[2] ?? '', platform)];
   }
   return [...found, words];
 }
@@ -349,13 +355,18 @@ function realCommands(input) {
  * and common wrappers, which is what a prefix guardrail needs.
  *
  * @param {string} line
+ * @param {string} [platform]
  * @returns {string[][]}
  */
-function simpleCommands(line) {
+function simpleCommands(line, platform = process.platform) {
   const { commands, nested } = tokenize(line);
+  const winCommands = line.includes('\\')
+    ? tokenize(line, { windowsPaths: true }).commands
+    : [];
   return [
-    ...commands.flatMap(realCommands),
-    ...nested.flatMap((text) => simpleCommands(text)),
+    ...commands.flatMap((words) => realCommands(words, platform)),
+    ...winCommands.flatMap((words) => realCommands(words, platform)),
+    ...nested.flatMap((text) => simpleCommands(text, platform)),
   ];
 }
 /**
@@ -363,10 +374,15 @@ function simpleCommands(line) {
  *
  * @param {string} command
  * @param {string[][]} prefixes
+ * @param {{ platform?: string }} [options]
  * @returns {string[] | null}
  */
-export function commandMatch(command, prefixes) {
-  for (const words of simpleCommands(command)) {
+export function commandMatch(
+  command,
+  prefixes,
+  { platform = process.platform } = {}
+) {
+  for (const words of simpleCommands(command, platform)) {
     const found = prefixes.find((prefix) =>
       prefix.every((word, i) => words[i] === word)
     );
@@ -530,9 +546,13 @@ export function guardDecision(
     return protectedFile(permissions.deny.read, 'Read');
   if (event.kind !== 'shell' || (harness !== 'dsh' && harness !== 'agy'))
     return null;
-  const denied = commandMatch(event.command, permissions.deny.commands);
+  const denyCommands =
+    harness === 'agy'
+      ? permissions.deny.commands.filter((prefix) => prefix[0] !== 'agy')
+      : permissions.deny.commands;
+  const denied = commandMatch(event.command, denyCommands, { platform });
   if (denied) return { decision: 'deny', reason: justification(denied) };
-  return commandMatch(event.command, permissions.ask.commands)
+  return commandMatch(event.command, permissions.ask.commands, { platform })
     ? { decision: 'ask', reason: ASK }
     : null;
 }

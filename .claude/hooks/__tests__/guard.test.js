@@ -147,5 +147,17 @@ describe('guard processHookInput', () => {
         { harness: 'dsh' }
       )?.hookSpecificOutput.permissionDecision
     ).toBe('deny');
+    expect(
+      processHookInput(
+        { tool_name: 'run_command', tool_input: { command: 'agy --version' } },
+        { harness: 'agy' }
+      )
+    ).toEqual({ decision: 'allow' });
+    expect(
+      processHookInput(
+        { tool_name: 'run_command', tool_input: { command: 'rm -rf x' } },
+        { harness: 'agy' }
+      )?.decision
+    ).toBe('deny');
   });
 });
