@@ -125,10 +125,25 @@ describe('guard processHookInput', () => {
   });
 
   test('should default to the real workspace, env, and home', () => {
-    // The real settings deny rm: a DSH rm through the defaults is denied.
+    // The real settings deny rm and agy: a DSH call through the defaults is denied.
     expect(
       processHookInput(
         { tool_name: 'bash', tool_input: { command: 'rm -rf x' } },
+        { harness: 'dsh' }
+      )?.hookSpecificOutput.permissionDecision
+    ).toBe('deny');
+    expect(
+      processHookInput(
+        { tool_name: 'bash', tool_input: { command: 'agy -p "hi"' } },
+        { harness: 'dsh' }
+      )?.hookSpecificOutput
+    ).toMatchObject({
+      permissionDecision: 'deny',
+      permissionDecisionReason: expect.stringContaining('Terms of Service'),
+    });
+    expect(
+      processHookInput(
+        { tool_name: 'bash', tool_input: { command: 'agy acp' } },
         { harness: 'dsh' }
       )?.hookSpecificOutput.permissionDecision
     ).toBe('deny');

@@ -9,7 +9,11 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { stripVTControlCharacters } from 'util';
-import { DSH_PATCH, buildCommand } from '../loop/adapters.js';
+import {
+  DSH_PATCH,
+  buildCommand,
+  foreignHarnessForAgy,
+} from '../loop/adapters.js';
 import { redactSecrets } from '../redact.js';
 import { INNER_LOOP_ENV } from '../task/loop.js';
 import { commandFor } from '../tools/registry.js';
@@ -205,6 +209,14 @@ export function callAgent(
   prompt,
   { job = 'extraction', timeoutMs = AGENT_CALL_TIMEOUT_MS, cancel } = {}
 ) {
+  if (command.agent === 'agy') {
+    const caller = foreignHarnessForAgy(deps.env);
+    if (caller) {
+      throw new Error(
+        `Refusing to run the ${job} job on agy from another agent harness (${caller}): Google Antigravity Terms of Service prohibit invoking agy (headless or agy acp) from third-party agentic CLIs.\n${switchFix(job, 'agy')}`
+      );
+    }
+  }
   const cwd = fs.mkdtempSync(path.join(deps.tmpdir(), `memory-${job}-`));
   const env = { ...deps.env, [EXTRACT_ENV]: '1', [INNER_LOOP_ENV]: 'off' };
   let result;

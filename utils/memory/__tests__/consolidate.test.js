@@ -533,6 +533,63 @@ describe('consolidate', () => {
 
       expect(run).toMatchObject({ agent: 'dsh', model: null });
     });
+
+    test('should not follow a prior agy run from a foreign harness, and should defer explicit extractAgent=agy', () => {
+      seed();
+      appendJournal(dir, {
+        at: 'x',
+        status: 'applied',
+        agent: 'agy',
+        model: 'gemini-3.8-flash-low',
+      });
+      const runAgent = answering();
+
+      // Unconfigured extractAgent: a Claude worker falls back to claude instead of calling agy.
+      const claudeRun = consolidate(
+        deps({
+          runAgent,
+          env: {
+            CLAUDE_CODE_SESSION_ID: 'cc-1',
+            KYOTEN_CALLER_HARNESS: 'claude',
+          },
+        })
+      );
+      expect(lastCall(runAgent).command.agent).toBe('claude');
+      expect(claudeRun).toMatchObject({
+        status: 'consolidated',
+        agent: 'claude',
+        model: null,
+      });
+
+      // Explicit extractAgent=agy from a foreign harness defers without calling runAgent.
+      writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });
+      runAgent.mockClear();
+      const deferred = consolidate(
+        deps({ runAgent, env: { KYOTEN_CALLER_HARNESS: 'codex' } })
+      );
+      expect(deferred).toMatchObject({
+        status: 'deferred',
+        side: 'agy',
+        caller: 'codex',
+      });
+      expect(runAgent).not.toHaveBeenCalled();
+
+      // agy -> claude is allowed.
+      writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'claude' });
+      const agyToClaude = consolidate(
+        deps({
+          runAgent,
+          env: {
+            KYOTEN_CALLER_HARNESS: 'agy',
+            ANTIGRAVITY_CONVERSATION_ID: 'agy-1',
+          },
+        })
+      );
+      expect(agyToClaude).toMatchObject({
+        status: 'consolidated',
+        agent: 'claude',
+      });
+    });
   });
 
   test('should say when there is nothing to consolidate', () => {
@@ -732,13 +789,20 @@ describe('consolidation on dscc', () => {
     expect(run).toMatchObject({ model: 'deepseek-v4', side: 'dscc' });
   });
 
-  test('should still run an agy consolidation on a dscc worker', () => {
+  test('should still run a dsh consolidation on a dscc worker, but defer agy', () => {
     seed();
-    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'dsh' });
 
     expect(consolidate(deps({ env: { KYOTEN_AGENT: 'dscc' } })).status).toBe(
       'consolidated'
     );
+
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });
+    expect(consolidate(deps({ env: { KYOTEN_AGENT: 'dscc' } }))).toMatchObject({
+      status: 'deferred',
+      side: 'agy',
+      caller: 'dscc',
+    });
   });
 });
 

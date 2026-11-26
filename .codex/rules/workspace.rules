@@ -1142,6 +1142,36 @@ prefix_rule(
 )
 
 prefix_rule(
+    pattern = ["agy"],
+    decision = "forbidden",
+    justification = "Calling agy (headless or agy acp) from another agent harness is forbidden by Google Antigravity Terms of Service (AGENTS.md §1).",
+)
+
+prefix_rule(
+    pattern = ["rtk", "agy"],
+    decision = "forbidden",
+    justification = "Calling agy (headless or agy acp) from another agent harness is forbidden by Google Antigravity Terms of Service (AGENTS.md §1).",
+)
+
+prefix_rule(
+    pattern = ["rtk", ["proxy", "bypass", "err", "test", "summary"], "agy"],
+    decision = "forbidden",
+    justification = "Calling agy (headless or agy acp) from another agent harness is forbidden by Google Antigravity Terms of Service (AGENTS.md §1).",
+)
+
+prefix_rule(
+    pattern = ["rtk", ["-v", "-vv", "-vvv", "--verbose", "--ultra-compact", "--skip-env"], "agy"],
+    decision = "forbidden",
+    justification = "Calling agy (headless or agy acp) from another agent harness is forbidden by Google Antigravity Terms of Service (AGENTS.md §1).",
+)
+
+prefix_rule(
+    pattern = ["rtk", ["-v", "-vv", "-vvv", "--verbose", "--ultra-compact", "--skip-env"], ["proxy", "bypass", "err", "test", "summary"], "agy"],
+    decision = "forbidden",
+    justification = "Calling agy (headless or agy acp) from another agent harness is forbidden by Google Antigravity Terms of Service (AGENTS.md §1).",
+)
+
+prefix_rule(
     pattern = ["kill", "-9"],
     decision = "prompt",
     justification = "Ask the user first (.claude/settings.json permissions.ask; AGENTS.md §1).",

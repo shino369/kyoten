@@ -9,6 +9,7 @@ import { createState } from '../../task/state.js';
 import { saveState, tasksRoot, writeActive } from '../../task/store.js';
 import { CONFIG_FILE, DEFAULT_CONFIG, writeConfig } from '../config.js';
 import { CONSOLIDATED_FILE } from '../consolidate.js';
+import { CALLER_HARNESS_ENV } from '../../loop/adapters.js';
 import {
   ERROR_CHARS,
   PERSONA_REMINDER,
@@ -807,7 +808,10 @@ describe('extraction hooks', () => {
     expect(readQueue(dir)).toEqual([
       expect.objectContaining({ session: SESSION }),
     ]);
-    expect(kick).toHaveBeenCalledWith({ rootDir: root, env: {} });
+    expect(kick).toHaveBeenCalledWith({
+      rootDir: root,
+      env: { [CALLER_HARNESS_ENV]: 'claude' },
+    });
   });
 
   test('should not start a second worker while one runs', () => {

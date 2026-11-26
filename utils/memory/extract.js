@@ -22,7 +22,10 @@
 import fs from 'fs';
 import os from 'os';
 import { answerOf } from '../agent/cli.js';
-import { runAgent as defaultRunAgent } from '../loop/adapters.js';
+import {
+  runAgent as defaultRunAgent,
+  foreignHarnessForAgy,
+} from '../loop/adapters.js';
 import { redactSecrets } from '../redact.js';
 import { ROOT_DIR } from '../workspace-config.js';
 import {
@@ -446,6 +449,9 @@ const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
  * @param {string} name
  */
 function deferredMessage(run, name) {
+  if (run.side === 'agy') {
+    return `Deferred ${name}: it uses agy, which cannot be called from another agent harness (${run.caller}); run this from an agy session or a plain terminal.`;
+  }
   if (run.job === 'consolidation') {
     return 'Deferred the consolidation: this worker runs on dscc and some notes came from other sessions; run this from a session that is not dscc.';
   }
@@ -455,8 +461,12 @@ function deferredMessage(run, name) {
 }
 
 /**
- * The run for a job that the claude CLI would send to the wrong provider
- * (nothing is changed or journaled), or null when it may go ahead.
+ * The run for a job that cannot run from this worker's environment (nothing
+ * is changed or journaled), or null when it may go ahead:
+ * - `agy` is deferred when triggered from another agent harness (Google
+ *   Antigravity Terms of Service forbid `others -> agy`).
+ * - `claude` sends transcripts to whatever provider its environment names,
+ *   so dscc and non-dscc sessions stay on their own side.
  *
  * @param {string} agent the agent that would make the call
  * @param {string | null} kyotenAgent the side of the transcript (null: not dscc)
@@ -465,6 +475,11 @@ function deferredMessage(run, name) {
  * @returns {Run | null}
  */
 export function deferredRun(agent, kyotenAgent, env, base) {
+  if (agent === 'agy') {
+    const caller = foreignHarnessForAgy(env);
+    if (caller) return { ...base, status: 'deferred', side: 'agy', caller };
+    return null;
+  }
   if (agent !== 'claude' || sameProviderSide(kyotenAgent, env)) return null;
   return {
     ...base,

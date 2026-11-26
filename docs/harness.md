@@ -361,6 +361,16 @@ and memory through `pnpm`, `pnpm run`, and their direct Node.js entry points.
 Effective permissions depend on the installed version and worktree trust. The workspace guard hook
 requires a trusted worktree.
 
+**Antigravity cross-harness policy (`agy -> others` allowed; `others -> agy` blocked).** Google
+Antigravity Terms of Service prohibit invoking `agy` (headless `-p`/`stream-json` or `agy acp`)
+from third-party agent harnesses. kyoten enforces this in four layers: `.claude/settings.json`
+denies `Bash(agy:*)` (synced to `.codex/rules/workspace.rules` and enforced by `guard.js` in DSH),
+`pnpm agent ask` accepts only `claude|codex|dsh`, runtime checks in `utils/loop/adapters.js`,
+`pnpm loop`, `pnpm swarm`, and `kyoten agy` refuse launching `agy` from foreign agent harnesses
+(including `--reviewer agy` on non-`agy` loops), and background memory jobs defer `agy` runs when
+triggered from another harness. An interactive `agy` session (started via `kyoten agy` from a human
+terminal) may still call `claude`, `codex`, or `dsh`.
+
 ### 7. Memory
 
 Personal memory (`pnpm memory`, `utils/memory/`) is machine-local and gitignored: `memory/` holds

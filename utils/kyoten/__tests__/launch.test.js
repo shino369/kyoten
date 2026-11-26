@@ -54,6 +54,52 @@ describe('agentBin', () => {
     expect(agentBin('claude')).toBe('claude');
     expect(agentBin('codex')).toBe('codex');
     expect(agentBin('dsh')).toBe('dsh');
+    expect(agentBin('agy')).toBe('agy');
+  });
+
+  test('should refuse launching agy (interactive, -p, or acp) from another agent harness, while allowing agy -> others', () => {
+    const canRun = () => true;
+    for (const [args, env] of /** @type {const} */ ([
+      [['-p', 'hi'], { ...POSIX_ENV, CLAUDECODE: '1' }],
+      [['acp'], { ...POSIX_ENV, CODEX_THREAD_ID: 'cx-1' }],
+      [[], { ...POSIX_ENV, DSH_SESSION_ID: 'dsh-1' }],
+      [['acp'], { ...POSIX_ENV, KYOTEN_AGENT: 'dscc' }],
+    ])) {
+      expect(() =>
+        prepareLaunch({
+          agent: 'agy',
+          args: [...args],
+          home: '/home',
+          env,
+          platform: 'linux',
+          canRun,
+        })
+      ).toThrow(/Terms of Service/);
+    }
+    expect(
+      prepareLaunch({
+        agent: 'agy',
+        args: [],
+        home: '/home',
+        env: POSIX_ENV,
+        platform: 'linux',
+        canRun,
+      })
+    ).toEqual(['/bin/agy']);
+    expect(
+      prepareLaunch({
+        agent: 'codex',
+        args: [],
+        home: '/home',
+        env: {
+          ...POSIX_ENV,
+          ANTIGRAVITY_CONVERSATION_ID: 'agy-1',
+          KYOTEN_AGENT: 'agy',
+        },
+        platform: 'linux',
+        canRun,
+      })
+    ).toEqual(['/bin/codex']);
   });
 });
 

@@ -1017,7 +1017,9 @@ describe('personalize --compact and --audit', () => {
   test.each([
     [{ CODEX_THREAD_ID: 'cx-1' }, null, 'codex'],
     [{ DSH_SESSION_ID: 'd-1' }, null, 'dsh'],
-    [{ CLAUDE_CODE_SESSION_ID: 'cc-1' }, 'agy', 'agy'],
+    [{ CLAUDE_CODE_SESSION_ID: 'cc-1' }, 'dsh', 'dsh'],
+    [{ ANTIGRAVITY_CONVERSATION_ID: 'agy-1' }, 'codex', 'codex'],
+    [{}, 'agy', 'agy'],
     [{}, null, 'claude'],
   ])(
     'should pick the persona job agent from env %j and config %s',
@@ -1042,19 +1044,26 @@ describe('personalize --compact and --audit', () => {
     }
   );
 
-  test('should let --agent beat the config and the session', () => {
+  test('should let --agent beat the config and the session, while blocking others -> agy', () => {
     const runAgent = fakeAgent();
     run(['personalize', '--persona', 'Stored persona.']);
     writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'dsh' });
 
-    run(['personalize', '--audit', '--agent', 'agy'], {
+    run(['personalize', '--audit', '--agent', 'claude'], {
       runAgent,
       env: { ...ENV, CODEX_THREAD_ID: 'cx-1' },
     });
 
     expect(
       /** @type {any} */ (runAgent.mock.calls.at(-1))[0].command.agent
-    ).toBe('agy');
+    ).toBe('claude');
+
+    expect(() =>
+      run(['personalize', '--audit', '--agent', 'agy'], {
+        runAgent,
+        env: { ...ENV, CODEX_THREAD_ID: 'cx-1' },
+      })
+    ).toThrow(/Terms of Service/);
   });
 
   test('should name another agent when the persona agent CLI is missing', () => {

@@ -294,6 +294,22 @@ describe('main', () => {
     );
   });
 
+  test('should refuse --agent agy (others -> agy blocked) and allow agy -> others', () => {
+    expect(HELP).not.toContain('claude|codex|dsh|agy');
+    expect(() => run(['ask', '--agent', 'agy', 'hi'])).toThrow(
+      /Terms of Service.*\nFix: use --agent claude\|codex\|dsh/s
+    );
+    const { code, runAgent } = run(['ask', '--agent', 'codex', 'hi'], {
+      env: {
+        HOME: '/home/t',
+        ANTIGRAVITY_CONVERSATION_ID: 'agy-1',
+        KYOTEN_AGENT: 'agy',
+      },
+    });
+    expect(code).toBe(0);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+  });
+
   test('should run a read-only turn, print the answer, and save a record', () => {
     const { code, out, err, runAgent } = run([
       'ask',

@@ -23,14 +23,16 @@ Run `pnpm docs:cli` to refresh this reference from the workspace CLI help. Run `
 ## `pnpm agent`
 
 ```text
-Usage: pnpm agent ask --agent claude|codex|dsh|agy [options] "<prompt>" | -
+Usage: pnpm agent ask --agent claude|codex|dsh [options] "<prompt>" | -
 
 Runs one headless turn of another coding agent in this repository and prints
 its answer: a second opinion, a review, or a delegated question. Which agents
 are installed here: pnpm tools list
+Note: agy is intentionally excluded (Google Antigravity ToS forbids calling agy
+from other agent harnesses; agy may call other agents, never the reverse).
 
 Options
-  --agent <name>       claude | codex | dsh | agy (required)
+  --agent <name>       claude | codex | dsh (required)
   --write              Let the agent edit files (default: read-only). Prefer a
                        git worktree; in the main checkout it edits your tree
   --timeout-min <n>    Stop the agent after n minutes (default 10)
@@ -459,8 +461,8 @@ Options
   --json      Machine-readable output
   --help, -h  Show this help (also pnpm tools help)
 
-Call another agent: pnpm agent ask --agent <name> "…". Never put secrets in the
-registry; --env records env var names only.
+Call another agent: pnpm agent ask --agent claude|codex|dsh "…". Never put
+secrets in the registry; --env records env var names only.
 ```
 
 ## `pnpm workspace:setup` and `pnpm workspace:check`

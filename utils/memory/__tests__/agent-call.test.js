@@ -178,6 +178,42 @@ describe('callAgent', () => {
     expect(fs.existsSync(call.cwd)).toBe(false);
   });
 
+  test('should refuse calling agy from another agent harness and suggest alternatives, while allowing agy -> claude', () => {
+    const agyCmd = headlessCommand({ agent: 'agy', rootDir: root });
+    const runAgent = agentReturning();
+
+    expect(() =>
+      callAgent(
+        {
+          ...deps(runAgent),
+          env: { PATH: '/bin', CLAUDE_CODE_SESSION_ID: 'cc-1' },
+        },
+        agyCmd,
+        'P',
+        { job: 'persona compaction' }
+      )
+    ).toThrow(
+      /Terms of Service.*\nFix: use --agent claude\nFix: use --agent codex\nFix: use --agent dsh/s
+    );
+    expect(runAgent).not.toHaveBeenCalled();
+
+    // agy -> claude is allowed.
+    expect(
+      callAgent(
+        {
+          ...deps(runAgent),
+          env: {
+            PATH: '/bin',
+            ANTIGRAVITY_CONVERSATION_ID: 'agy-1',
+            KYOTEN_AGENT: 'agy',
+          },
+        },
+        command,
+        'P'
+      ).stdout
+    ).toBe('answer');
+  });
+
   test('should check for Codex MCP servers before handing it any persona text', () => {
     const codex = headlessCommand({ agent: 'codex', rootDir: root });
     const runAgent = agentReturning();

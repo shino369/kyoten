@@ -53,8 +53,8 @@ Options
   --json      Machine-readable output
   --help, -h  Show this help (also pnpm tools help)
 
-Call another agent: pnpm agent ask --agent <name> "…". Never put secrets in the
-registry; --env records env var names only.`;
+Call another agent: pnpm agent ask --agent claude|codex|dsh "…". Never put
+secrets in the registry; --env records env var names only.`;
 
 const VALUE_FLAGS = {
   '--kind': 'kind',

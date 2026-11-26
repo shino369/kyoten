@@ -24,6 +24,7 @@ const RULE_RE = /^(\w+)\((.*)\)$/;
 const ALTERNATIVES = {
   rm: 'Use pnpm task rm <path> instead: it moves files to tasks/.trash/ (AGENTS.md §1).',
   npm: 'Use pnpm instead (AGENTS.md §1).',
+  agy: 'Calling agy (headless or agy acp) from another agent harness is forbidden by Google Antigravity Terms of Service (AGENTS.md §1).',
 };
 const DENIED =
   'Not allowed in this workspace (.claude/settings.json permissions.deny; AGENTS.md §1).';
@@ -246,7 +247,7 @@ function tokenize(line) {
       let text = '';
       i++;
       while (i < line.length && line[i] !== '"') {
-        if (line[i] === '\\' && i + 1 < line.length) i++;
+        if (line[i] === '\\' && /["\\$`\n]/.test(line[i + 1] ?? '')) i++;
         text += line[i++];
       }
       i++;
@@ -255,8 +256,20 @@ function tokenize(line) {
         nested.push(match[1] ?? match[2]);
       }
     } else if (char === '\\') {
-      if (line[i + 1] !== '\n') word = (word ?? '') + (line[i + 1] ?? '');
-      i += 2;
+      const next = line[i + 1];
+      if (
+        word !== null &&
+        /^(?:[A-Za-z]:|\.{1,2}|\\)/.test(word) &&
+        next &&
+        !/[\s'"\\]/.test(next) &&
+        !SEPARATORS.has(next)
+      ) {
+        word += '\\';
+        i++;
+      } else {
+        if (next !== '\n') word = (word ?? '') + (next ?? '');
+        i += 2;
+      }
     } else if (SEPARATORS.has(char)) {
       endCommand();
       i++;
@@ -290,7 +303,10 @@ function realCommands(input) {
       words = words.slice(1);
     }
     if (words.length === 0) return found;
-    words = [words[0].split(/[\\/]/).pop() || words[0], ...words.slice(1)];
+    const base = words[0].split(/[\\/]/).pop() || words[0];
+    const ext = /\.(?:exe|cmd|bat)$/i;
+    const command = ext.test(base) ? base.replace(ext, '').toLowerCase() : base;
+    words = [command, ...words.slice(1)];
     const [first] = words;
     if (first === 'rtk') {
       // rtk [-v…] [proxy|bypass|…] <command>, or rtk run '<shell line>'.

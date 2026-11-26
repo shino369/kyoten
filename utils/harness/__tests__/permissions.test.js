@@ -164,6 +164,23 @@ describe('commandMatch', () => {
     expect(commandMatch('rtk proxy env FOO=1 rm x', prefixes)).toEqual(['rm']);
   });
 
+  test('should match Windows executable shims (.exe, .cmd, .bat) case-insensitively', () => {
+    const agyPrefixes = [['agy']];
+    expect(commandMatch('agy -p "hi"', agyPrefixes)).toEqual(['agy']);
+    expect(commandMatch('agy acp', agyPrefixes)).toEqual(['agy']);
+    expect(commandMatch('agy.exe -p "hi"', agyPrefixes)).toEqual(['agy']);
+    expect(commandMatch('C:\\tools\\AGY.CMD acp', agyPrefixes)).toEqual([
+      'agy',
+    ]);
+    expect(commandMatch('"C:\\tools\\AGY.CMD" acp', agyPrefixes)).toEqual([
+      'agy',
+    ]);
+    expect(commandMatch('env FOO=1 agy.bat --print hi', agyPrefixes)).toEqual([
+      'agy',
+    ]);
+    expect(commandMatch('r\\m -rf x', prefixes)).toEqual(['rm']);
+  });
+
   test('should not match a bare rtk or an rtk subcommand of its own', () => {
     expect(commandMatch('rtk read rm.txt', prefixes)).toBeNull();
     expect(commandMatch('rtk', prefixes)).toBeNull();
@@ -625,5 +642,39 @@ describe('the committed rules', () => {
         'utf-8'
       )
     ).toBe(renderCodexRules(readPermissions(settings)));
+  });
+
+  test('should deny headless agy and agy acp commands in settings and Codex rules', () => {
+    const settings = JSON.parse(
+      fs.readFileSync(path.join(ROOT_DIR, '.claude/settings.json'), 'utf-8')
+    );
+    const perms = readPermissions(settings);
+    for (const cmd of [
+      'agy -p "hello"',
+      'agy --print "hello"',
+      'agy --prompt "hello"',
+      'agy --input-format stream-json --output-format stream-json',
+      'agy acp',
+      'agy --model gemini-4-neon-high -p "hello"',
+      'agy.exe acp',
+      'rtk agy -p "hello"',
+    ]) {
+      expect(
+        guardDecision(
+          { tool_name: 'bash', tool_input: { command: cmd } },
+          perms,
+          { harness: 'dsh', ...where }
+        )
+      ).toMatchObject({
+        decision: 'deny',
+        reason: expect.stringContaining('Terms of Service'),
+      });
+    }
+    const codexRules = fs.readFileSync(
+      path.join(ROOT_DIR, '.codex/rules/workspace.rules'),
+      'utf-8'
+    );
+    expect(codexRules).toContain('pattern = ["agy"]');
+    expect(codexRules).toContain('decision = "forbidden"');
   });
 });

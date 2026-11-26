@@ -153,6 +153,22 @@ describe('parseArgs', () => {
     });
   });
 
+  test('should refuse --agent agy from another agent harness while allowing agy -> codex', async () => {
+    task(['new', 'demo', '--goal', 'G', '--step', 'S1', '--verify', 'true']);
+    await expect(
+      run(['--agent', 'agy', '--dry-run'], { env: { CODEX_THREAD_ID: 'cx-1' } })
+    ).rejects.toThrow(/Terms of Service/);
+    await expect(
+      run(['--agent', 'codex', '--bin', 'agy', '--dry-run'], {
+        env: { CODEX_THREAD_ID: 'cx-1' },
+      })
+    ).rejects.toThrow(/Terms of Service/);
+    const { code } = await run(['--agent', 'codex', '--dry-run'], {
+      env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1', KYOTEN_AGENT: 'agy' },
+    });
+    expect(code).toBe(0);
+  });
+
   test('should read every flag, in both forms', () => {
     expect(
       parseArgs([

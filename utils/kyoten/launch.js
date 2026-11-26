@@ -11,7 +11,12 @@ import { spawn as nodeSpawn } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { DSH_PATCH, dshDirProblem } from '../loop/adapters.js';
+import {
+  CALLER_HARNESS_ENV,
+  DSH_PATCH,
+  assertAgyAllowed,
+  dshDirProblem,
+} from '../loop/adapters.js';
 import { findGitDirs } from '../memory/repo.js';
 import { isExecutable, resolveCommand, which } from '../spawn.js';
 import { HARNESS_SESSION_VARS } from '../task/store.js';
@@ -220,7 +225,9 @@ export function buildEnv({ env, home, cwd, platform, drop = [], set = {} }) {
   const fold = (name) => (platform === 'win32' ? name.toUpperCase() : name);
   /** @type {Record<string, string>} */
   const out = {};
-  const names = new Set(HARNESS_SESSION_VARS.map(fold));
+  const names = new Set(
+    [...HARNESS_SESSION_VARS, CALLER_HARNESS_ENV].map(fold)
+  );
   /** @type {string[]} */
   const prefixes = [];
   for (const entry of drop) {
@@ -340,6 +347,7 @@ export function prepareLaunch({
   canRun,
   registry,
 }) {
+  assertAgyAllowed(agent, env, 'kyoten agy');
   if (agent === 'dsh') {
     const problem = dshDirProblem(home, platform);
     if (problem) throw new Error(problem);

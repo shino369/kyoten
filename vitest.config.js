@@ -33,6 +33,9 @@ export default defineConfig({
       DSH_SESSION_ID: '',
       ANTIGRAVITY_CONVERSATION_ID: '',
       CLAUDE_CODE_SESSION_ID: '',
+      CLAUDECODE: '',
+      OPENCODE: '',
+      KYOTEN_CALLER_HARNESS: '',
       MEMORY_EXTRACT: '',
       // A session kyoten started passes these on; tests must not see them.
       KYOTEN_HOME: '',
