@@ -13,6 +13,11 @@
             "type": "command",
             "command": "node \"${CLAUDE_PROJECT_DIR}/utils/memory/hook.js\" --harness dsh",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/utils/remote/hook.js\" --harness dsh",
+            "timeout": 5
           }
         ]
       }
@@ -28,6 +33,11 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/task_loop.js\" --reset --harness dsh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/utils/remote/hook.js\" --harness dsh",
             "timeout": 5
           }
         ]
@@ -94,6 +104,11 @@
             "type": "command",
             "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/task_loop.js\" --harness dsh",
             "timeout": 300
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/utils/remote/hook.js\" --harness dsh",
+            "timeout": 5
           }
         ]
       }

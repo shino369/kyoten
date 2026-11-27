@@ -168,6 +168,33 @@ export const HOOKS = [
     ],
     agy: [{ event: 'PostToolUse', matcher: AGY_EDIT_MATCHER }],
   },
+  {
+    id: 'remote-notify',
+    script: 'utils/remote/hook.js',
+    timeout: 5,
+    claude: [
+      { event: 'SessionStart', matcher: SESSION_SOURCES },
+      { event: 'UserPromptSubmit' },
+      { event: 'Stop' },
+      { event: 'SessionEnd' },
+    ],
+    codex: [
+      { event: 'SessionStart', matcher: SESSION_SOURCES },
+      { event: 'UserPromptSubmit' },
+      { event: 'Stop' },
+      { event: 'SessionEnd', timeout: 3 },
+    ],
+    dsh: [
+      { event: 'SessionStart', matcher: SESSION_SOURCES },
+      { event: 'UserPromptSubmit' },
+      { event: 'Stop' },
+    ],
+    agy: [
+      { event: 'SessionStart' },
+      { event: 'PreInvocation' },
+      { event: 'Stop' },
+    ],
+  },
 ];
 
 /**

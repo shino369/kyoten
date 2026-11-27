@@ -92,5 +92,28 @@
         ]
       }
     ]
+  },
+  "remote-notify": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "node ../utils/remote/hook.js --harness agy",
+        "timeout": 5
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "node ../utils/remote/hook.js --harness agy",
+        "timeout": 5
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node ../utils/remote/hook.js --harness agy",
+        "timeout": 5
+      }
+    ]
   }
 }

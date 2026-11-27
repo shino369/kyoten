@@ -485,6 +485,11 @@ describe('the Antigravity wiring', () => {
     expect(events('audit')).toEqual(['PostToolUse [*]']);
     expect(events('guard')).toHaveLength(1);
     expect(events('format')).toHaveLength(1);
+    expect(events('remote-notify')).toEqual([
+      'SessionStart',
+      'PreInvocation',
+      'Stop',
+    ]);
     expect(events('compact-note')).toEqual([]);
   });
 
@@ -496,6 +501,10 @@ describe('the Antigravity wiring', () => {
       {
         command: 'node ../.claude/hooks/session_start.js --harness agy',
         timeout: 20,
+      },
+      {
+        command: 'node ../utils/remote/hook.js --harness agy',
+        timeout: 5,
       },
     ]);
   });
