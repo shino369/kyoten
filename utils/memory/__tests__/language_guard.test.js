@@ -153,6 +153,19 @@ describe('measureReply', () => {
     expect(measureReply(RU, 'ja').letters).toBeGreaterThanOrEqual(MIN_LETTERS);
   });
 
+  test.each([['ja'], ['zh']])(
+    'should not count Hangul or other scripts as %s',
+    (script) => {
+      const text = '안녕하세요 반갑습니다 ꙮ ꞵ ﬀ';
+
+      expect(measureReply(text, /** @type {any} */ (script)).inScript).toBe(0);
+    }
+  );
+
+  test('should count CJK compatibility ideographs as Han', () => {
+    expect(measureReply('\uF900\uFA00', 'zh').inScript).toBe(2);
+  });
+
   test('should count Hangul for Korean and Han for Chinese', () => {
     expect(measureReply('안녕 hi', 'ko')).toEqual({ letters: 4, inScript: 2 });
     expect(measureReply('你好 hi', 'zh')).toEqual({ letters: 4, inScript: 2 });

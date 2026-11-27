@@ -48,15 +48,16 @@ const MARK_RE = /^[A-Za-z0-9_-]{1,128}\.json$/u;
 /** @typedef {'ja' | 'ko' | 'zh'} Script */
 /** @typedef {{ decision: 'block', reason: string }} GuardOutput */
 
-const HANGUL = /[ᄀ-ᇿ㄰-㆏가-힯]/u;
-const HAN = /[㐀-䶿一-鿿豈-﫿]/u;
+const HANGUL = /[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF]/u;
+const HAN = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/u;
 /** Letters of any script, so a reply in Cyrillic or Greek counts too. */
 const LETTER = /\p{L}/gu;
 // Japanese prose is kana plus kanji; a Chinese reply would also pass for a
 // Japanese Language, which is accepted (the guard is for slips into English).
 /** @type {Record<Script, RegExp>} */
 const SCRIPT_RE = {
-  ja: /[぀-ヿㇰ-ㇿｦ-ﾟ㐀-䶿一-鿿豈-﫿]/u,
+  // Hiragana, Katakana (with phonetic extensions and half-width forms), and Han.
+  ja: /[\u3040-\u30FF\u31F0-\u31FF\uFF66-\uFF9F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/u,
   ko: HANGUL,
   zh: HAN,
 };
