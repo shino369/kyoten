@@ -410,13 +410,18 @@ digests, at most 3,000 characters) that every session loads. Rules for agents: A
   and `--reset`, which removes the file (kept in `tasks/.trash/` and a snapshot; `pnpm memory
 undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in the agent's
   environment, and the hook reads it, so no shared file is rewritten at launch and a second
-  session of another agent in the same home is unaffected. At SessionStart, when personalization
+  session of another agent in the same home is unaffected. When the variable is missing, or names
+  an agent of another harness (inherited from a parent agent), the hook uses its `--harness`
+  (`claude`, `codex`, `dsh` → `ds`, `agy`). Codex needs this: its TUI connects to a shared
+  app-server daemon by default, and hooks inherit the daemon's environment, not kyoten's, so
+  `KYOTEN_AGENT` never reaches them. At SessionStart, when personalization
   is on and the agent's file exists: Codex and Antigravity (core block injected by the hook) get
   the core with that persona; Claude Code, dscc, and DSH (core block loaded natively) get a
   `[Persona] This <agent> session has its own persona: …` line and the rendered
-  personalization. The per-prompt `[Persona]` line names it. Without the variable (a plain clone,
-  or an agent not started by kyoten), without the file, or with `personalize --off`, nothing
-  changes: the default persona applies, or none when paused. The `AGENTS.local.md` core block always
+  personalization. The per-prompt `[Persona]` line names it. Without the file, or with
+  `personalize --off`, nothing changes: the default persona applies, or none when paused. An agent
+  not started by kyoten gets its harness's file, so a plain `claude` uses `persona.claude.md`
+  (and dscc without kyoten does too). The `AGENTS.local.md` core block always
   shows the default persona. `pnpm memory` lists the agent personas. The hook reads the file at
   each session start, so a hand edit applies to the next session without `pnpm memory init`
   (unlike `memory/persona.md`). A file the checks refuse (over the limit, or text that looks like

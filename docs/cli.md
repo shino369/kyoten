@@ -247,8 +247,8 @@ Settings
                                 MCP servers
   personalize --for claude|codex|ds|agy [--show | --reset]
       [--persona … | --persona-file <file.md>] [--compact [--dry-run] | --audit]
-                                One persona for the agents kyoten starts (ds: dsh and dscc;
-                                KYOTEN_AGENT), kept in memory/persona.<agent>.md, with the
+                                One persona per agent (ds: dsh and dscc; KYOTEN_AGENT,
+                                else the hook's harness), kept in memory/persona.<agent>.md, with the
                                 same limit, audit, and --agent as the default persona. The
                                 other settings stay the default ones; an agent without a
                                 file uses the default persona. --reset removes the file

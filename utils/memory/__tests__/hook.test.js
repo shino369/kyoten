@@ -1316,6 +1316,82 @@ describe('per-agent personas', () => {
     expect(startAs('claude')).toContain('Own persona.');
   });
 
+  describe('without a usable KYOTEN_AGENT', () => {
+    const HARNESS_KEYS = /** @type {const} */ ([
+      ['claude', 'claude'],
+      ['codex', 'codex'],
+      ['dsh', 'ds'],
+      ['agy', 'agy'],
+    ]);
+    /** @param {any} harness @param {NodeJS.ProcessEnv} env */
+    const startIn = (harness, env = {}) =>
+      context(
+        hook(
+          { hook_event_name: 'SessionStart', source: 'startup' },
+          { harness, env }
+        )
+      );
+    /** @param {any} harness @param {NodeJS.ProcessEnv} env */
+    const promptIn = (harness, env = {}) =>
+      context(
+        hook(
+          {
+            hook_event_name: 'UserPromptSubmit',
+            prompt: 'what a lovely morning',
+          },
+          { harness, env }
+        )
+      );
+
+    test.each(HARNESS_KEYS)(
+      'should apply the %s harness persona when KYOTEN_AGENT is missing',
+      (harness, key) => {
+        persona(key, 'Own persona.');
+
+        const text = startIn(harness);
+
+        expect(text).toContain('- Persona: Own persona.');
+        expect(text).not.toContain('Default persona.');
+      }
+    );
+
+    test('should name the harness persona in the prompt line when KYOTEN_AGENT is missing', () => {
+      persona('codex', 'Own persona.');
+
+      expect(promptIn('codex')).toBe(
+        "[Persona] Every message to the user, progress notes between tool calls included, follows this session's codex persona from the session start context. Language: 日本語"
+      );
+    });
+
+    test('should use the harness persona when KYOTEN_AGENT names an agent of another harness', () => {
+      persona('claude', 'Claude persona.');
+      persona('codex', 'Codex persona.');
+
+      const text = startIn('codex', { KYOTEN_AGENT: 'claude' });
+
+      expect(text).toContain('- Persona: Codex persona.');
+      expect(text).not.toContain('Claude persona.');
+    });
+
+    test('should use the harness persona for an unknown KYOTEN_AGENT', () => {
+      persona('codex', 'Own persona.');
+
+      expect(startIn('codex', { KYOTEN_AGENT: 'toString' })).toContain(
+        '- Persona: Own persona.'
+      );
+    });
+
+    test('should keep dscc on the shared ds persona inside the claude harness', () => {
+      persona('claude', 'Claude persona.');
+      persona('ds', 'Shared.');
+
+      const text = startIn('claude', { KYOTEN_AGENT: 'dscc' });
+
+      expect(text).toContain('- Persona: Shared.');
+      expect(text).not.toContain('Claude persona.');
+    });
+  });
+
   test.each(['claude', 'codex', 'dsh'])(
     'should inject nothing persona-related for %s while personalization is off',
     (agent) => {
