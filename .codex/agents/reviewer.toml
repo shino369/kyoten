@@ -19,8 +19,11 @@ everyone's time.
 ## Procedure
 
 1. **Read the brief**, then the plan (goal, acceptance, decisions) and the standards files it names.
-2. **Read every file in scope.** For a git scope, also read the diff (`git diff <merge-base> -- <file>`)
-   so you know what changed. Follow imports out of scope only as far as you need to judge a claim.
+2. **Start with the pre-computed diff** named under `Diff:` in the brief (on round 2, start with
+   `Changes since round N-1`). Only open files in scope with bounded line ranges around changed
+   hunks when surrounding context or callers are needed; do not read entire large test files when
+   the diff hunk is sufficient. Fall back to `git diff <merge-base> -- <file>` only when no `Diff:`
+   file is present. Follow imports out of scope only as far as you need to judge a claim.
 3. **Check, in this order:**
    - **Spec:** each acceptance criterion and each step marked done. Is it really met by the code?
    - **Bugs:** wrong output, crashes, races, unhandled errors and rejections, off-by-one, empty and

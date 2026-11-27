@@ -56,6 +56,38 @@ export function parseRole(text, fileName) {
 const isReadOnly = (role) =>
   role.tools !== null && role.tools.every((tool) => READ_ONLY_TOOLS.has(tool));
 
+/**
+ * Claude Code tool names mapped to the names declared by the Antigravity CLI.
+ * Only verified CLI names are emitted: an IDE/App-only name (`view_file`,
+ * `grep_search`, …) can hang the subagent. Grep and Glob have no verified CLI
+ * equivalent; `run_command` covers them wherever Bash is present, and
+ * read-only roles read the pre-computed `DIFF_*.patch` instead.
+ */
+/** @type {Record<string, string>} */
+const AGY_TOOL_NAMES = {
+  Read: 'read_file',
+  Write: 'write_file',
+  Edit: 'edit_file',
+  Bash: 'run_command',
+};
+/** Every `agy` tool a role can receive, in output order. */
+const AGY_ALL_TOOLS = ['read_file', 'write_file', 'edit_file', 'run_command'];
+
+/**
+ * The Antigravity `tools:` for a role: the mapped names in a fixed order
+ * (all of them when the role has no `tools` line).
+ *
+ * @param {Role} role
+ * @returns {string[]}
+ */
+export function agyTools(role) {
+  if (role.tools === null) return [...AGY_ALL_TOOLS];
+  const mapped = new Set(
+    role.tools.map((tool) => AGY_TOOL_NAMES[tool]).filter(Boolean)
+  );
+  return AGY_ALL_TOOLS.filter((name) => mapped.has(name));
+}
+
 /** @param {string} text a TOML multi-line basic string's content */
 const multiline = (text) =>
   text.replace(/\\/g, '\\\\').replace(/"""/g, '""\\"');
@@ -86,15 +118,17 @@ const yamlString = (value) =>
 
 /**
  * Render an Antigravity custom subagent file (`.agents/agents/<role>.md`).
- * Omits `tools:` because Antigravity tool names vary across model families
- * and an unmapped name can hang the subagent; read-only roles disable shell
- * commands via `commandExecutionPolicy: off`.
+ * `tools:` carries only the verified `agy` CLI names (an unmapped name can
+ * hang the subagent); a role whose tools all lack a CLI equivalent gets no
+ * `tools:` block, and read-only roles disable shell commands via
+ * `commandExecutionPolicy: off`.
  *
  * @param {Role} role
  * @param {string} source the markdown file, for the header comment
  * @returns {string}
  */
 export function renderAgyRole(role, source) {
+  const tools = agyTools(role);
   return [
     '---',
     `name: ${role.name}`,
@@ -102,6 +136,9 @@ export function renderAgyRole(role, source) {
     'subagent: true',
     'mainAgent: false',
     'model: inherit',
+    ...(tools.length > 0
+      ? ['tools:', ...tools.map((tool) => `  - ${tool}`)]
+      : []),
     ...(isReadOnly(role) ? ['commandExecutionPolicy: off'] : []),
     '---',
     '',

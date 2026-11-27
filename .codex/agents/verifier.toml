@@ -47,8 +47,10 @@ findings.
 
 1. Read the round's brief (`BRIEF_<task>-r<N>.md`, same folder) for the plan, the scope, and the
    severity rubric.
-2. For each row, **try to refute it**: read the code at `file:line` and around it, the callers, and
-   the tests. Run a test or a small read-only command when that settles it.
+2. For each row, **try to refute it**: read the findings table, the brief, and only the relevant
+   hunks in `DIFF_<task>-r<N>.patch` plus bounded line windows around the finding's `file:line`
+   (and its direct callers or tests). Do not read unrelated files in scope during triage. Run a
+   test or a small read-only command when that settles it.
 3. **CONFIRMED** only when the failure scenario really happens with the code as it is. **REFUTED**
    when it does not (already handled, unreachable, wrong reading of the code), when it is a matter
    of taste, or when you are not sure. Unsure means REFUTED.

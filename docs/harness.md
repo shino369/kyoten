@@ -184,7 +184,12 @@ commands it loads.
    regenerates `.codex/rules/workspace.rules`; `guard.js` reads the same file for DSH, Antigravity,
    and Codex patches.
 3. **Role.** Edit `.claude/agents/<role>.md`, then `pnpm harness sync`. It regenerates
-   `.codex/agents/<role>.toml` and `.agents/agents/<role>.md` (inheriting the main model).
+   `.codex/agents/<role>.toml` and `.agents/agents/<role>.md` (inheriting the main model). The
+   Antigravity file maps the role's Claude tools to the verified `agy` CLI names (`Read` →
+   `read_file`, `Edit` → `edit_file`, `Write` → `write_file`, `Bash` → `run_command`; `Grep` and
+   `Glob` are covered by `run_command`), because an omitted `tools:` defaults to `[]` there and an
+   unmapped IDE/App name can hang the subagent. Check a changed mapping in an interactive `agy`
+   session before merging.
 
 `pnpm harness check` fails on a stale generated file, and when the `hooks` in
 `.claude/settings.json` differ from the manifest. It never rewrites `.claude/settings.json`.
