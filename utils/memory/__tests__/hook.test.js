@@ -48,6 +48,7 @@ import {
   USAGE_FILE,
   addNote,
   memoryDir,
+  updateNote,
 } from '../store.js';
 
 /** @type {string} */
@@ -389,6 +390,18 @@ describe('PreToolUse', () => {
     pre('gh pr create');
 
     expect(pre('gh pr view')).toBeNull();
+  });
+
+  test('should deny the first matching command even after prompt recall', () => {
+    updateNote(dir, 'm1', { triggerMode: 'block' }, { now: NOW });
+    expect(context(prompt('GitHub GraphQL proxy merge'))).toMatch(/- m1 /);
+
+    expect(pre('gh pr create')?.hookSpecificOutput).toMatchObject({
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: expect.stringContaining('company proxy'),
+    });
+    expect(pre('gh pr create')).toBeNull();
   });
 
   test('should stay silent without a matching trigger or command', () => {

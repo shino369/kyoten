@@ -39,7 +39,12 @@ import {
 } from '../harness/input.js';
 import { CALLER_HARNESS_ENV } from '../loop/adapters.js';
 import { runIfMain } from '../module-runner.js';
-import { SESSION_ID_RE, readIfExists } from '../task/store.js';
+import {
+  SESSION_ID_RE,
+  readIfExists,
+  withLock,
+  writeFileAtomic,
+} from '../task/store.js';
 import { ROOT_DIR } from '../workspace-config.js';
 import { readConfig, savingOff } from './config.js';
 import { consolidationDue } from './consolidate.js';
@@ -78,6 +83,7 @@ import {
 import { mainCheckout } from './repo.js';
 import {
   CACHE_DIR,
+  loadNotes,
   memoryDir,
   readJsonOrNull,
   readUsage,
@@ -92,6 +98,7 @@ export const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 export const ERROR_CHARS = 600;
 const EXIT_CODE_RE = /\bexit code:?\s*(-?\d+)/i;
 const NOTE_ID_RE = /^- ([mt][1-9]\d*) \(/;
+const BLOCKING_HARNESSES = new Set(['claude', 'codex']);
 /** Repeated at every typed prompt, so progress notes keep the persona. */
 export const PERSONA_REMINDER =
   '[Persona] Every message to the user, progress notes between tool calls included, follows the Personalization section.';
@@ -137,9 +144,11 @@ export const REMINDER_LANGUAGE_CHARS = 200;
 /**
  * @typedef {import('../harness/input.js').Harness} Harness
  * @typedef {Record<string, any>} HookInput
- * @typedef {{ hookSpecificOutput: { hookEventName: string, additionalContext: string }, systemMessage?: string }} StandardHookOutput
+ * @typedef {{ hookSpecificOutput: { hookEventName: string, additionalContext?: string, permissionDecision?: 'deny', permissionDecisionReason?: string }, systemMessage?: string }} StandardHookOutput
  * @typedef {StandardHookOutput | import('../harness/input.js').AgyInjectOutput} HookOutput
  * @typedef {{ harness?: Harness, rootDir?: string, now?: Date, env?: NodeJS.ProcessEnv, kick?: typeof kickWorker }} HookOptions
+ * @typedef {{ dir: string, session: string | null, now: Date }} HookStore
+ * @typedef {{ injected: Set<string>, blocked: Set<string> }} SessionMemory
  */
 
 /**
@@ -166,21 +175,54 @@ export const sessionFile = (dir, session) =>
  * @returns {Set<string>}
  */
 export function readInjected(dir, session) {
-  if (!session) return new Set();
-  const data = /** @type {any} */ (readJsonOrNull(sessionFile(dir, session)));
-  return new Set(Array.isArray(data?.injected) ? data.injected : []);
+  return readSession(dir, session).injected;
 }
 
 /**
  * @param {string} dir
  * @param {string | null} session
- * @param {Set<string>} injected
+ * @returns {SessionMemory}
  */
-function writeInjected(dir, session, injected) {
-  if (!session) return;
+function readSession(dir, session) {
+  const data = /** @type {any} */ (
+    session && readJsonOrNull(sessionFile(dir, session))
+  );
+  return {
+    injected: new Set(Array.isArray(data?.injected) ? data.injected : []),
+    blocked: new Set(Array.isArray(data?.blocked) ? data.blocked : []),
+  };
+}
+
+/**
+ * @template T
+ * @param {HookStore} store
+ * @param {(state: SessionMemory) => T} change
+ * @returns {T}
+ */
+function updateSession({ dir, session }, change) {
+  if (!session) return change(readSession(dir, session));
   const file = sessionFile(dir, session);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({ injected: [...injected] }));
+  const folder = path.dirname(file);
+  fs.mkdirSync(folder, { recursive: true });
+  return withLock(
+    folder,
+    () => {
+      const state = readSession(dir, session);
+      const before = state.injected.size + state.blocked.size;
+      const result = change(state);
+      if (before !== state.injected.size + state.blocked.size) {
+        writeFileAtomic(
+          file,
+          JSON.stringify({
+            injected: [...state.injected],
+            blocked: [...state.blocked],
+          })
+        );
+      }
+      return result;
+    },
+    { timeoutMs: 1000, label: 'Memory session' }
+  );
 }
 
 /**
@@ -193,8 +235,10 @@ function pruneSessions(dir, now) {
   const sessions = path.join(dir, CACHE_DIR, SESSIONS_DIR);
   if (!fs.existsSync(sessions)) return;
   for (const name of fs.readdirSync(sessions)) {
+    if (!name.endsWith('.json')) continue;
     const file = path.join(sessions, name);
-    if (now.getTime() - fs.statSync(file).mtimeMs > SESSION_MAX_AGE_MS) {
+    const stat = fs.statSync(file, { throwIfNoEntry: false });
+    if (stat && now.getTime() - stat.mtimeMs > SESSION_MAX_AGE_MS) {
       fs.rmSync(file, { force: true });
     }
   }
@@ -336,28 +380,76 @@ function startupMemory(rootDir, home, harness, config, agent) {
  * Recall for `query`, skipping what the session was shown; record the
  * injection (usage and the session's record).
  *
- * @param {{ dir: string, session: string | null, now: Date }} store
+ * @param {HookStore} store
  * @param {(notes: import('./store.js').Note[], index: import('./recall.js').Index) => import('./recall.js').RecallResult[] | { note: import('./store.js').Note }[]} pick
  * @returns {string | null}
  */
-function injectText({ dir, session, now }, pick) {
-  const { notes, index } = loadIndex(dir);
-  const injected = readInjected(dir, session);
-  const text = formatRecall(
-    pick(
-      notes.filter((note) => !injected.has(note.id)),
-      index
-    ),
-    { now }
-  );
-  if (!text) return null;
+function injectText(store, pick) {
+  const { notes, index } = loadIndex(store.dir);
+  return updateSession(store, ({ injected }) => {
+    const text = formatRecall(
+      pick(
+        notes.filter((note) => !injected.has(note.id)),
+        index
+      ),
+      { now: store.now }
+    );
+    if (!text) return null;
+    recordInjection(store, injected, text);
+    return text;
+  });
+}
+
+/** @param {HookStore} store @param {Set<string>} injected @param {string} text */
+function recordInjection({ dir, now }, injected, text) {
   const ids = text
     .split('\n')
     .map((line) => NOTE_ID_RE.exec(line)?.[1])
     .filter((id) => id !== undefined);
   recordHits(dir, ids, now);
-  writeInjected(dir, session, new Set([...injected, ...ids]));
-  return text;
+  ids.forEach((id) => injected.add(id));
+}
+
+/**
+ * @param {HookStore} store
+ * @param {Harness} harness
+ * @param {import('./store.js').Note[]} matches
+ * @returns {HookOutput | null}
+ */
+function triggerOutput(store, harness, matches) {
+  if (matches.length === 0) return null;
+  const canBlock = store.session !== null && BLOCKING_HARNESSES.has(harness);
+  return updateSession(store, ({ injected, blocked }) => {
+    const blockers = canBlock
+      ? matches.filter(
+          (note) =>
+            note.triggerMode === 'block' &&
+            note.checked !== null &&
+            !blocked.has(note.id)
+        )
+      : [];
+    const fresh = matches.filter(
+      (note) => !injected.has(note.id) && !blocked.has(note.id)
+    );
+    const text = formatRecall(
+      (blockers.length > 0 ? blockers : fresh)
+        .slice(0, RECALL_LIMIT)
+        .map((note) => ({ note })),
+      { now: store.now }
+    );
+    if (!text) return null;
+    recordInjection(store, injected, text);
+    if (blockers.length === 0)
+      return contextOutput('PreToolUse', text, harness);
+    blockers.forEach((note) => blocked.add(note.id));
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: text,
+      },
+    };
+  });
 }
 
 /**
@@ -425,7 +517,12 @@ export function handleHook(
     return null;
   }
   if (event === 'SessionStart') {
-    if (normalized.source !== 'resume') writeInjected(dir, session, new Set());
+    if (normalized.source !== 'resume') {
+      updateSession(store, ({ injected, blocked }) => {
+        injected.clear();
+        if (normalized.source !== 'compact') blocked.clear();
+      });
+    }
     pruneSessions(dir, now);
     registerOpen(dir, entry);
     catchUp(dir, { current: session, now });
@@ -525,12 +622,17 @@ export function handleHook(
   if (event === 'PreToolUse') {
     const command = commandOf(normalized);
     if (!command) return null;
-    const recalled = injectText(store, (notes) =>
-      matchTriggers(notes, command)
-        .slice(0, RECALL_LIMIT)
-        .map((note) => ({ note }))
+    const matches = matchTriggers(loadNotes(dir).notes, command);
+    const repo = matches.some((note) => note.scope === 'repo')
+      ? context().repo
+      : null;
+    return /** @type {any} */ (
+      triggerOutput(
+        store,
+        harness,
+        matches.filter((note) => note.scope !== 'repo' || note.repo === repo)
+      )
     );
-    return /** @type {any} */ (contextOutput(event, recalled, harness));
   }
   if (event === 'PostToolUse' || event === 'PostToolUseFailure') {
     const error = failureText(normalized);

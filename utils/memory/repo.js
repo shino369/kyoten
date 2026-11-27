@@ -13,6 +13,15 @@ import { readIfExists } from '../task/store.js';
 
 const GITDIR_RE = /^gitdir:\s*(.+?)\s*$/m;
 
+/** @param {string} text @param {string} repo */
+export function namesRepo(text, repo) {
+  const escaped = repo.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(
+    `(?<![\\p{L}\\p{N}_-])${escaped}(?![\\p{L}\\p{N}_-])`,
+    'iu'
+  ).test(text);
+}
+
 /**
  * @typedef {{ top: string, gitDir: string, commonDir: string }} GitDirs
  */

@@ -981,6 +981,55 @@ describe('extractCommand', () => {
 });
 
 describe('extractEntry', () => {
+  test('should compare a proposed add with the closest note outside the extraction prompt', () => {
+    richSession();
+    const text =
+      'The release builder stores compressed bundles on a shared volume.';
+    addNote(dir, { scope: 'machine', type: 'fact', text }, { now: NOW });
+    const runAgent = agentReturning({ duplicates: [0] }).mockImplementationOnce(
+      agentReturning({
+        ops: [
+          {
+            op: 'ADD',
+            scope: 'machine',
+            type: 'fact',
+            text: 'The builder keeps compressed bundles for releases on the shared volume.',
+          },
+        ],
+      })
+    );
+
+    const run = extractEntry(queued(), deps({ runAgent }));
+
+    expect(runAgent).toHaveBeenCalledTimes(2);
+    expect(/** @type {any} */ (runAgent.mock.calls[1])[0].prompt).toContain(
+      text
+    );
+    expect(run.changes).toEqual([]);
+    expect(loadNotes(dir).notes).toHaveLength(1);
+  });
+
+  test('should flag a machine note naming the current repo without changing its scope', () => {
+    richSession();
+    const runAgent = agentReturning({
+      ops: [
+        {
+          op: 'ADD',
+          scope: 'machine',
+          type: 'fact',
+          text: 'The web repo compiles assets from a release manifest.',
+        },
+      ],
+    });
+
+    const run = extractEntry(queued(), deps({ runAgent }));
+
+    expect(run.quarantined).toBe(1);
+    expect(readInbox(dir)).toMatchObject([
+      { op: 'RESCOPE', changes: { scope: 'repo', repo: 'web' } },
+    ]);
+    expect(loadNotes(dir).notes[0].scope).toBe('machine');
+  });
   test('should send the condensed session and apply the answer', () => {
     richSession();
     const runAgent = agentReturning({ ops: [ADD_PNPM] });

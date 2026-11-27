@@ -139,6 +139,23 @@ describe('scoreTerms', () => {
   ];
   const index = buildIndex(notes);
 
+  test.each([0.1, 0.75])(
+    'should preserve evidence at the same document share %s',
+    (share) => {
+      const corpus = (/** @type {number} */ size) =>
+        buildIndex(
+          Array.from({ length: size }, (_, i) =>
+            note(`note${i}`, { tags: [i < size * share ? 'shared' : 'filler'] })
+          )
+        );
+
+      const initial = scoreTerms(corpus(220), 'note0', ['shared']).evidence;
+      const grown = scoreTerms(corpus(2200), 'note0', ['shared']).evidence;
+
+      expect(grown).toBe(initial);
+    }
+  );
+
   test('should score a tag match above a text match', () => {
     const tag = scoreTerms(index, 'tag', ['kubectl']);
     const text = scoreTerms(index, 'text', ['kubectl']);
@@ -217,6 +234,13 @@ describe('scoreTerms', () => {
 });
 
 describe('recall', () => {
+  test('should match cues next to Japanese text and respect same-script word boundaries', () => {
+    const notes = [note('a', { cues: ['PR', 'プルリク'] })];
+
+    expect(ids(notes, 'ＰＲを作って')).toEqual(['a']);
+    expect(ids(notes, 'プルリクを作って')).toEqual(['a']);
+    expect(ids(notes, 'APRIL プルリクエスト')).toEqual([]);
+  });
   test('should return nothing for an empty store', () => {
     expect(ids([], 'kubectl')).toEqual([]);
   });

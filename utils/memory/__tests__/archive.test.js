@@ -33,10 +33,13 @@ import { undoLast } from '../undo.js';
 import {
   LOG_FILE,
   addNote,
+  archiveNote,
   deleteNote,
   loadNotes,
   memoryDir,
+  restoreNote,
 } from '../store.js';
+import { recall } from '../recall.js';
 import { packTar } from '../tar.js';
 import { linkDir } from '../../__tests__/support/links.js';
 
@@ -139,6 +142,70 @@ const exportAll = (options = {}) =>
     machine: 'old-laptop',
     ...options,
   });
+
+test.each([false, true])(
+  'should preserve archived notes when importing with replace=%s',
+  (replace) => {
+    const sourceDir = memoryDir(source);
+    const archived = addNote(
+      sourceDir,
+      {
+        scope: 'user',
+        type: 'episode',
+        text: 'Finished the kumquat catalog.',
+        tags: ['kumquat'],
+        source: { via: 'digest', task: 'kumquat-catalog' },
+      },
+      { now: new Date('2026-10-01') }
+    ).note;
+    const archivedRecord = archiveNote(sourceDir, archived.id, NOW);
+    if (replace) add(target, { text: 'Previous target-only note.' });
+    const exported = exportAll({ parts: ['memory'] });
+    const archive = readArchive(exported.file);
+    const plan = planImport(target, archive, { include: null, replace });
+
+    expect(exported.manifest.counts.notes).toBe(1);
+    expect(
+      applyImport(target, archive, plan, { now: NOW, detail: 'test', replace })
+        .added
+    ).toBe(1);
+    const dir = memoryDir(target);
+    const { notes } = loadNotes(dir);
+    expect(notes).toHaveLength(1);
+    expect(recall(notes, 'kumquat')).toEqual([]);
+    const [result] = recall(notes, 'kumquat', { archived: true });
+    expect(result?.note).toMatchObject({
+      status: 'archived',
+      archived: archivedRecord.archived,
+      text: archived.text,
+    });
+    expect(restoreNote(dir, result.note.id, NOW).status).toBe('active');
+  }
+);
+
+test('should preserve active and archived copies of the same note separately', () => {
+  const sourceDir = memoryDir(source);
+  const input = {
+    scope: 'machine',
+    type: 'fact',
+    text: 'The quartz cache expires at midnight.',
+  };
+  const archived = addNote(sourceDir, input, {
+    now: new Date('2025-01-01'),
+  }).note;
+  archiveNote(sourceDir, archived.id, NOW);
+  addNote(sourceDir, input, { now: NOW });
+  const archive = readArchive(exportAll({ parts: ['memory'] }).file);
+  const plan = planImport(target, archive, { include: null, replace: false });
+
+  applyImport(target, archive, plan, { now: NOW, detail: 'test' });
+
+  const imported = loadNotes(memoryDir(target)).notes;
+  expect(imported.map((note) => note.status)).toEqual(['archived', 'active']);
+  expect(
+    planImport(target, archive, { include: null, replace: false }).notes
+  ).toMatchObject({ add: [], duplicates: 2 });
+});
 
 /**
  * Write an archive by hand (for archives export never makes).
