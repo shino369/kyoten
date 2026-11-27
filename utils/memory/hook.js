@@ -45,8 +45,8 @@ import { readConfig, savingOff } from './config.js';
 import { consolidationDue } from './consolidate.js';
 import { taskContext } from './context.js';
 import { announcement } from './extract.js';
+import { quietRun } from './extract-env.js';
 import {
-  EXTRACT_ENV,
   catchUp,
   enqueue,
   kickWorker,
@@ -85,8 +85,6 @@ import {
 } from './store.js';
 import { recentAgyFailures } from './transcript.js';
 
-/** Roles that must review in a clean context. */
-export const SKIP_AGENTS = ['reviewer', 'verifier'];
 export const SESSIONS_DIR = 'sessions';
 /** Session records older than this are pruned at SessionStart. */
 export const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -378,7 +376,7 @@ export function handleHook(
 ) {
   const normalized = normalizeHookInput(input, harness);
   const event = normalized.hook_event_name;
-  if (env[EXTRACT_ENV] === '1' || SKIP_AGENTS.includes(normalized.agent_type)) {
+  if (quietRun(env, normalized.agent_type)) {
     return null;
   }
   const home = mainCheckout(rootDir);
