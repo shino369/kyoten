@@ -1,6 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { linkDir } from '../../__tests__/support/links.js';
 import { DEFAULT_CONFIG, writeConfig } from '../config.js';
 import { EXTRACT_ENV } from '../extract-env.js';
 import {
@@ -19,6 +20,8 @@ const RU =
   'Исправление готово, и все тесты проходят. Дальше я открою раунд проверки и сообщу результат.';
 const EN =
   'The fix is finished on the branch, and every test passes. Next I will open a review round and report back.';
+
+const POSIX = process.platform !== 'win32';
 
 /** @type {string} */
 let home;
@@ -520,20 +523,23 @@ describe('checkStop', () => {
     expect(fs.readdirSync(stateDir)).toEqual(['sess-1.json']);
   });
 
-  test('should replace a symlinked mark instead of writing through it', () => {
-    const outside = path.join(home, 'outside.txt');
-    fs.writeFileSync(outside, 'keep');
-    const stateDir = path.join(dir, GUARD_STATE_DIR);
-    fs.mkdirSync(stateDir, { recursive: true });
-    const mark = path.join(stateDir, 'sess-2.json');
-    fs.symlinkSync(outside, mark);
+  test.skipIf(!POSIX)(
+    'should replace a symlinked mark instead of writing through it',
+    () => {
+      const outside = path.join(home, 'outside.txt');
+      fs.writeFileSync(outside, 'keep');
+      const stateDir = path.join(dir, GUARD_STATE_DIR);
+      fs.mkdirSync(stateDir, { recursive: true });
+      const mark = path.join(stateDir, 'sess-2.json');
+      fs.symlinkSync(outside, mark);
 
-    const output = stop({ last_assistant_message: EN, session_id: 'sess-2' });
+      const output = stop({ last_assistant_message: EN, session_id: 'sess-2' });
 
-    expect(output?.decision).toBe('block');
-    expect(fs.readFileSync(outside, 'utf8')).toBe('keep');
-    expect(fs.lstatSync(mark).isSymbolicLink()).toBe(false);
-  });
+      expect(output?.decision).toBe('block');
+      expect(fs.readFileSync(outside, 'utf8')).toBe('keep');
+      expect(fs.lstatSync(mark).isSymbolicLink()).toBe(false);
+    }
+  );
 
   test('should prune a stale mark whose session id has a dot, but no other .json file', () => {
     const stateDir = path.join(dir, GUARD_STATE_DIR);
@@ -588,7 +594,7 @@ describe('checkStop', () => {
   test('should neither write nor prune through a linked memory directory, and pass', () => {
     const outside = path.join(home, 'outside-memory');
     fs.renameSync(dir, outside);
-    fs.symlinkSync(outside, dir);
+    linkDir(outside, dir);
     const stateDir = path.join(outside, GUARD_STATE_DIR);
     fs.mkdirSync(stateDir, { recursive: true });
     const stale = path.join(stateDir, 'old-session.json');
@@ -630,7 +636,7 @@ describe('checkStop', () => {
       const old = new Date('2000-01-01T00:00:00Z');
       fs.utimesSync(stale, old, old);
       fs.mkdirSync(path.dirname(path.join(dir, linked)), { recursive: true });
-      fs.symlinkSync(outside, path.join(dir, linked));
+      linkDir(outside, path.join(dir, linked));
 
       const output = stop({ last_assistant_message: EN });
 
@@ -771,18 +777,23 @@ describe('checkStop transcript fallback (Claude Code)', () => {
     ['a missing file', () => path.join(home, 'missing.jsonl')],
     ['a file that is not .jsonl', () => transcript([]).replace(/l$/u, '')],
     [
-      'a symlinked file',
+      'a directory',
       () => {
-        const file = transcript([
-          assistant('a1', [{ type: 'text', text: EN }]),
-        ]);
-        const link = path.join(home, 'link.jsonl');
-        fs.symlinkSync(file, link);
-        return link;
+        const folder = path.join(home, 'folder.jsonl');
+        fs.mkdirSync(folder);
+        return folder;
       },
     ],
   ])('should pass with %s', (_label, make) => {
     expect(stop({ transcript_path: make() })).toBeNull();
+  });
+
+  test.skipIf(!POSIX)('should pass with a symlinked file', () => {
+    const file = transcript([assistant('a1', [{ type: 'text', text: EN }])]);
+    const link = path.join(home, 'link.jsonl');
+    fs.symlinkSync(file, link);
+
+    expect(stop({ transcript_path: link })).toBeNull();
   });
 
   test('should not read a transcript for Codex', () => {
