@@ -12,8 +12,9 @@
  * one is what keeps the session in the Language.
  *
  * It adds nothing to a reply already in the Language, and passes (fail open)
- * without a reply text, for any other Language (English or a language the
- * workspace does not support), while personalization is off,
+ * without a reply text, for any other Language (English, a language the
+ * workspace does not support, or a setting that names none), while
+ * personalization is off,
  * in headless runs (EXTRACT_ENV), for the reviewer and verifier roles, on the
  * rewrite that follows its own block, when its state directory is a link,
  * and on any error.
@@ -43,8 +44,9 @@ export const MAX_INPUT_CHARS = 1_000_000;
 /** How much of a transcript's end is read for the last reply (Claude Code fallback). */
 export const TRANSCRIPT_TAIL_BYTES = 512 * 1024;
 const STATE_TTL_MS = 24 * 60 * 60 * 1000;
-/** A mark file: a SESSION_ID_RE-shaped name plus `.json`. */
-const MARK_RE = /^[A-Za-z0-9_-]{1,128}\.json$/u;
+/** A mark file: a SESSION_ID_RE-checked session id plus `.json`. */
+const isMark = (/** @type {string} */ name) =>
+  name.endsWith('.json') && SESSION_ID_RE.test(name.slice(0, -'.json'.length));
 
 /**
  * The scripts the guard checks: the workspace's languages besides English
@@ -66,12 +68,18 @@ const IN_SCRIPT = {
   ja: (letter) => KANA.test(letter) || HAN.test(letter),
   zh: (letter) => HAN.test(letter),
 };
+/** Names of the workspace's languages, one named group per language. */
+const NAMES = String.raw`(?<ja>\bjapanese\b|日本語|日本语|日語|日语|日文|にほんご)|(?<zh>\bchinese\b|\bmandarin\b|中文|漢語|汉语|華語|华语|繁體|繁体|簡體|简体)|(?<en>\benglish\b|英語|英语|英文|えいご)`;
 /**
- * A Language that starts by naming one of the workspace's languages, after
- * an optional lead-in ("Reply in", "Always answer in Traditional").
+ * A Latin-letter setting that starts by naming a language, after an optional
+ * lead-in ("Reply in", "Always answer in Traditional").
  */
-const NAMED =
-  /^(?:please\s+)?(?:always\s+)?(?:(?:reply|respond|answer|write|speak|talk|use)\s+(?:only\s+)?(?:in\s+)?)?(?:traditional\s+|simplified\s+)?(?:(?<ja>japanese|日本語)|(?<zh>chinese|中文|漢語|汉语|華語|华语)|(?<en>english|英語|英文|英语))/iu;
+const NAMED_FIRST = new RegExp(
+  String.raw`^(?:please\s+)?(?:always\s+)?(?:(?:reply|respond|answer|write|speak|talk|use)\s+(?:only\s+)?(?:in\s+)?)?(?:traditional\s+|simplified\s+)?(?:${NAMES})`,
+  'iu'
+);
+/** Every language name in a setting. */
+const NAMED_ANY = new RegExp(NAMES, 'giu');
 /** Fixed names for the reason: the user's free-text setting is never echoed into it. */
 const SCRIPT_LABEL = { ja: '日本語', zh: '中文' };
 
@@ -88,12 +96,14 @@ export const languageName = (language) =>
     .find(Boolean) ?? '';
 
 /**
- * The script a Language setting asks for, from its first phrase. A phrase
- * that starts by naming Japanese, Chinese, or English decides by that name
- * ("English even when the user writes in Japanese" is English). Otherwise a
- * phrase written in Latin letters is some other language, and a phrase in
- * kana or Han asks for Japanese or Chinese. Null for English and for any
- * language the guard does not support (it passes those).
+ * The script a Language setting asks for, from its first phrase, decided
+ * only by a name of Japanese, Chinese, or English. A phrase mostly in Latin
+ * letters names its language first ("English even when the user writes in
+ * Japanese" is English; "Swahili even when … Japanese" names none); a phrase
+ * in kana or Han puts the language it asks for last, after any condition
+ * ("英語で書いても日本語で話す" is Japanese, "用英文回答" is English). Null
+ * for English and for a phrase that names none of them, such as another
+ * language (韓国語, 한국어): the guard passes those.
  *
  * @param {string | undefined} language
  * @returns {Script | null}
@@ -101,27 +111,32 @@ export const languageName = (language) =>
 export function targetScript(language) {
   const name = language ? languageName(language) : '';
   if (!name) return null;
-  const named = NAMED.exec(name)?.groups;
-  if (named?.ja) return 'ja';
-  if (named?.zh) return 'zh';
-  if (named?.en) return null;
   const letters = name.match(LETTER) ?? [];
   const latin = letters.filter((letter) => LATIN.test(letter)).length;
-  const kana = letters.filter((letter) => KANA.test(letter)).length;
-  const han = letters.filter((letter) => HAN.test(letter)).length;
-  if (latin >= kana + han) return null;
-  if (kana > 0) return 'ja';
-  return han > 0 ? 'zh' : null;
+  const named =
+    latin * 2 >= letters.length
+      ? NAMED_FIRST.exec(name)?.groups
+      : [...name.matchAll(NAMED_ANY)].at(-1)?.groups;
+  if (named?.ja) return 'ja';
+  return named?.zh ? 'zh' : null;
 }
 
-const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s/u;
-const INDENTED = /^(?: {4}|\t)/u;
+/** A list marker and the spaces after it: their width is the item's content indent. */
+const LIST_MARKER = /^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)\S/u;
+/** A fence (after an optional list marker), its run, and the rest of the line. */
+const FENCE = /^[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)?(`{3,}|~{3,})(.*)$/u;
+
+/** Column width of a line's leading whitespace (a tab counts 4). */
+const indentOf = (/** @type {string} */ line) =>
+  (/^[ \t]*/u.exec(line)?.[0] ?? '').replace(/\t/gu, '    ').length;
 
 /**
- * Drop code blocks. Fenced: a fence may be indented (inside a list item) and
- * is closed by a fence of the same character at least as long; an unclosed
- * fence runs to the end. Indented: lines indented 4 spaces or a tab after a
- * blank line, unless they continue a list item (then they are prose).
+ * Drop code blocks. Fenced: a fence may be indented or follow a list marker,
+ * and is closed by a fence of the same character at least as long; an
+ * unclosed fence runs to the end. A backtick run with another backtick later
+ * on the line is inline code, not a fence. Indented: after a blank line,
+ * lines indented 4 columns past the enclosing list item's content (4 outside
+ * a list); a line indented less continues the item as prose.
  *
  * @param {string} text
  */
@@ -130,58 +145,113 @@ function stripCode(text) {
   const kept = [];
   /** @type {string | null} */
   let open = null;
-  let indented = false;
+  let codeIndent = -1;
   let afterBlank = true;
-  let inList = false;
+  // The content column of the current list item; 0 outside a list.
+  let listIndent = 0;
   for (const line of text.split('\n')) {
-    // A fence may follow a list marker ("- ```bash", "1. ```").
-    const fence = /^\s*(?:(?:[-*+]|\d+[.)])\s+)?(`{3,}|~{3,})/u.exec(line)?.[1];
     const blank = line.trim() === '';
-    if (open === null) {
-      if (indented && !blank && !INDENTED.test(line)) indented = false;
-      if (!indented && !blank && afterBlank && !inList && INDENTED.test(line)) {
-        indented = true;
+    const indent = indentOf(line);
+    const fenceMatch = FENCE.exec(line);
+    const fence =
+      fenceMatch && !(fenceMatch[1][0] === '`' && fenceMatch[2].includes('`'))
+        ? fenceMatch[1]
+        : null;
+    if (open !== null) {
+      if (
+        fence &&
+        fence[0] === open[0] &&
+        fence.length >= open.length &&
+        fenceMatch?.[2].trim() === ''
+      ) {
+        open = null;
       }
-      if (indented) continue;
-      if (fence) open = fence;
-      else kept.push(line);
-      if (!blank) {
-        if (LIST_ITEM.test(line)) inList = true;
-        else if (!/^\s/u.test(line)) inList = false;
-      }
-      afterBlank = blank;
-    } else if (
-      fence &&
-      fence[0] === open[0] &&
-      fence.length >= open.length &&
-      /^\s*[`~]+\s*$/u.test(line)
-    ) {
-      open = null;
+      continue;
+    }
+    if (codeIndent >= 0) {
+      if (blank || indent >= codeIndent) continue;
+      codeIndent = -1;
+    }
+    if (!blank && afterBlank && indent >= listIndent + 4) {
+      codeIndent = listIndent + 4;
+      continue;
+    }
+    afterBlank = blank;
+    if (fence) {
+      open = fence;
+      continue;
+    }
+    kept.push(line);
+    if (blank) continue;
+    const marker = LIST_MARKER.exec(line);
+    if (marker) {
+      listIndent = `${marker[1]}${marker[2]}${marker[3]}`.replace(
+        /\t/gu,
+        '    '
+      ).length;
+    } else if (indent === 0) {
+      listIndent = 0;
     }
   }
   return kept.join('\n');
 }
 
 /**
- * Inline code spans of up to 16 backticks (`` a `b` c ``). The bounded
- * opening run keeps a long run of backticks linear (an unbounded `+ backtracks
- * through the whole run at every position).
+ * Remove inline code spans: a backtick run opens a span that the next run of
+ * the same length closes, within one paragraph (CommonMark); a run with no
+ * closer is kept as text. Linear in the text: each run is visited once.
+ *
+ * @param {string} text
  */
-const CODE_SPAN = /(?<!`)(`{1,16})(?!`)(?:(?!\1)[^\n])*?[^`\n]\1(?!`)/gu;
+function stripCodeSpans(text) {
+  return text
+    .split(/(\n[ \t]*\n)/u)
+    .map((block) => {
+      const runs = [...block.matchAll(/`+/gu)].map((match) => ({
+        at: match.index,
+        length: match[0].length,
+      }));
+      /** @type {Map<number, number[]>} run indexes by run length */
+      const byLength = new Map();
+      runs.forEach((run, index) => {
+        const list = byLength.get(run.length) ?? [];
+        list.push(index);
+        byLength.set(run.length, list);
+      });
+      /** @type {Map<number, number>} the next unvisited entry per length */
+      const next = new Map();
+      let out = '';
+      let from = 0;
+      for (let index = 0; index < runs.length; index += 1) {
+        const run = runs[index];
+        const list = byLength.get(run.length) ?? [];
+        let at = next.get(run.length) ?? 0;
+        while (at < list.length && list[at] <= index) at += 1;
+        next.set(run.length, at);
+        if (at === list.length) continue;
+        const close = runs[list[at]];
+        out += block.slice(from, run.at);
+        from = close.at + close.length;
+        index = list[at];
+      }
+      return out + block.slice(from);
+    })
+    .join('');
+}
 
 /**
- * Remove what is not prose: fenced blocks (any fence length), inline code,
- * URLs, paths, and quoted lines.
+ * Remove what is not prose: code blocks, inline code, URLs, POSIX and
+ * Windows paths, and quoted lines.
  *
  * @param {string} text
  */
 function prose(text) {
   return (
-    stripCode(text)
-      .replace(CODE_SPAN, '')
+    stripCodeSpans(stripCode(text))
       .replace(/https?:\/\/\S+/gu, '')
-      // The lookbehind tries each run once (no quadratic backtracking).
+      // The lookbehinds try each run once (no quadratic backtracking).
       .replace(/(?<![\w.~-])[\w.~-]*\/[\w./~-]+/gu, '')
+      .replace(/(?<![\w.~:\\-])(?:[A-Za-z]:)?[\w.~-]*\\[\w.~\\-]+/gu, '')
       .replace(/^[ \t]*>.*$/gmu, '')
   );
 }
@@ -229,7 +299,8 @@ const blockText = (block) =>
  * The last assistant reply in a Claude Code transcript: the text blocks of
  * the last main-thread assistant message (one message may span several
  * entries). Null when the path is not an absolute `.jsonl` regular file, or
- * its tail holds no reply.
+ * when that message has no text or a user entry comes after it: an earlier
+ * message, possibly from the previous turn, is never taken instead.
  *
  * @param {unknown} file the Stop input's transcript_path
  * @returns {string | null}
@@ -262,6 +333,7 @@ export function lastReplyFromTranscript(file) {
   const parts = [];
   /** @type {unknown} */
   let id;
+  let seen = false;
   for (const line of text.split('\n').reverse()) {
     let entry;
     try {
@@ -269,15 +341,17 @@ export function lastReplyFromTranscript(file) {
     } catch {
       continue;
     }
-    if (entry?.type !== 'assistant' || entry.isSidechain) continue;
+    if (entry?.isSidechain) continue;
+    if (entry?.type === 'user') break;
+    if (entry?.type !== 'assistant') continue;
+    if (seen && entry.message?.id !== id) break;
+    seen = true;
+    id = entry.message?.id;
     const content = entry.message?.content;
     const texts = (Array.isArray(content) ? content : [])
       .map(blockText)
       .filter((part) => part !== null);
-    if (parts.length > 0 && entry.message?.id !== id) break;
-    if (texts.length === 0) continue;
-    id = entry.message?.id;
-    parts.unshift(texts.join('\n'));
+    if (texts.length > 0) parts.unshift(texts.join('\n'));
   }
   return parts.length > 0 ? parts.join('\n') : null;
 }
@@ -285,10 +359,12 @@ export function lastReplyFromTranscript(file) {
 /**
  * Whether this session's previous stop was blocked by the guard, then record
  * whether this one is. Each session has its own mark file (no shared file to
- * race on), written by rename so a symlink is replaced, not followed. Marks
- * older than a day count as absent and are pruned; only mark files are
- * pruned. False (pass) when the cache or state directory is a link or not a
- * directory, so nothing is written or deleted outside the memory directory.
+ * race on), written by rename so a symlink is replaced, not followed. Only a
+ * regular file counts as a mark. Marks older than a day count as absent and
+ * are pruned first, best effort, so a pruning error never leaves a mark
+ * without its block; only regular files named like a mark are pruned. False
+ * (pass) when the cache or state directory is a link or not a directory, so
+ * nothing is written or deleted outside the memory directory.
  *
  * @param {string} dir the memory directory
  * @param {string} session a SESSION_ID_RE-checked id, safe as a file name
@@ -302,15 +378,28 @@ function recordStop(dir, session, decide, now) {
   const dirs = [plainDir(cacheDir), plainDir(stateDir)];
   if (dirs.includes('refused')) return false;
   const file = path.join(stateDir, `${session}.json`);
-  const fresh = (/** @type {string} */ name) => {
+  /** @param {string} name @returns {'fresh' | 'stale' | 'other'} */
+  const markState = (name) => {
     try {
       const stat = fs.lstatSync(path.join(stateDir, name));
-      return now.getTime() - stat.mtimeMs < STATE_TTL_MS;
+      if (!stat.isFile()) return 'other';
+      return now.getTime() - stat.mtimeMs < STATE_TTL_MS ? 'fresh' : 'stale';
     } catch {
-      return false;
+      return 'other';
     }
   };
-  const block = decide(fresh(`${session}.json`));
+  if (dirs[1] === 'dir') {
+    try {
+      for (const name of fs.readdirSync(stateDir)) {
+        if (isMark(name) && markState(name) === 'stale') {
+          fs.rmSync(path.join(stateDir, name), { force: true });
+        }
+      }
+    } catch {
+      // Pruning is housekeeping; the decision does not depend on it.
+    }
+  }
+  const block = decide(markState(`${session}.json`) === 'fresh');
   if (block) {
     if (dirs[0] === 'missing') fs.mkdirSync(cacheDir);
     if (dirs[1] === 'missing') fs.mkdirSync(stateDir);
@@ -318,15 +407,8 @@ function recordStop(dir, session, decide, now) {
       file,
       `${JSON.stringify({ blockedAt: now.toISOString() })}\n`
     );
-  } else {
+  } else if (markState(`${session}.json`) !== 'other') {
     fs.rmSync(file, { force: true });
-  }
-  if (plainDir(stateDir) === 'dir') {
-    for (const name of fs.readdirSync(stateDir)) {
-      if (MARK_RE.test(name) && !fresh(name)) {
-        fs.rmSync(path.join(stateDir, name), { force: true });
-      }
-    }
   }
   return block;
 }
@@ -348,13 +430,6 @@ export function checkStop(input, options = {}) {
   const event = normalizeHookInput(input, harness);
   if (event.hook_event_name !== 'Stop') return null;
   if (quietRun(env, event.agent_type)) return null;
-  const reply =
-    typeof event.last_assistant_message === 'string'
-      ? event.last_assistant_message
-      : harness === 'claude'
-        ? lastReplyFromTranscript(event.transcript_path)
-        : null;
-  if (typeof reply !== 'string') return null;
   const dir = memoryDir(home);
   if (!fs.existsSync(dir)) return null;
   let language;
@@ -376,7 +451,18 @@ export function checkStop(input, options = {}) {
   }
   const session = event.session_id;
 
-  const { letters, inScript } = measureReply(reply, script);
+  const reply =
+    typeof event.last_assistant_message === 'string'
+      ? event.last_assistant_message
+      : harness === 'claude'
+        ? lastReplyFromTranscript(event.transcript_path)
+        : null;
+  // A stop without reply text passes, but still goes through recordStop so
+  // it clears the mark: a later continued stop is then checked.
+  const { letters, inScript } =
+    typeof reply === 'string'
+      ? measureReply(reply, script)
+      : { letters: 0, inScript: 0 };
   const slipped = letters >= MIN_LETTERS && inScript / letters < MIN_SHARE;
   // One retry per reply: the stop right after the guard's own block passes.
   // That stop is a continuation (stop_hook_active true in Claude Code and

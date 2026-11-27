@@ -55,14 +55,16 @@ describe('targetScript', () => {
     ['Japanese', 'ja'],
     ['Reply in Japanese', 'ja'],
     ['Japanese even when the user writes in English', 'ja'],
-    ['ですます調で', 'ja'],
     ['おじさまが英語で書いても日本語で話す', 'ja'],
+    ['日本語 even when the user writes in English', 'ja'],
+    ['Use 日本語', 'ja'],
     ['繁體中文（台灣）', 'zh'],
     ['简体中文', 'zh'],
     ['Chinese', 'zh'],
     ['Always answer in Traditional Chinese', 'zh'],
+    ['Always answer in 繁體中文', 'zh'],
     ['中文', 'zh'],
-    ['用台灣的用語', 'zh'],
+    ['即使用戶用英文提問也用中文回答', 'zh'],
   ])('should map %s to %s', (language, script) => {
     expect(targetScript(language)).toBe(script);
   });
@@ -74,6 +76,8 @@ describe('targetScript', () => {
     ['English (the user is learning 日本語)'],
     ['Reply in English even if the user writes 日本語'],
     ['英語で話して'],
+    ['用英文回答'],
+    ['日本語ではなく英語で'],
     [''],
     [undefined],
   ])('should return null for English or no setting: %s', (language) => {
@@ -86,8 +90,18 @@ describe('targetScript', () => {
     ['Korean'],
     ['한국어로 답하기'],
     ['반말로 친근하게'],
+    ['韓国語'],
+    ['韓国語で話して'],
+    ['越南語'],
   ])(
     'should return null for a language the guard does not support: %s',
+    (language) => {
+      expect(targetScript(language)).toBeNull();
+    }
+  );
+
+  test.each([['ですます調で'], ['用台灣的用語']])(
+    'should return null for a setting that names no language: %s',
     (language) => {
       expect(targetScript(language)).toBeNull();
     }
@@ -144,6 +158,56 @@ describe('measureReply', () => {
     expect(measureReply(text, 'ja').letters).toBe(
       measureReply('項目ですわ 続きの説明ですわ', 'ja').letters
     );
+  });
+
+  test('should ignore an indented code block inside a list item', () => {
+    const text = [
+      '1. 項目ですわ',
+      '',
+      '       const someEnglishIdentifier = computeTheValue(input);',
+      '       return someEnglishIdentifier;',
+    ].join('\n');
+
+    expect(measureReply(text, 'ja').letters).toBe(
+      measureReply('項目ですわ', 'ja').letters
+    );
+  });
+
+  test('should ignore a code span that spans lines of one paragraph', () => {
+    expect(
+      measureReply('ですわ `someEnglish\nidentifierHere` ですわ', 'ja')
+    ).toEqual({ letters: 6, inScript: 6 });
+  });
+
+  test('should not let a code span cross a blank line', () => {
+    expect(measureReply('ですわ `abc\n\nですわ `', 'ja')).toEqual({
+      letters: 9,
+      inScript: 6,
+    });
+  });
+
+  test('should ignore a code span that holds a longer backtick run', () => {
+    expect(measureReply('ですわ `a``b` ですわ', 'ja')).toEqual({
+      letters: 6,
+      inScript: 6,
+    });
+  });
+
+  test('should treat a line-start triple-backtick span as inline code, not a fence', () => {
+    const text = `\`\`\`foo\`\`\` ですわ\n${EN}`;
+
+    expect(measureReply(text, 'ja').letters).toBe(
+      measureReply(`ですわ ${EN}`, 'ja').letters
+    );
+  });
+
+  test('should ignore Windows paths', () => {
+    expect(
+      measureReply(
+        'ですわ C:\\Users\\someone\\project\\file.txt \\\\server\\share\\docs',
+        'ja'
+      )
+    ).toEqual({ letters: 3, inScript: 3 });
   });
 
   test('should ignore a code span of two backticks that holds a backtick', () => {
@@ -230,6 +294,18 @@ describe('checkStop', () => {
 
     expect(
       stop({ last_assistant_message: EN, session_id: 'sess-2' })?.decision
+    ).toBe('block');
+  });
+
+  test('should clear the mark at a stop without reply text, so a continued turn is checked', () => {
+    stop({ last_assistant_message: EN }, { harness: 'codex' });
+    stop({ last_assistant_message: null }, { harness: 'codex' });
+
+    expect(
+      stop(
+        { last_assistant_message: EN, stop_hook_active: true },
+        { harness: 'codex' }
+      )?.decision
     ).toBe('block');
   });
 
@@ -424,6 +500,56 @@ describe('checkStop', () => {
     expect(fs.lstatSync(mark).isSymbolicLink()).toBe(false);
   });
 
+  test('should prune a stale mark whose session id has a dot, but no other .json file', () => {
+    const stateDir = path.join(dir, GUARD_STATE_DIR);
+    fs.mkdirSync(stateDir, { recursive: true });
+    const old = new Date('2000-01-01T00:00:00Z');
+    for (const name of ['sess.2.json', '_notes.json', '.hidden.json']) {
+      fs.writeFileSync(path.join(stateDir, name), '{}');
+      fs.utimesSync(path.join(stateDir, name), old, old);
+    }
+
+    stop({ last_assistant_message: EN });
+
+    expect(fs.readdirSync(stateDir).sort()).toEqual([
+      '.hidden.json',
+      '_notes.json',
+      'sess-1.json',
+    ]);
+  });
+
+  test('should still block when a stale mark-named directory is in the state folder', () => {
+    const stateDir = path.join(dir, GUARD_STATE_DIR);
+    const folder = path.join(stateDir, 'old-session.json');
+    fs.mkdirSync(folder, { recursive: true });
+    const old = new Date('2000-01-01T00:00:00Z');
+    fs.utimesSync(folder, old, old);
+
+    expect(stop({ last_assistant_message: EN })?.decision).toBe('block');
+    expect(fs.existsSync(folder)).toBe(true);
+  });
+
+  test('should not count a directory named like this session as its mark', () => {
+    fs.mkdirSync(path.join(dir, GUARD_STATE_DIR, 'sess-1.json'), {
+      recursive: true,
+    });
+
+    expect(
+      stop({ last_assistant_message: JA, stop_hook_active: true })
+    ).toBeNull();
+    expect(
+      runGuard(
+        JSON.stringify({
+          hook_event_name: 'Stop',
+          session_id: 'sess-1',
+          stop_hook_active: true,
+          last_assistant_message: EN,
+        }),
+        { home, env: {} }
+      )
+    ).toBe('');
+  });
+
   test('should prune only guard marks, not other stale files', () => {
     const stateDir = path.join(dir, GUARD_STATE_DIR);
     fs.mkdirSync(stateDir, { recursive: true });
@@ -465,6 +591,25 @@ describe('checkStop', () => {
 
   test('should finish quickly on a very long run of backticks', () => {
     const reply = `${EN} ${'`'.repeat(200_000)}`;
+    const started = performance.now();
+
+    stop({ last_assistant_message: reply });
+
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  test('should finish quickly on many unmatched backtick runs in one paragraph', () => {
+    const runs = Array.from({ length: 16 }, (_, i) => '`'.repeat(i + 1));
+    const reply = `${EN} ${Array.from({ length: 20_000 }, (_, i) => `${runs[i % 16]}a\n`).join('')}`;
+    const started = performance.now();
+
+    stop({ last_assistant_message: reply });
+
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  test('should finish quickly on a very long run without a backslash', () => {
+    const reply = `${EN} C:${'a'.repeat(200_000)}`;
     const started = performance.now();
 
     stop({ last_assistant_message: reply });
@@ -517,9 +662,39 @@ describe('checkStop transcript fallback (Claude Code)', () => {
   });
 
   test('should join the text blocks of the last message', () => {
+    // The last entry alone is under MIN_LETTERS; only the joined message slips.
     const file = transcript([
-      assistant('a1', [{ type: 'text', text: 'ですわ' }]),
+      assistant('a0', [{ type: 'text', text: JA }]),
       assistant('a1', [{ type: 'text', text: EN }]),
+      assistant('a1', [{ type: 'tool_use', id: 't', name: 'Bash', input: {} }]),
+      assistant('a1', [{ type: 'text', text: 'ok' }]),
+    ]);
+
+    expect(stop({ transcript_path: file })?.decision).toBe('block');
+  });
+
+  test.each([
+    [
+      'the last message has no text',
+      [
+        assistant('a1', [{ type: 'text', text: EN }]),
+        assistant('a2', [
+          { type: 'tool_use', id: 't', name: 'Bash', input: {} },
+        ]),
+      ],
+    ],
+    [
+      'the last entry is a user entry',
+      [assistant('a1', [{ type: 'text', text: EN }]), user('next')],
+    ],
+  ])('should not take an earlier reply when %s', (_label, entries) => {
+    expect(stop({ transcript_path: transcript(entries) })).toBeNull();
+  });
+
+  test('should skip entries that are neither user nor assistant', () => {
+    const file = transcript([
+      assistant('a1', [{ type: 'text', text: EN }]),
+      { type: 'system', content: 'note' },
     ]);
 
     expect(stop({ transcript_path: file })?.decision).toBe('block');
