@@ -27,7 +27,7 @@ async function cli(argv) {
   return { code, lines, text: lines.join('\n') };
 }
 
-describe('remote cli (osc7501)', () => {
+describe('remote cli (osc7501 & herdr)', () => {
   test('prints Usage help with no args, help, or --help', async () => {
     for (const args of [[], ['help'], ['--help'], ['-h']]) {
       const res = await cli(args);
@@ -37,18 +37,23 @@ describe('remote cli (osc7501)', () => {
     }
   });
 
-  test('toggles osc7501 and reports status', async () => {
-    expect((await cli(['status'])).text).toBe('OSC 7501: off');
+  test('toggles osc7501 and herdr and reports status', async () => {
+    expect((await cli(['status'])).text).toBe('OSC 7501: off\nHerdr:    off');
     expect((await cli(['osc7501', 'on'])).text).toContain('turned on');
+    expect((await cli(['herdr', 'on'])).text).toContain('turned on');
     expect(JSON.parse((await cli(['status', '--json'])).text)).toEqual({
       osc7501: true,
+      herdr: true,
     });
+    expect((await cli(['status'])).text).toBe('OSC 7501: on\nHerdr:    on');
     expect((await cli(['osc7501', 'off'])).text).toContain('turned off');
+    expect((await cli(['herdr', 'off'])).text).toContain('turned off');
   });
 
   test('rejects invalid commands and options', async () => {
     await expect(cli(['unknown'])).rejects.toThrow(/Unknown remote command/);
     await expect(cli(['status', '--bogus'])).rejects.toThrow(/Unknown option/);
     await expect(cli(['osc7501', 'maybe'])).rejects.toThrow(/Usage:/);
+    await expect(cli(['herdr', 'maybe'])).rejects.toThrow(/Usage:/);
   });
 });

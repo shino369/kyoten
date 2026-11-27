@@ -292,6 +292,8 @@ Each agent can talk in its own voice. `kyoten run memory personalize --for <clau
 --persona "…"` (or `--persona-file "$PWD/persona.md"`) writes `memory/persona.<agent>.md` in the
 home; `ds` is shared by `dsh` and `dscc`. kyoten starts every agent with `KYOTEN_AGENT=<agent>`,
 and the memory hook applies that agent's file at session start (and names it on each prompt).
+Without the variable (Codex hooks run in its shared app-server daemon, which kyoten did not start,
+or an agent started without kyoten), the hook uses the file of the harness it runs in.
 Nothing is rewritten at launch, so other sessions in the same home are not affected. An agent
 without a file uses the default persona, and `kyoten run memory personalize --off` pauses all of
 them. `--for … --reset` removes a file (`kyoten run memory undo` restores it).

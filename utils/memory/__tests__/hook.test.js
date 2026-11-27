@@ -33,7 +33,7 @@ import {
   tryLock,
 } from '../queue.js';
 import { PERSONALIZATION_FILE, writePersonalization } from '../personalize.js';
-import { RECALL_HEADER } from '../recall.js';
+import { RECALL_HEADER, RECALL_LIMIT } from '../recall.js';
 import {
   AGENTS_LOCAL_FILE,
   CLAUDE_LOCAL_FILE,
@@ -48,6 +48,7 @@ import {
   USAGE_FILE,
   addNote,
   memoryDir,
+  updateNote,
 } from '../store.js';
 
 /** @type {string} */
@@ -284,6 +285,14 @@ describe('persona reminder', () => {
     expect(context(prompt('what a lovely morning'))).toBe(PERSONA_REMINDER);
   });
 
+  test('should not remind of a persona when only the language guard is set', () => {
+    writePersonalization(dir, { guard: 'ja' });
+
+    expect(context(prompt('what a lovely morning')) ?? '').not.toContain(
+      '[Persona]'
+    );
+  });
+
   test('should name the language when one is set', () => {
     writePersonalization(dir, { persona: 'お嬢様', language: '日本語' });
 
@@ -381,6 +390,72 @@ describe('PreToolUse', () => {
     pre('gh pr create');
 
     expect(pre('gh pr view')).toBeNull();
+  });
+
+  test('should deny the first matching command even after prompt recall', () => {
+    updateNote(dir, 'm1', { triggerMode: 'block' }, { now: NOW });
+    expect(context(prompt('GitHub GraphQL proxy merge'))).toMatch(/- m1 /);
+
+    expect(pre('gh pr create')?.hookSpecificOutput).toMatchObject({
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: expect.stringContaining('company proxy'),
+    });
+    expect(pre('gh pr create')).toBeNull();
+  });
+
+  test('should skip legacy short patterns while honoring specific patterns on the same blocking note', () => {
+    const note = {
+      id: 'm9',
+      scope: 'user',
+      type: 'howto',
+      text: 'Deployments use the release channel.',
+      triggers: ['pwd', 'pnpm deploy'],
+      triggerMode: 'block',
+    };
+    fs.appendFileSync(
+      path.join(dir, LOG_FILE),
+      `${JSON.stringify({ op: 'add', at: NOW.toISOString(), note })}\n`
+    );
+
+    expect(pre('pwd')).toBeNull();
+    expect(pre('pnpm deploy')?.hookSpecificOutput).toMatchObject({
+      permissionDecision: 'deny',
+      permissionDecisionReason: expect.stringContaining(note.text),
+    });
+    expect(pre('pnpm deploy')).toBeNull();
+  });
+
+  test('should keep blocking notes the deny reason had no room for', () => {
+    const ids = Array.from(
+      { length: RECALL_LIMIT + 1 },
+      (_, index) =>
+        addNote(
+          dir,
+          {
+            scope: 'machine',
+            type: 'howto',
+            text: `Deploy rule ${index + 1}: check the release channel before deploying.`,
+            tags: ['deploy'],
+            triggers: ['deploy'],
+            triggerMode: 'block',
+          },
+          { now: NOW }
+        ).note.id
+    );
+    /** @type {string[]} */
+    const reasons = [];
+    for (let attempt = 0; attempt < ids.length; attempt += 1) {
+      const output = /** @type {any} */ (pre('pnpm deploy'));
+      if (output === null) break;
+      expect(output.hookSpecificOutput.permissionDecision).toBe('deny');
+      reasons.push(output.hookSpecificOutput.permissionDecisionReason);
+    }
+
+    for (const id of ids) {
+      expect(reasons.join('\n')).toMatch(new RegExp(`- ${id} `));
+    }
+    expect(pre('pnpm deploy')).toBeNull();
   });
 
   test('should stay silent without a matching trigger or command', () => {
@@ -1314,6 +1389,82 @@ describe('per-agent personas', () => {
     );
     expect(start({})).toContain('- Persona: Default persona.');
     expect(startAs('claude')).toContain('Own persona.');
+  });
+
+  describe('without a usable KYOTEN_AGENT', () => {
+    const HARNESS_KEYS = /** @type {const} */ ([
+      ['claude', 'claude'],
+      ['codex', 'codex'],
+      ['dsh', 'ds'],
+      ['agy', 'agy'],
+    ]);
+    /** @param {any} harness @param {NodeJS.ProcessEnv} env */
+    const startIn = (harness, env = {}) =>
+      context(
+        hook(
+          { hook_event_name: 'SessionStart', source: 'startup' },
+          { harness, env }
+        )
+      );
+    /** @param {any} harness @param {NodeJS.ProcessEnv} env */
+    const promptIn = (harness, env = {}) =>
+      context(
+        hook(
+          {
+            hook_event_name: 'UserPromptSubmit',
+            prompt: 'what a lovely morning',
+          },
+          { harness, env }
+        )
+      );
+
+    test.each(HARNESS_KEYS)(
+      'should apply the %s harness persona when KYOTEN_AGENT is missing',
+      (harness, key) => {
+        persona(key, 'Own persona.');
+
+        const text = startIn(harness);
+
+        expect(text).toContain('- Persona: Own persona.');
+        expect(text).not.toContain('Default persona.');
+      }
+    );
+
+    test('should name the harness persona in the prompt line when KYOTEN_AGENT is missing', () => {
+      persona('codex', 'Own persona.');
+
+      expect(promptIn('codex')).toBe(
+        "[Persona] Every message to the user, progress notes between tool calls included, follows this session's codex persona from the session start context. Language: 日本語"
+      );
+    });
+
+    test('should use the harness persona when KYOTEN_AGENT names an agent of another harness', () => {
+      persona('claude', 'Claude persona.');
+      persona('codex', 'Codex persona.');
+
+      const text = startIn('codex', { KYOTEN_AGENT: 'claude' });
+
+      expect(text).toContain('- Persona: Codex persona.');
+      expect(text).not.toContain('Claude persona.');
+    });
+
+    test('should use the harness persona for an unknown KYOTEN_AGENT', () => {
+      persona('codex', 'Own persona.');
+
+      expect(startIn('codex', { KYOTEN_AGENT: 'toString' })).toContain(
+        '- Persona: Own persona.'
+      );
+    });
+
+    test('should keep dscc on the shared ds persona inside the claude harness', () => {
+      persona('claude', 'Claude persona.');
+      persona('ds', 'Shared.');
+
+      const text = startIn('claude', { KYOTEN_AGENT: 'dscc' });
+
+      expect(text).toContain('- Persona: Shared.');
+      expect(text).not.toContain('Claude persona.');
+    });
   });
 
   test.each(['claude', 'codex', 'dsh'])(

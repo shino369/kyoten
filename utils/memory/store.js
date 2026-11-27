@@ -37,10 +37,14 @@ export const VIAS = [
   'consolidate',
   'import',
 ];
+/** Characters besides spaces one wildcard-free run of a blocking trigger needs, so it names a command. */
+export const BLOCK_TRIGGER_MIN = 4;
 export const LIMITS = {
   text: 1000,
   tags: 30,
   tag: 50,
+  cues: 5,
+  cue: 80,
   triggers: 10,
   trigger: 120,
 };
@@ -52,8 +56,17 @@ export const STALE_DAYS = 90;
 const CACHE_VERSION = 1;
 const DAY_MS = 86_400_000;
 const ID_RE = /^[mt][1-9]\d*$/;
-const OPS = ['add', 'update', 'delete', 'pin', 'check'];
-const EDITABLE = ['text', 'tags', 'triggers', 'type', 'scope', 'repo'];
+const OPS = ['add', 'update', 'delete', 'pin', 'check', 'archive', 'restore'];
+const EDITABLE = [
+  'text',
+  'tags',
+  'cues',
+  'triggers',
+  'triggerMode',
+  'type',
+  'scope',
+  'repo',
+];
 const SOURCE_FIELDS = /** @type {const} */ (['harness', 'session', 'task']);
 
 /**
@@ -65,7 +78,9 @@ const SOURCE_FIELDS = /** @type {const} */ (['harness', 'session', 'task']);
  * @property {string | null} repo set for repo notes only
  * @property {string} type `preference` · `fact` · `howto` · `episode`
  * @property {string[]} tags
+ * @property {string[]} [cues] literal prompt phrases
  * @property {string[]} triggers command or error patterns (PreToolUse)
+ * @property {'inject' | 'block'} [triggerMode] defaults to inject
  * @property {Source} source
  * @property {boolean} pinned
  * @property {string | null} supersedes
@@ -75,7 +90,8 @@ const SOURCE_FIELDS = /** @type {const} */ (['harness', 'session', 'task']);
  *   created: string,
  *   updated: string,
  *   checked: string | null,
- *   status: 'active' | 'deleted',
+ *   status: 'active' | 'archived' | 'deleted',
+ *   archived?: string,
  *   deleted?: string,
  *   why?: string,
  * }} Note
@@ -86,11 +102,14 @@ const SOURCE_FIELDS = /** @type {const} */ (['harness', 'session', 'task']);
  * @property {string | null} [repo]
  * @property {string} type
  * @property {string[]} [tags]
+ * @property {string[]} [cues]
  * @property {string[]} [triggers]
+ * @property {'inject' | 'block'} [triggerMode]
  * @property {Source} [source]
  * @property {boolean} [pinned]
  * @property {string | null} [supersedes]
  * @property {boolean} [unchecked] store with `checked: null` (imported notes)
+ * @property {string} [archived] original archive date when importing a note
  *
  * @typedef {object} Op
  * @property {string} op
@@ -194,7 +213,7 @@ function normalizeSource(source) {
  * Validate and normalize a note's fields. Throws MemoryError('invalid').
  *
  * @param {any} input
- * @returns {NoteFields & { unchecked: boolean }}
+ * @returns {NoteFields & { unchecked: boolean, archived?: string }}
  */
 export function normalizeInput(input) {
   if (!isObject(input)) invalid('A note must be an object.');
@@ -226,27 +245,71 @@ export function normalizeInput(input) {
   const pinned = input.pinned ?? false;
   if (typeof pinned !== 'boolean')
     invalid('The pinned field must be true or false.');
+  const archived = input.archived;
+  if (
+    archived !== undefined &&
+    (pinned ||
+      typeof archived !== 'string' ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(archived) ||
+      Number.isNaN(Date.parse(archived)))
+  ) {
+    invalid('An archived note needs an archive date and cannot be pinned.');
+  }
   const supersedes = input.supersedes ?? null;
   if (supersedes !== null && typeof supersedes !== 'string') {
     invalid('The supersedes field must be a note id.');
   }
+  const triggerMode = input.triggerMode;
+  if (
+    triggerMode !== undefined &&
+    triggerMode !== 'inject' &&
+    triggerMode !== 'block'
+  ) {
+    invalid('Use --trigger-mode inject or block.');
+  }
+  const triggers = normalizeList(
+    input.triggers,
+    'trigger',
+    LIMITS.triggers,
+    LIMITS.trigger
+  );
   return {
     text,
     scope: input.scope,
     repo,
     type: input.type,
     tags: normalizeList(input.tags, 'tag', LIMITS.tags, LIMITS.tag),
-    triggers: normalizeList(
-      input.triggers,
-      'trigger',
-      LIMITS.triggers,
-      LIMITS.trigger
-    ),
+    ...(input.cues === undefined
+      ? {}
+      : {
+          cues: normalizeList(input.cues, 'cue', LIMITS.cues, LIMITS.cue),
+        }),
+    triggers,
+    ...(triggerMode === undefined ? {} : { triggerMode }),
     source: normalizeSource(input.source),
     pinned,
     supersedes,
     unchecked: input.unchecked === true,
+    ...(archived === undefined ? {} : { archived }),
   };
+}
+
+/** @param {string} trigger */
+export function isSpecificBlockingTrigger(trigger) {
+  return trigger
+    .split('*')
+    .some((run) => [...run.replace(/\s/g, '')].length >= BLOCK_TRIGGER_MIN);
+}
+
+/** @param {Pick<NoteFields, 'triggers' | 'triggerMode'>} note */
+function assertSpecificBlockingTriggers({ triggers, triggerMode }) {
+  if (triggerMode !== 'block') return;
+  const vague = triggers.find((trigger) => !isSpecificBlockingTrigger(trigger));
+  if (vague !== undefined) {
+    invalid(
+      `A blocking trigger needs a run of at least ${BLOCK_TRIGGER_MIN} characters besides spaces between *s: "${vague}".`
+    );
+  }
 }
 
 /**
@@ -266,12 +329,14 @@ function normalizeChanges(changes) {
 }
 
 /**
- * Refuse a note whose text, tags, or triggers match a secret rule.
+ * Refuse a note whose text, tags, cues, or triggers match a secret rule.
  *
- * @param {Pick<NoteFields, 'text' | 'tags' | 'triggers'>} fields
+ * @param {Pick<NoteFields, 'text' | 'tags' | 'triggers' | 'cues'>} fields
  */
-export function assertNoSecrets({ text, tags, triggers }) {
-  const rules = new Set([text, ...tags, ...triggers].flatMap(findSecrets));
+export function assertNoSecrets({ text, tags, cues = [], triggers }) {
+  const rules = new Set(
+    [text, ...tags, ...cues, ...triggers].flatMap(findSecrets)
+  );
   if (rules.size > 0) {
     throw new MemoryError(
       'secret',
@@ -308,7 +373,7 @@ function applyOp(notes, op) {
         created: day,
         updated: day,
         checked: unchecked ? null : day,
-        status: 'active',
+        status: fields.archived === undefined ? 'active' : 'archived',
       });
       return null;
     }
@@ -316,11 +381,21 @@ function applyOp(notes, op) {
     if (!note) return `${label}: unknown note`;
     if (note.status === 'deleted') return `${label}: the note is deleted`;
     if (op.op === 'update') {
-      const { text, tags, triggers, type, scope, repo } = normalizeInput({
-        ...note,
-        ...normalizeChanges(op.set),
+      const { text, tags, cues, triggers, triggerMode, type, scope, repo } =
+        normalizeInput({
+          ...note,
+          ...normalizeChanges(op.set),
+        });
+      Object.assign(note, {
+        text,
+        tags,
+        cues,
+        triggers,
+        triggerMode,
+        type,
+        scope,
+        repo,
       });
-      Object.assign(note, { text, tags, triggers, type, scope, repo });
       note.updated = day;
       note.checked = day;
     } else if (op.op === 'delete') {
@@ -331,6 +406,14 @@ function applyOp(notes, op) {
       });
     } else if (op.op === 'pin') {
       note.pinned = op.pinned === true;
+    } else if (op.op === 'archive') {
+      note.status = 'archived';
+      note.archived = day;
+    } else if (op.op === 'restore') {
+      note.status = 'active';
+      delete note.archived;
+      note.checked = day;
+      note.updated = day;
     } else {
       note.checked = day;
     }
@@ -408,7 +491,8 @@ export function loadNotes(dir) {
   const logFile = path.join(dir, LOG_FILE);
   const stat = fs.statSync(logFile, { throwIfNoEntry: false });
   if (!stat) return { notes: [], problems: [], stamp: null };
-  const stamp = `${stat.size}:${stat.mtimeMs}`;
+  // Include the cache version in the stamp shared with the recall index.
+  const stamp = `${CACHE_VERSION}:${stat.size}:${stat.mtimeMs}`;
   const cacheFile = path.join(dir, CACHE_DIR, NOTES_CACHE_FILE);
   const cached = /** @type {any} */ (readJsonOrNull(cacheFile));
   if (cached?.version === CACHE_VERSION && cached.stamp === stamp) {
@@ -521,21 +605,22 @@ function nextId(notes, via) {
 }
 
 /**
- * The most similar active note in the same scope and repo, if similar enough
+ * The most similar note in the same status, scope and repo, if similar enough
  * to be the same note (ties go to the newer one).
  *
  * @param {Iterable<Note>} notes
  * @param {Pick<NoteFields, 'text' | 'scope' | 'repo'>} fields
+ * @param {'active' | 'archived'} [status]
  * @returns {Note | null}
  */
-export function findNearDuplicate(notes, fields) {
+export function findNearDuplicate(notes, fields, status = 'active') {
   const terms = termSet(fields.text);
   /** @type {Note | null} */
   let best = null;
   let bestSimilarity = DUPLICATE_SIMILARITY;
   for (const note of notes) {
     if (
-      note.status !== 'active' ||
+      note.status !== status ||
       note.scope !== fields.scope ||
       note.repo !== fields.repo
     ) {
@@ -566,6 +651,8 @@ function joinLists(a, b, max) {
  * Save a note. A near-duplicate of an active note in the same scope and repo
  * updates that note instead (new text and type, tags and triggers joined),
  * unless `merge` is false (task digests: two similar tasks are two notes).
+ * A near-duplicate never changes the note's trigger mode, nor the triggers
+ * of a blocking note: those take an explicit edit.
  *
  * @param {string} dir the memory directory
  * @param {NoteInput} input
@@ -575,10 +662,32 @@ function joinLists(a, b, max) {
 export function addNote(dir, input, { now = new Date(), merge = true } = {}) {
   const fields = normalizeInput(input);
   assertNoSecrets(fields);
+  // Imports restore saved notes as-is. Recall skips legacy broad blockers.
+  if (fields.source.via !== 'import') assertSpecificBlockingTriggers(fields);
   const at = now.toISOString();
   return mutate(dir, (notes) => {
-    const existing = merge ? findNearDuplicate(notes.values(), fields) : null;
-    if (existing) return mergeInto(dir, notes, existing, fields, at);
+    const existing =
+      merge && fields.archived === undefined
+        ? findNearDuplicate(notes.values(), fields)
+        : null;
+    if (existing) {
+      if (existing.triggerMode === 'block' && automatic(fields.source)) {
+        return { action: /** @type {const} */ ('unchanged'), note: existing };
+      }
+      const mode = existing.triggerMode ?? 'inject';
+      if (fields.triggerMode !== undefined && fields.triggerMode !== mode) {
+        const edit = [
+          `pnpm memory edit ${existing.id} --trigger-mode ${fields.triggerMode}`,
+          ...fields.triggers.map(
+            (trigger) => `--trigger ${JSON.stringify(trigger)}`
+          ),
+        ].join(' ');
+        invalid(
+          `${existing.id} is a near-duplicate with trigger mode ${mode}; change it with ${edit}.`
+        );
+      }
+      return mergeInto(dir, notes, existing, fields, at);
+    }
     const { unchecked, ...rest } = fields;
     const id = nextId(notes, fields.source.via);
     const note = commit(dir, notes, {
@@ -605,12 +714,17 @@ function mergeInto(dir, notes, existing, fields, at) {
   if (fields.type !== existing.type) set.type = fields.type;
   const tags = joinLists(existing.tags, fields.tags, LIMITS.tags);
   if (tags.length !== existing.tags.length) set.tags = tags;
-  const triggers = joinLists(
-    existing.triggers,
-    fields.triggers,
-    LIMITS.triggers
-  );
-  if (triggers.length !== existing.triggers.length) set.triggers = triggers;
+  const cues = joinLists(existing.cues ?? [], fields.cues ?? [], LIMITS.cues);
+  if (cues.length !== (existing.cues?.length ?? 0)) set.cues = cues;
+  // A blocking note's triggers change only through an explicit edit.
+  if (existing.triggerMode !== 'block') {
+    const triggers = joinLists(
+      existing.triggers,
+      fields.triggers,
+      LIMITS.triggers
+    );
+    if (triggers.length !== existing.triggers.length) set.triggers = triggers;
+  }
   const update = Object.keys(set).length > 0;
   const pin = fields.pinned && !existing.pinned;
   const { id } = existing;
@@ -621,13 +735,24 @@ function mergeInto(dir, notes, existing, fields, at) {
   return { action: update || pin ? 'merged' : 'unchanged', note: existing };
 }
 
+/** @param {Source} source */
+const automatic = (source) =>
+  source.via === 'extract' || source.via === 'consolidate';
+
+/** @param {Note} note @param {Source} source */
+function protectBlockingNote(note, source) {
+  if (note.triggerMode === 'block' && automatic(source)) {
+    invalid(`${note.id} has a blocking trigger and needs a manual edit.`);
+  }
+}
+
 /**
  * Change a note's text, tags, triggers, type, scope, or repo. Writes nothing
  * when the values are already the same.
  *
  * @param {string} dir
  * @param {string} id
- * @param {Partial<Pick<NoteFields, 'text' | 'tags' | 'triggers' | 'type' | 'scope' | 'repo'>>} changes
+ * @param {Partial<Pick<NoteFields, 'text' | 'tags' | 'cues' | 'triggers' | 'triggerMode' | 'type' | 'scope' | 'repo'>>} changes
  * @param {{ now?: Date, source?: Source }} [options]
  * @returns {Note}
  */
@@ -641,8 +766,12 @@ export function updateNote(
   const by = normalizeSource(source);
   return mutate(dir, (notes) => {
     const note = activeNote(notes, id);
+    protectBlockingNote(note, by);
     const next = normalizeInput({ ...note, ...set });
     assertNoSecrets(next);
+    if (Object.hasOwn(set, 'triggers') || Object.hasOwn(set, 'triggerMode')) {
+      assertSpecificBlockingTriggers(next);
+    }
     /** @type {Record<string, unknown>} */
     const diff = {};
     for (const key of Object.keys(set)) {
@@ -666,28 +795,111 @@ export function updateNote(
 }
 
 /**
+ * Transfer searchable metadata while both records are locked. An intervening
+ * edit or an overflowing metadata list leaves the source in active recall.
+ *
+ * @param {string} dir
+ * @param {Map<string, Note>} notes
+ * @param {Note} note being retired
+ * @param {{ keeper: Note, sourceText: string }} merge
+ * @param {string} at
+ * @param {Source} source
+ */
+function keepMergeMetadata(dir, notes, note, merge, at, source) {
+  const keeper = activeNote(notes, merge.keeper.id);
+  if (
+    keeper.id === note.id ||
+    keeper.status !== 'active' ||
+    note.status !== 'active' ||
+    keeper.text !== merge.keeper.text ||
+    note.text !== merge.sourceText ||
+    keeper.scope !== note.scope ||
+    keeper.repo !== note.repo ||
+    note.pinned
+  ) {
+    invalid(`The source or keeper changed before retiring ${note.id}.`);
+  }
+  protectBlockingNote(keeper, source);
+  const tags = joinLists(keeper.tags, note.tags, Infinity);
+  const cues = joinLists(keeper.cues ?? [], note.cues ?? [], Infinity);
+  const triggers = joinLists(keeper.triggers, note.triggers, Infinity);
+  if (
+    tags.length === keeper.tags.length &&
+    cues.length === (keeper.cues?.length ?? 0) &&
+    triggers.length === keeper.triggers.length
+  )
+    return;
+  const metadata = { tags, cues, triggers };
+  assertNoSecrets(normalizeInput({ ...keeper, ...metadata }));
+  commit(dir, notes, {
+    op: 'update',
+    id: keeper.id,
+    at,
+    set: metadata,
+    source,
+  });
+}
+
+/**
  * Mark a note deleted. It stays in the log (history, undo) and in loadNotes
  * with `status: 'deleted'`, but is no longer recalled or merged into.
  *
  * @param {string} dir
  * @param {string} id
  * @param {string} why
- * @param {{ now?: Date, source?: Source }} [options]
+ * @param {{ now?: Date, source?: Source, merge?: { keeper: Note, sourceText: string } }} [options]
  * @returns {Note}
  */
-export function deleteNote(dir, id, why, { now = new Date(), source } = {}) {
+export function deleteNote(
+  dir,
+  id,
+  why,
+  { now = new Date(), source, merge } = {}
+) {
   const reason = why.trim();
   if (!reason) invalid(`Give a reason for deleting ${id} (-m "why").`);
   const by = normalizeSource(source);
+  const at = now.toISOString();
   return mutate(dir, (notes) => {
-    activeNote(notes, id);
+    const note = activeNote(notes, id);
+    protectBlockingNote(note, by);
+    if (merge) keepMergeMetadata(dir, notes, note, merge, at, by);
     return commit(dir, notes, {
       op: 'delete',
       id,
-      at: now.toISOString(),
+      at,
       why: reason,
       source: by,
     });
+  });
+}
+
+/** @param {Note} note @param {Date} now @param {Usage} [usage] */
+export function canArchive(note, now, usage) {
+  if (note.status !== 'active' || note.pinned || note.triggerMode === 'block')
+    return false;
+  const daysSince = (/** @type {string} */ date) =>
+    (now.getTime() - Date.parse(date)) / DAY_MS;
+  if (note.source.via === 'digest') return daysSince(note.updated) > 30;
+  return isStale(note, now) && daysSince(usage?.lastHit ?? note.updated) > 60;
+}
+
+/** @param {string} dir @param {string} id @param {Date} now */
+export function archiveNote(dir, id, now) {
+  return mutate(dir, (notes) => {
+    const note = activeNote(notes, id);
+    if (!canArchive(note, now, readUsage(dir)[id]))
+      invalid(`${id} is no longer eligible for archiving.`);
+    return commit(dir, notes, { op: 'archive', id, at: now.toISOString() });
+  });
+}
+
+/** @param {string} dir @param {string} id @param {Date} [now] */
+export function restoreNote(dir, id, now = new Date()) {
+  return mutate(dir, (notes) => {
+    const note = activeNote(notes, id);
+    if (note.status === 'active') return note;
+    return commit(dir, notes, { op: 'restore', id, at: now.toISOString() });
   });
 }
 
@@ -701,6 +913,8 @@ export function deleteNote(dir, id, why, { now = new Date(), source } = {}) {
 export function setPinned(dir, id, pinned, { now = new Date() } = {}) {
   return mutate(dir, (notes) => {
     const note = activeNote(notes, id);
+    if (pinned && note.status === 'archived')
+      invalid(`Restore ${id} before pinning it.`);
     if (note.pinned === pinned) return note;
     return commit(dir, notes, { op: 'pin', id, at: now.toISOString(), pinned });
   });

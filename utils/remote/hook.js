@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 /**
- * Official cross-harness hook for OSC 7501 status updates (Herdr / Rex).
+ * Official cross-harness hook for status updates:
+ * - OSC 7501 written to the controlling terminal (`pnpm remote osc7501 on` / `KYOTEN_OSC7501=1`)
+ * - Native Herdr pane reporting via `herdr pane report-agent` (`pnpm remote herdr on` / `KYOTEN_HERDR=1`)
  *
- * Silent and zero-side-effect by default until configured via `pnpm remote osc7501 on`
- * (or `KYOTEN_OSC7501=1`). Never blocks or breaks an agent session.
+ * Silent and zero-side-effect by default until configured. Never blocks or
+ * breaks an agent session.
  */
 import { normalizeHookInput, parseHarness } from '../harness/input.js';
-import { SKIP_AGENTS } from '../memory/hook.js';
+import { QUIET_AGENTS } from '../memory/extract-env.js';
 import { EXTRACT_ENV } from '../memory/queue.js';
 import { mainCheckout } from '../memory/repo.js';
 import { runIfMain } from '../module-runner.js';
 import { ROOT_DIR } from '../workspace-config.js';
 import { hasRemoteConfig, readRemoteConfig } from './config.js';
+import { reportHerdrStatus } from './herdr.js';
 import { emitOsc7501, stateForHookEvent } from './osc7501.js';
 
 /**
@@ -20,7 +23,9 @@ import { emitOsc7501, stateForHookEvent } from './osc7501.js';
  *   harness?: import('../harness/input.js').Harness,
  *   rootDir?: string,
  *   env?: NodeJS.ProcessEnv,
- *   stream?: { isTTY?: boolean, write: (chunk: string) => unknown },
+ *   ttyPath?: string,
+ *   writer?: (chunk: string) => unknown,
+ *   spawnSyncFn?: typeof import('node:child_process').spawnSync,
  * }} [options]
  */
 export function handleHook(
@@ -29,7 +34,9 @@ export function handleHook(
     harness = 'claude',
     rootDir = ROOT_DIR,
     env = process.env,
-    stream = process.stderr,
+    ttyPath,
+    writer,
+    spawnSyncFn,
   } = {}
 ) {
   const normalized = normalizeHookInput(input, harness);
@@ -41,14 +48,18 @@ export function handleHook(
         : null
       : null;
 
-  if (env[EXTRACT_ENV] === '1' || SKIP_AGENTS.includes(normalized.agent_type)) {
+  if (
+    env[EXTRACT_ENV] === '1' ||
+    QUIET_AGENTS.includes(normalized.agent_type)
+  ) {
     return silentOutput;
   }
 
   const home = mainCheckout(rootDir);
   const oscEnv = env.KYOTEN_OSC7501 === '1';
+  const herdrEnv = env.KYOTEN_HERDR === '1';
   const configured = hasRemoteConfig(home);
-  if (!configured && !oscEnv) {
+  if (!configured && !oscEnv && !herdrEnv) {
     return silentOutput;
   }
 
@@ -56,7 +67,22 @@ export function handleHook(
   const oscEnabled = oscEnv || Boolean(config?.osc7501);
   if (oscEnabled) {
     const state = stateForHookEvent(normalized, harness);
-    emitOsc7501(state, { enabled: true, stream, app: 'kyoten' });
+    emitOsc7501(state, {
+      enabled: true,
+      env,
+      ttyPath,
+      writer,
+      app: 'kyoten',
+    });
+  }
+
+  const herdrEnabled = herdrEnv || Boolean(config?.herdr);
+  if (herdrEnabled) {
+    reportHerdrStatus(normalized, harness, {
+      enabled: true,
+      env,
+      spawnSyncFn,
+    });
   }
 
   return silentOutput;
@@ -92,7 +118,7 @@ export function runHook(raw, options = {}) {
   }
 }
 
-/* c8 ignore start - stdin/stdout wiring; logic tested through runHook */
+/* c8 ignore start - stdin/stdout wiring; logic tested through runHook and child-process integration tests */
 function main() {
   const harness = parseHarness(process.argv.slice(2));
   const failOpen = () => {

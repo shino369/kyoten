@@ -64,7 +64,7 @@ Usage:
 Usage: kyoten [--home <dir>] [--no-add-dir] [<agent>] [agent args…]
        kyoten [--home <dir>] <command> [options]
 
-kyoten 0.2.2 — start a coding agent in your kyoten workspace (the home)
+kyoten 0.2.3 — start a coding agent in your kyoten workspace (the home)
 
 Agents (the first word, default claude; --<agent> works too)
   claude    Claude Code
@@ -173,20 +173,23 @@ Status
 
 Save and change
   add "<text>" --scope user|machine|repo --type preference|fact|howto|episode
-      [--repo <name|path>] [--tags a,b] [--trigger "<pattern>"]… [--pin] [--force]
+      [--repo <name|path>] [--tags a,b] [--cue "<phrase>"]… [--trigger "<pattern>"]…
+      [--trigger-mode inject|block] [--pin] [--force]
                                 Save a note and print its id. Secrets are refused; a
                                 near-duplicate is merged into the old note. A repo note
                                 defaults to the current repository (the task's --repo, else
                                 this folder). --force saves while saving is off
-  edit <id> ["<text>"] [--tags a,b] [--trigger "…"]… [--type …] [--scope …] [--repo …]
-                                Change a note (--tags and --trigger replace the old lists)
+  edit <id> ["<text>"] [--tags a,b] [--cue "…"]… [--trigger "…"]…
+      [--trigger-mode inject|block] [--type …] [--scope …] [--repo …]
+                                Change a note (--tags, --cue, and --trigger replace the old lists)
   rm <id> -m "why"              Delete a note (it stays in the journal)
   pin <id> · unpin <id>         Pinned notes are in every session's core block
   check <id>                    Mark a note confirmed today (no longer stale)
+  restore <id>                  Bring an archived note back into active recall
 
 Find
-  recall "<query>" [--scope …] [--repo …] [--limit N] [--failure]
-                                Search like the hooks do (--failure: the query is an error)
+  recall "<query>" [--scope …] [--repo …] [--limit N] [--failure] [--archived]
+                                Search like the hooks do (--archived searches archived notes)
   list [--scope …] [--type …] [--repo …] [--pinned] [--stale] [--all]
                                 Browse notes (--all includes deleted ones)
   show <id>                     A note with its source and history
@@ -228,9 +231,12 @@ Settings
   personalize --presets         List the available presets
   personalize [--preset <name>] [--call-me …] [--about-me …] [--language …]
       [--persona … | --persona-file <file.md>] [--tone <text|preset>] [--traits a,b]
-      [--extra …] [--reset]
+      [--extra …] [--guard ja|zh|off] [--reset]
                                 Set how agents talk to you in conversations. An empty
-                                value clears a field. --persona-file reads the
+                                value clears a field. --guard turns on the Stop-time
+                                language guard for Japanese or Chinese (Claude Code and
+                                Codex): a reply mostly in another script is sent back
+                                once for a rewrite. --persona-file reads the
                                 persona from markdown (comments and heading marks
                                 dropped; the same 1,500-character limit). Keep the
                                 persona in memory/persona.md instead and pnpm memory init
@@ -248,9 +254,10 @@ Settings
                                 MCP servers
   personalize --for claude|codex|ds|agy [--show | --reset]
       [--persona … | --persona-file <file.md>] [--compact [--dry-run] | --audit]
-                                One persona for the agents kyoten starts (ds: dsh and dscc;
-                                KYOTEN_AGENT), kept in memory/persona.<agent>.md, with the
-                                same limit, audit, and --agent as the default persona. The
+                                One persona per agent (ds: dsh and dscc; KYOTEN_AGENT,
+                                else the hook's harness), kept in
+                                memory/persona.<agent>.md, with the same limit, audit,
+                                and --agent as the default persona. The
                                 other settings stay the default ones; an agent without a
                                 file uses the default persona. --reset removes the file
                                 (a snapshot and tasks/.trash keep it; pnpm memory undo
@@ -276,11 +283,12 @@ Options
 ```text
 Usage: pnpm remote <command> [options]
 
-Manage OSC 7501 status hooks (Herdr/Rex).
+Manage status hooks (OSC 7501 for Rex/terminals, native Herdr pane reporting).
 
 Commands
   status [--json]
   osc7501 on|off
+  herdr on|off
   help
 
 Options

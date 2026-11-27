@@ -481,7 +481,61 @@ test('doctor reports the agy and dsh web checks', () => {
   expect(output).toContain('dsh-web');
 });
 
-test('a per-agent persona reaches the SessionStart hook only for that agent', () => {
+test('the language guard CLI blocks a reply in the wrong language once', () => {
+  const other = path.join(tmp, 'guard-home');
+  const env = { KYOTEN_HOME: other };
+  kyoten(['init', '--no-setup', '--memory', 'on'], { env });
+  fs.symlinkSync(
+    path.join(ROOT, 'node_modules'),
+    path.join(other, 'node_modules'),
+    'junction'
+  );
+  must(
+    'pnpm',
+    ['memory', 'personalize', '--language', '日本語', '--guard', 'ja'],
+    { cwd: other }
+  );
+  const guard = (
+    /** @type {string[]} */ args,
+    /** @type {Record<string, unknown>} */ input
+  ) =>
+    run(
+      process.execPath,
+      [path.join(other, 'utils', 'memory', 'language_guard.js'), ...args],
+      {
+        cwd: other,
+        encoding: 'utf-8',
+        input: JSON.stringify({
+          hook_event_name: 'Stop',
+          session_id: 'e2e-guard',
+          last_assistant_message:
+            'The fix is finished on the branch, and every test passes. Next I will open a review round.',
+          ...input,
+        }),
+        env: { ...process.env, MEMORY_EXTRACT: '' },
+      }
+    );
+
+  const first = guard(['--harness', 'codex'], {});
+  const retry = guard(['--harness', 'codex'], { stop_hook_active: true });
+  const broken = run(
+    process.execPath,
+    [path.join(other, 'utils', 'memory', 'language_guard.js')],
+    { cwd: other, encoding: 'utf-8', input: '{oops' }
+  );
+
+  expect(first.status).toBe(0);
+  expect(JSON.parse(String(first.stdout))).toMatchObject({
+    decision: 'block',
+  });
+  expect(String(first.stdout)).toContain('日本語');
+  expect(retry.status).toBe(0);
+  expect(String(retry.stdout)).toBe('');
+  expect(broken.status).toBe(0);
+  expect(String(broken.stdout)).toBe('');
+});
+
+test('a per-agent persona reaches only the SessionStart hook of its own harness', () => {
   const other = path.join(tmp, 'persona-home');
   const env = { KYOTEN_HOME: other };
   kyoten(['init', '--no-setup', '--memory', 'on'], { env });
@@ -504,10 +558,13 @@ test('a per-agent persona reaches the SessionStart hook only for that agent', ()
     ],
     { cwd: other }
   );
-  const hook = (/** @type {Record<string, string>} */ extra) => {
+  const hook = (
+    /** @type {string} */ harness,
+    /** @type {Record<string, string>} */ extra
+  ) => {
     const result = run(
       process.execPath,
-      [path.join(other, 'utils', 'memory', 'hook.js'), '--harness', 'claude'],
+      [path.join(other, 'utils', 'memory', 'hook.js'), '--harness', harness],
       {
         cwd: other,
         encoding: 'utf-8',
@@ -523,10 +580,22 @@ test('a per-agent persona reaches the SessionStart hook only for that agent', ()
     return String(result.stdout);
   };
 
-  const own = hook({ KYOTEN_AGENT: 'claude' });
-  const none = hook({});
+  const own = hook('claude', { KYOTEN_AGENT: 'claude' });
+  // Without KYOTEN_AGENT (an agent started without kyoten), the hook uses the
+  // file of the harness it runs in.
+  const direct = hook('claude', {});
+  const codex = hook('codex', {});
+  const inherited = hook('codex', { KYOTEN_AGENT: 'claude' });
 
-  expect(own).toContain('[Persona] This claude session has its own persona');
-  expect(own).toContain('Speak like a pirate');
-  expect(none).not.toContain('has its own persona');
+  for (const output of [own, direct]) {
+    expect(output).toContain(
+      '[Persona] This claude session has its own persona'
+    );
+    expect(output).toContain('Speak like a pirate');
+  }
+  for (const output of [codex, inherited]) {
+    expect(output).toContain('<!-- memory:start -->');
+    expect(output).not.toContain('has its own persona');
+    expect(output).not.toContain('Speak like a pirate');
+  }
 });

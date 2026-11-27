@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * `pnpm remote <command> [options]` — Manage OSC 7501 status emission for Herdr / Rex.
+ * `pnpm remote <command> [options]` — Manage terminal/workspace status hooks
+ * (OSC 7501 for Rex / OSC 7501 terminals, and native Herdr pane reporting).
  */
 import { mainCheckout } from '../memory/repo.js';
 import { runIfMain } from '../module-runner.js';
@@ -9,11 +10,12 @@ import { readRemoteConfig, writeRemoteConfig } from './config.js';
 
 export const HELP = `Usage: pnpm remote <command> [options]
 
-Manage OSC 7501 status hooks (Herdr/Rex).
+Manage status hooks (OSC 7501 for Rex/terminals, native Herdr pane reporting).
 
 Commands
   status [--json]
   osc7501 on|off
+  herdr on|off
   help
 
 Options
@@ -67,9 +69,10 @@ export async function runCli(argv, deps = {}) {
     const { flags } = parseOptions(rest, ['--json']);
     const cfg = readRemoteConfig(rootDir);
     if (flags.has('--json')) {
-      out(JSON.stringify({ osc7501: cfg.osc7501 }, null, 2));
+      out(JSON.stringify({ osc7501: cfg.osc7501, herdr: cfg.herdr }, null, 2));
     } else {
       out(`OSC 7501: ${cfg.osc7501 ? 'on' : 'off'}`);
+      out(`Herdr:    ${cfg.herdr ? 'on' : 'off'}`);
     }
     return 0;
   }
@@ -83,6 +86,18 @@ export async function runCli(argv, deps = {}) {
     const cfg = readRemoteConfig(rootDir);
     writeRemoteConfig(rootDir, { ...cfg, osc7501: val === 'on' });
     out(`OSC 7501 hook emission turned ${val}.`);
+    return 0;
+  }
+
+  if (command === 'herdr') {
+    const { positionals } = parseOptions(rest);
+    const val = positionals[0];
+    if (val !== 'on' && val !== 'off') {
+      throw new Error('Usage: pnpm remote herdr on|off');
+    }
+    const cfg = readRemoteConfig(rootDir);
+    writeRemoteConfig(rootDir, { ...cfg, herdr: val === 'on' });
+    out(`Herdr pane status reporting turned ${val}.`);
     return 0;
   }
 

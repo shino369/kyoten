@@ -168,6 +168,33 @@
           },
           {
             "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/utils/memory/language_guard.js --harness claude",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/utils/remote/hook.js --harness claude",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/utils/remote/hook.js --harness claude",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/utils/remote/hook.js --harness claude",
             "timeout": 5
           }
