@@ -482,7 +482,11 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   harness reports `agent_type`.
   Use repeatable `--cue` flags on a note for short prompt phrases that should get priority.
   `--trigger-mode block` gives Claude Code and Codex the note as the denial reason on the first
-  matching command per session. A retry can proceed. Other harnesses retain their recall behavior.
+  matching command per session; a reason shows at most 4 notes, so with more matching notes the
+  retry is denied again until each has been shown, then it proceeds. Other harnesses retain their
+  recall behavior. A blocking trigger needs a run of at least 4 characters besides spaces between
+  `*`s. A near-duplicate `pnpm memory add` never changes a note's trigger mode or a blocking
+  note's triggers; use `pnpm memory edit <id>` for those.
 - **Extraction (B)** (Claude Code, Codex, and Antigravity; DSH has no SessionEnd or transcript):
   SessionEnd (or `SessionStart` idle catch-up in Antigravity, using `condenseAgy`) queues the
   session; a detached worker reads what the transcript gained, condenses it (prompts, final

@@ -37,6 +37,8 @@ export const VIAS = [
   'consolidate',
   'import',
 ];
+/** Characters besides spaces one wildcard-free run of a blocking trigger needs, so it names a command. */
+export const BLOCK_TRIGGER_MIN = 4;
 export const LIMITS = {
   text: 1000,
   tags: 30,
@@ -265,6 +267,25 @@ export function normalizeInput(input) {
   ) {
     invalid('Use --trigger-mode inject or block.');
   }
+  const triggers = normalizeList(
+    input.triggers,
+    'trigger',
+    LIMITS.triggers,
+    LIMITS.trigger
+  );
+  if (triggerMode === 'block') {
+    // Letters spread out by wildcards (`*e*e*e*e*`) match nearly any command.
+    const vague = triggers.find((trigger) =>
+      trigger
+        .split('*')
+        .every((run) => [...run.replace(/\s/g, '')].length < BLOCK_TRIGGER_MIN)
+    );
+    if (vague !== undefined) {
+      invalid(
+        `A blocking trigger needs a run of at least ${BLOCK_TRIGGER_MIN} characters besides spaces between *s: "${vague}".`
+      );
+    }
+  }
   return {
     text,
     scope: input.scope,
@@ -276,12 +297,7 @@ export function normalizeInput(input) {
       : {
           cues: normalizeList(input.cues, 'cue', LIMITS.cues, LIMITS.cue),
         }),
-    triggers: normalizeList(
-      input.triggers,
-      'trigger',
-      LIMITS.triggers,
-      LIMITS.trigger
-    ),
+    triggers,
     ...(triggerMode === undefined ? {} : { triggerMode }),
     source: normalizeSource(input.source),
     pinned,
@@ -629,6 +645,8 @@ function joinLists(a, b, max) {
  * Save a note. A near-duplicate of an active note in the same scope and repo
  * updates that note instead (new text and type, tags and triggers joined),
  * unless `merge` is false (task digests: two similar tasks are two notes).
+ * A near-duplicate never changes the note's trigger mode, nor the triggers
+ * of a blocking note: those take an explicit edit.
  *
  * @param {string} dir the memory directory
  * @param {NoteInput} input
@@ -647,6 +665,18 @@ export function addNote(dir, input, { now = new Date(), merge = true } = {}) {
     if (existing) {
       if (existing.triggerMode === 'block' && automatic(fields.source)) {
         return { action: /** @type {const} */ ('unchanged'), note: existing };
+      }
+      const mode = existing.triggerMode ?? 'inject';
+      if (fields.triggerMode !== undefined && fields.triggerMode !== mode) {
+        const edit = [
+          `pnpm memory edit ${existing.id} --trigger-mode ${fields.triggerMode}`,
+          ...fields.triggers.map(
+            (trigger) => `--trigger ${JSON.stringify(trigger)}`
+          ),
+        ].join(' ');
+        invalid(
+          `${existing.id} is a near-duplicate with trigger mode ${mode}; change it with ${edit}.`
+        );
       }
       return mergeInto(dir, notes, existing, fields, at);
     }
@@ -678,20 +708,8 @@ function mergeInto(dir, notes, existing, fields, at) {
   if (tags.length !== existing.tags.length) set.tags = tags;
   const cues = joinLists(existing.cues ?? [], fields.cues ?? [], LIMITS.cues);
   if (cues.length !== (existing.cues?.length ?? 0)) set.cues = cues;
-  if (
-    fields.triggerMode !== undefined &&
-    fields.triggerMode !== existing.triggerMode
-  ) {
-    set.triggerMode = fields.triggerMode;
-  }
-  if (fields.triggerMode === 'block') {
-    if (JSON.stringify(fields.triggers) !== JSON.stringify(existing.triggers)) {
-      set.triggers = fields.triggers;
-    }
-  } else if (
-    existing.triggerMode !== 'block' ||
-    fields.triggerMode === 'inject'
-  ) {
+  // A blocking note's triggers change only through an explicit edit.
+  if (existing.triggerMode !== 'block') {
     const triggers = joinLists(
       existing.triggers,
       fields.triggers,
