@@ -2513,6 +2513,38 @@ describe('pin, unpin, check', () => {
 });
 
 describe('personalize', () => {
+  test('should save the guard language with --guard and keep the other settings', () => {
+    run(['personalize', '--language', '日本語']);
+
+    expect(run(['personalize', '--guard', 'ja']).code).toBe(0);
+    expect(runJson(['personalize']).settings).toEqual({
+      language: '日本語',
+      guard: 'ja',
+    });
+    expect(run(['personalize']).out).toMatch(/Language guard: ja/);
+    expect(read(AGENTS_LOCAL_FILE)).not.toMatch(/guard/i);
+  });
+
+  test('should clear the guard language with --guard off', () => {
+    run(['personalize', '--language', '日本語', '--guard', 'zh']);
+
+    run(['personalize', '--guard', 'off']);
+
+    expect(runJson(['personalize']).settings).toEqual({ language: '日本語' });
+  });
+
+  test('should hint at --guard when a Language is set without it', () => {
+    expect(run(['personalize', '--language', '日本語']).out).toMatch(
+      /Language guard: off .*--guard ja\|zh/
+    );
+  });
+
+  test('should refuse a guard language it does not support', () => {
+    expect(() => run(['personalize', '--guard', 'ko'])).toThrow(
+      /guard takes ja or zh/
+    );
+  });
+
   test('should pause and restore the applied settings without editing the saved persona', () => {
     run(['init']);
     const file = path.join('memory', PERSONA_FILE);

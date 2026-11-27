@@ -66,6 +66,7 @@ import {
 } from './extract.js';
 import {
   PERSONA_FILE,
+  guardLine,
   languageHint,
   listPresets,
   PERSONA_KEYS,
@@ -187,9 +188,12 @@ Settings
   personalize --presets         List the available presets
   personalize [--preset <name>] [--call-me …] [--about-me …] [--language …]
       [--persona … | --persona-file <file.md>] [--tone <text|preset>] [--traits a,b]
-      [--extra …] [--reset]
+      [--extra …] [--guard ja|zh|off] [--reset]
                                 Set how agents talk to you in conversations. An empty
-                                value clears a field. --persona-file reads the
+                                value clears a field. --guard turns on the Stop-time
+                                language guard for Japanese or Chinese (Claude Code and
+                                Codex): a reply mostly in another script is sent back
+                                once for a rewrite. --persona-file reads the
                                 persona from markdown (comments and heading marks
                                 dropped; the same 1,500-character limit). Keep the
                                 persona in memory/persona.md instead and pnpm memory init
@@ -251,6 +255,7 @@ const VALUE_FLAGS = {
   '--tone': 'tone',
   '--traits': 'traits',
   '--extra': 'extra',
+  '--guard': 'guard',
   '--extract-model': 'extractModel',
   '--extract-agent': 'extractAgent',
   '--budget': 'budget',
@@ -292,6 +297,7 @@ const FIELD_FLAGS = /** @type {const} */ ([
   'tone',
   'traits',
   'extra',
+  'guard',
 ]);
 
 const LIST_CHARS = 100;
@@ -308,7 +314,7 @@ const FIRST_NOTE =
  *   scope?: string, repo?: string, type?: string, tags?: string, limit?: string,
  *   grep?: string, message?: string, preset?: string, callMe?: string,
  *   aboutMe?: string, language?: string, persona?: string, tone?: string,
- *   traits?: string, extra?: string, extractModel?: string, extractAgent?: string, budget?: string,
+ *   traits?: string, extra?: string, guard?: string, extractModel?: string, extractAgent?: string, budget?: string,
  *   include?: string, tasks?: string, out?: string, personaFile?: string, agent?: string, for?: string,
  *   triggers: string[],
  *   pin: boolean, force: boolean, failure: boolean, pinned: boolean,
@@ -474,7 +480,7 @@ function changeConfig(deps, change, { refresh = false } = {}) {
  * @param {import('./personalize.js').Personalization} settings
  */
 const withHint = (settings) =>
-  [renderPersonalization(settings), languageHint(settings)]
+  [renderPersonalization(settings), languageHint(settings), guardLine(settings)]
     .filter(Boolean)
     .join('\n\n');
 
@@ -1642,7 +1648,10 @@ export const COMMANDS = {
         for (const key of fields) {
           const value = /** @type {string} */ (options[key]);
           if (key === 'traits') settings.traits = splitList(value);
-          else if (key === 'tone') {
+          else if (key === 'guard') {
+            if (value === 'off') delete settings.guard;
+            else settings.guard = value;
+          } else if (key === 'tone') {
             // A preset's name picks that preset's tone.
             settings.tone = presetNames.includes(value)
               ? readPreset(value).tone

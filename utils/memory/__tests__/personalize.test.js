@@ -80,9 +80,17 @@ describe('normalizePersonalization', () => {
       tone: 'concise',
       traits: ['direct'],
       extra: 'Ask before big refactors.',
+      guard: 'ja',
     };
 
     expect(normalizePersonalization(all)).toEqual(all);
+  });
+
+  test('should not render the language guard or count it against the budget', () => {
+    const rendered = renderPersonalization({ language: '日本語', guard: 'ja' });
+
+    expect(rendered).toContain('- Language: 日本語');
+    expect(rendered).not.toMatch(/guard/i);
   });
 
   test.each([
@@ -95,6 +103,7 @@ describe('normalizePersonalization', () => {
       /traits must be a list/,
     ],
     ['a trait that is not text', { traits: [1] }, /every trait must be text/],
+    ['an unknown guard language', { guard: 'ko' }, /guard takes ja or zh/],
     [
       'too many traits',
       { traits: Array.from({ length: 11 }, (_, i) => `t${i}`) },

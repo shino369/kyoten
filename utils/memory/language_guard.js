@@ -1,20 +1,20 @@
 #!/usr/bin/env node
 /**
- * Stop hook: keep the final reply in the personalization Language.
+ * Stop hook: keep the final reply in the user's language (the guard setting).
  *
  * Run as `node utils/memory/language_guard.js --harness <claude|codex>` (see
  * utils/harness/hooks.js). It reads the reply from the Stop input
  * (`last_assistant_message`; in Claude Code, the transcript's last assistant
- * message when that is missing), and when the Language is Japanese or Chinese and
- * the reply is mostly in another script, it blocks once so the agent rewrites
- * it. A slip tends to be copied by the following turns (an English reply is
+ * message when that is missing), and when the guard language (`pnpm memory
+ * personalize --guard ja|zh`, set apart from the free-text Language so it is
+ * never guessed from it) is set and the reply is mostly in another script, it
+ * blocks once so the agent rewrites it. A slip tends to be copied by the following turns (an English reply is
  * followed by another English reply most of the time), so catching the first
  * one is what keeps the session in the Language.
  *
- * It adds nothing to a reply already in the Language, and passes (fail open)
- * without a reply text, for any other Language (English, a language the
- * workspace does not support, or a setting that names none), while
- * personalization is off,
+ * It adds nothing to a reply already in that language, and passes (fail open)
+ * without a reply text, without a guard language, while personalization is
+ * off,
  * in headless runs (EXTRACT_ENV), for the reviewer and verifier roles, on the
  * rewrite that follows its own block, when its state directory is a link,
  * and on any error.
@@ -49,77 +49,26 @@ const isMark = (/** @type {string} */ name) =>
   name.endsWith('.json') && SESSION_ID_RE.test(name.slice(0, -'.json'.length));
 
 /**
- * The scripts the guard checks: the workspace's languages besides English
- * (Japanese and Chinese, as in the README). Any other Language passes.
+ * The scripts the guard checks: the personalization `guard` setting
+ * (GUARD_LANGUAGES, the workspace's languages besides English).
  *
- * @typedef {'ja' | 'zh'} Script
+ * @typedef {NonNullable<import('./personalize.js').Personalization['guard']>} Script
  */
 /** @typedef {{ decision: 'block', reason: string }} GuardOutput */
 
 const KANA = /[\u3040-\u30FF\u31F0-\u31FF\uFF66-\uFF9F]/u;
 const HAN = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/u;
-const LATIN = /[A-Za-z\u00C0-\u024F]/u;
 /** Letters of any script, so a reply in Cyrillic or Greek counts too. */
 const LETTER = /\p{L}/gu;
 // Japanese prose is kana plus kanji; a Chinese reply would also pass for a
-// Japanese Language, which is accepted (the guard is for slips into English).
+// Japanese guard, which is accepted (the guard is for slips into English).
 /** @type {Record<Script, (letter: string) => boolean>} */
 const IN_SCRIPT = {
   ja: (letter) => KANA.test(letter) || HAN.test(letter),
   zh: (letter) => HAN.test(letter),
 };
-/** Names of the workspace's languages, one named group per language. */
-const NAMES = String.raw`(?<ja>\bjapanese\b|日本語|日本语|日語|日语|日文|にほんご)|(?<zh>\bchinese\b|\bmandarin\b|中文|漢語|汉语|華語|华语|繁體|繁体|簡體|简体)|(?<en>\benglish\b|英語|英语|英文|えいご)`;
-/**
- * A Latin-letter setting that starts by naming a language, after an optional
- * lead-in ("Reply in", "Always answer in Traditional").
- */
-const NAMED_FIRST = new RegExp(
-  String.raw`^(?:please\s+)?(?:always\s+)?(?:(?:reply|respond|answer|write|speak|talk|use)\s+(?:only\s+)?(?:in\s+)?)?(?:traditional\s+|simplified\s+)?(?:${NAMES})`,
-  'iu'
-);
-/** Every language name in a setting. */
-const NAMED_ANY = new RegExp(NAMES, 'giu');
 /** Fixed names for the reason: the user's free-text setting is never echoed into it. */
 const SCRIPT_LABEL = { ja: '日本語', zh: '中文' };
-
-/**
- * The first phrase of a Language setting ("日本語。…" → "日本語"): the part
- * that names the language; the rest is free text that may mention others.
- *
- * @param {string} language
- */
-export const languageName = (language) =>
-  language
-    .split(/[。．.,，、;；:：\n(（]/u)
-    .map((part) => part.trim())
-    .find(Boolean) ?? '';
-
-/**
- * The script a Language setting asks for, from its first phrase, decided
- * only by a name of Japanese, Chinese, or English. A phrase mostly in Latin
- * letters names its language first ("English even when the user writes in
- * Japanese" is English; "Swahili even when … Japanese" names none); a phrase
- * in kana or Han puts the language it asks for last, after any condition
- * ("英語で書いても日本語で話す" is Japanese, "用英文回答" is English). Null
- * for English and for a phrase that names none of them, such as another
- * language (韓国語, 한국어): the guard passes those.
- *
- * @param {string | undefined} language
- * @returns {Script | null}
- */
-export function targetScript(language) {
-  const name = language ? languageName(language) : '';
-  if (!name) return null;
-  const letters = name.match(LETTER) ?? [];
-  const latin = letters.filter((letter) => LATIN.test(letter)).length;
-  const named =
-    latin * 2 >= letters.length
-      ? NAMED_FIRST.exec(name)?.groups
-      : [...name.matchAll(NAMED_ANY)].at(-1)?.groups;
-  if (named?.ja) return 'ja';
-  return named?.zh ? 'zh' : null;
-}
 
 /** A list marker and the spaces after it: their width is the item's content indent. */
 const LIST_MARKER = /^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)\S/u;
@@ -196,16 +145,47 @@ function stripCode(text) {
   return kept.join('\n');
 }
 
+/** A line that is a block of its own: a heading, a table row, a thematic break. */
+const LINE_BLOCK =
+  /^(?: {0,3}#{1,6}(?:[ \t]|$)|[ \t]*\||[ \t]*(?:[-*_][ \t]*){3,}$)/u;
+/** A line that starts a new block: a list item or a quote. */
+const BLOCK_START = /^[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]|>)/u;
+
+/**
+ * Split text into the blocks a code span cannot cross: paragraphs end at a
+ * blank line, a list item, or a quote, and a heading, table row, or thematic
+ * break is a block alone.
+ *
+ * @param {string} text
+ * @returns {string[]} blocks whose `\n`-join is the text
+ */
+function blocks(text) {
+  /** @type {string[][]} */
+  const groups = [];
+  /** @type {string[] | null} */
+  let current = null;
+  for (const line of text.split('\n')) {
+    const alone = line.trim() === '' || LINE_BLOCK.test(line);
+    if (alone || BLOCK_START.test(line) || current === null) {
+      current = [line];
+      groups.push(current);
+      if (alone) current = null;
+    } else {
+      current.push(line);
+    }
+  }
+  return groups.map((group) => group.join('\n'));
+}
+
 /**
  * Remove inline code spans: a backtick run opens a span that the next run of
- * the same length closes, within one paragraph (CommonMark); a run with no
+ * the same length closes, within one block (CommonMark); a run with no
  * closer is kept as text. Linear in the text: each run is visited once.
  *
  * @param {string} text
  */
 function stripCodeSpans(text) {
-  return text
-    .split(/(\n[ \t]*\n)/u)
+  return blocks(text)
     .map((block) => {
       const runs = [...block.matchAll(/`+/gu)].map((match) => ({
         at: match.index,
@@ -236,7 +216,7 @@ function stripCodeSpans(text) {
       }
       return out + block.slice(from);
     })
-    .join('');
+    .join('\n');
 }
 
 /**
@@ -247,7 +227,7 @@ function stripCodeSpans(text) {
  */
 function prose(text) {
   return (
-    stripCodeSpans(stripCode(text))
+    stripCodeSpans(stripCode(text.replace(/\r\n?/gu, '\n')))
       .replace(/https?:\/\/\S+/gu, '')
       // The lookbehinds try each run once (no quadratic backtracking).
       .replace(/(?<![\w.~-])[\w.~-]*\/[\w./~-]+/gu, '')
@@ -363,8 +343,8 @@ export function lastReplyFromTranscript(file) {
  * regular file counts as a mark. Marks older than a day count as absent and
  * are pruned first, best effort, so a pruning error never leaves a mark
  * without its block; only regular files named like a mark are pruned. False
- * (pass) when the cache or state directory is a link or not a directory, so
- * nothing is written or deleted outside the memory directory.
+ * (pass) when the memory, cache, or state directory is a link or not a
+ * directory, so nothing is written or deleted outside the memory directory.
  *
  * @param {string} dir the memory directory
  * @param {string} session a SESSION_ID_RE-checked id, safe as a file name
@@ -375,6 +355,7 @@ export function lastReplyFromTranscript(file) {
 function recordStop(dir, session, decide, now) {
   const cacheDir = path.join(dir, path.dirname(GUARD_STATE_DIR));
   const stateDir = path.join(dir, GUARD_STATE_DIR);
+  if (plainDir(dir) !== 'dir') return false;
   const dirs = [plainDir(cacheDir), plainDir(stateDir)];
   if (dirs.includes('refused')) return false;
   const file = path.join(stateDir, `${session}.json`);
@@ -432,14 +413,14 @@ export function checkStop(input, options = {}) {
   if (quietRun(env, event.agent_type)) return null;
   const dir = memoryDir(home);
   if (!fs.existsSync(dir)) return null;
-  let language;
+  /** @type {Script | undefined} */
+  let script;
   try {
     if (!readConfig(dir).personalizationEnabled) return null;
-    language = readPersonalization(dir).language;
+    script = readPersonalization(dir).guard;
   } catch {
     return null;
   }
-  const script = targetScript(language);
   if (!script) return null;
   // Without a usable session id the one-retry mark cannot be kept, so pass
   // rather than risk blocking every stop.

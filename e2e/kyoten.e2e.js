@@ -490,9 +490,11 @@ test('the language guard CLI blocks a reply in the wrong language once', () => {
     path.join(other, 'node_modules'),
     'junction'
   );
-  must('pnpm', ['memory', 'personalize', '--language', '日本語'], {
-    cwd: other,
-  });
+  must(
+    'pnpm',
+    ['memory', 'personalize', '--language', '日本語', '--guard', 'ja'],
+    { cwd: other }
+  );
   const guard = (
     /** @type {string[]} */ args,
     /** @type {Record<string, unknown>} */ input

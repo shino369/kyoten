@@ -55,7 +55,14 @@ const FIELDS = /** @type {const} */ ([
   ['traits', 'Traits'],
   ['extra', 'Also'],
 ]);
-const FIELD_NAMES = FIELDS.map(([name]) => name);
+/**
+ * Languages the Stop-time language guard can check (language_guard.js):
+ * the workspace's languages besides English. Set apart from the free-text
+ * Language, so the guard never has to parse it.
+ */
+export const GUARD_LANGUAGES = /** @type {const} */ (['ja', 'zh']);
+/** Known keys: the rendered fields plus the guard, which is not rendered. */
+const FIELD_NAMES = [...FIELDS.map(([name]) => name), 'guard'];
 
 // "Every message", not "conversation": a progress note between tool calls
 // otherwise reads as working output and drops the persona and its language.
@@ -79,6 +86,8 @@ export const LANGUAGE_HINT =
  * @property {string} [tone] a preset's tone or free text
  * @property {string[]} [traits]
  * @property {string} [extra]
+ * @property {typeof GUARD_LANGUAGES[number]} [guard] the language guard's
+ *   language; not rendered and not counted against the budget
  */
 
 /**
@@ -148,6 +157,15 @@ export function normalizePersonalization(input) {
     if (key === 'traits') {
       const traits = normalizeTraits(value);
       if (traits.length > 0) result.traits = traits;
+      continue;
+    }
+    if (key === 'guard') {
+      if (!GUARD_LANGUAGES.includes(/** @type {any} */ (value))) {
+        invalid(
+          `The guard takes ${GUARD_LANGUAGES.join(' or ')} (got ${JSON.stringify(value)}).`
+        );
+      }
+      result.guard = /** @type {string} */ (value);
       continue;
     }
     if (typeof value !== 'string') invalid(`The ${key} must be text.`);
@@ -237,6 +255,19 @@ export function renderPersonalization(settings) {
       : PERSONA_SCOPE_RULES,
   ].join('\n');
 }
+
+/**
+ * The language guard's state for `personalize` output: its language, or how
+ * to turn it on when a Language is set without it ('' otherwise).
+ *
+ * @param {Personalization} settings
+ */
+export const guardLine = (settings) =>
+  settings.guard
+    ? `Language guard: ${settings.guard} (a Stop hook sends a reply in another script back once for a rewrite)`
+    : settings.language
+      ? `Language guard: off (turn on with pnpm memory personalize --guard ${GUARD_LANGUAGES.join('|')})`
+      : '';
 
 /**
  * LANGUAGE_HINT when a persona or tone is set without a language, else ''.
