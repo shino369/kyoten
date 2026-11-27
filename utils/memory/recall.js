@@ -20,7 +20,13 @@
 import fs from 'fs';
 import path from 'path';
 import { writeFileAtomic } from '../task/store.js';
-import { CACHE_DIR, isStale, loadNotes, readJsonOrNull } from './store.js';
+import {
+  CACHE_DIR,
+  isSpecificBlockingTrigger,
+  isStale,
+  loadNotes,
+  readJsonOrNull,
+} from './store.js';
 import { tokenize } from './tokenize.js';
 
 export const INDEX_CACHE_FILE = 'index.json';
@@ -407,8 +413,11 @@ export function matchTriggers(notes, command) {
     (note) =>
       note.status === 'active' &&
       !note.pinned &&
-      note.triggers.some((trigger) =>
-        phrasePattern(trigger, true).test(command)
+      note.triggers.some(
+        (trigger) =>
+          (note.triggerMode !== 'block' ||
+            isSpecificBlockingTrigger(trigger)) &&
+          phrasePattern(trigger, true).test(command)
       )
   );
 }

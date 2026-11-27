@@ -19,7 +19,13 @@ import {
   recall,
   scoreTerms,
 } from '../recall.js';
-import { CACHE_DIR, LOG_FILE, addNote, memoryDir } from '../store.js';
+import {
+  CACHE_DIR,
+  LOG_FILE,
+  NOTES_CACHE_FILE,
+  addNote,
+  memoryDir,
+} from '../store.js';
 
 /** @typedef {import('../store.js').Note} Note */
 
@@ -692,6 +698,44 @@ describe('loadIndex', () => {
     fs.writeFileSync(indexFile(), JSON.stringify({ version: 0 }));
 
     expect(loadIndex(dir).index.N).toBe(1);
+  });
+
+  test('should recover a legacy note missing from both previous caches', () => {
+    const note = {
+      id: 'm1',
+      scope: 'user',
+      type: 'howto',
+      text: 'Deployments use the release channel.',
+      tags: ['deployment'],
+      triggers: ['pwd'],
+      triggerMode: 'block',
+    };
+    const log = path.join(dir, LOG_FILE);
+    const cacheDir = path.join(dir, CACHE_DIR);
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(
+      log,
+      `${JSON.stringify({ op: 'add', at: NOW.toISOString(), note })}\n`
+    );
+    const { size, mtimeMs } = fs.statSync(log);
+    const stamp = `${size}:${mtimeMs}`;
+    fs.writeFileSync(
+      path.join(cacheDir, NOTES_CACHE_FILE),
+      JSON.stringify({
+        version: 1,
+        stamp,
+        notes: [],
+        problems: ['short trigger'],
+      })
+    );
+    fs.writeFileSync(
+      indexFile(),
+      JSON.stringify({ version: 1, stamp, index: buildIndex([]) })
+    );
+
+    const { notes, index } = loadIndex(dir);
+
+    expect(ids(notes, 'deployment', { index })).toEqual([note.id]);
   });
 
   test('should not cache an index for a log that changed while read', () => {

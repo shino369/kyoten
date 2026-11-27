@@ -404,6 +404,28 @@ describe('PreToolUse', () => {
     expect(pre('gh pr create')).toBeNull();
   });
 
+  test('should skip legacy short patterns while honoring specific patterns on the same blocking note', () => {
+    const note = {
+      id: 'm9',
+      scope: 'user',
+      type: 'howto',
+      text: 'Deployments use the release channel.',
+      triggers: ['pwd', 'pnpm deploy'],
+      triggerMode: 'block',
+    };
+    fs.appendFileSync(
+      path.join(dir, LOG_FILE),
+      `${JSON.stringify({ op: 'add', at: NOW.toISOString(), note })}\n`
+    );
+
+    expect(pre('pwd')).toBeNull();
+    expect(pre('pnpm deploy')?.hookSpecificOutput).toMatchObject({
+      permissionDecision: 'deny',
+      permissionDecisionReason: expect.stringContaining(note.text),
+    });
+    expect(pre('pnpm deploy')).toBeNull();
+  });
+
   test('should keep blocking notes the deny reason had no room for', () => {
     const ids = Array.from(
       { length: RECALL_LIMIT + 1 },

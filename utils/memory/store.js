@@ -273,19 +273,6 @@ export function normalizeInput(input) {
     LIMITS.triggers,
     LIMITS.trigger
   );
-  if (triggerMode === 'block') {
-    // Letters spread out by wildcards (`*e*e*e*e*`) match nearly any command.
-    const vague = triggers.find((trigger) =>
-      trigger
-        .split('*')
-        .every((run) => [...run.replace(/\s/g, '')].length < BLOCK_TRIGGER_MIN)
-    );
-    if (vague !== undefined) {
-      invalid(
-        `A blocking trigger needs a run of at least ${BLOCK_TRIGGER_MIN} characters besides spaces between *s: "${vague}".`
-      );
-    }
-  }
   return {
     text,
     scope: input.scope,
@@ -305,6 +292,24 @@ export function normalizeInput(input) {
     unchecked: input.unchecked === true,
     ...(archived === undefined ? {} : { archived }),
   };
+}
+
+/** @param {string} trigger */
+export function isSpecificBlockingTrigger(trigger) {
+  return trigger
+    .split('*')
+    .some((run) => [...run.replace(/\s/g, '')].length >= BLOCK_TRIGGER_MIN);
+}
+
+/** @param {Pick<NoteFields, 'triggers' | 'triggerMode'>} note */
+function assertSpecificBlockingTriggers({ triggers, triggerMode }) {
+  if (triggerMode !== 'block') return;
+  const vague = triggers.find((trigger) => !isSpecificBlockingTrigger(trigger));
+  if (vague !== undefined) {
+    invalid(
+      `A blocking trigger needs a run of at least ${BLOCK_TRIGGER_MIN} characters besides spaces between *s: "${vague}".`
+    );
+  }
 }
 
 /**
@@ -486,7 +491,8 @@ export function loadNotes(dir) {
   const logFile = path.join(dir, LOG_FILE);
   const stat = fs.statSync(logFile, { throwIfNoEntry: false });
   if (!stat) return { notes: [], problems: [], stamp: null };
-  const stamp = `${stat.size}:${stat.mtimeMs}`;
+  // Include the cache version in the stamp shared with the recall index.
+  const stamp = `${CACHE_VERSION}:${stat.size}:${stat.mtimeMs}`;
   const cacheFile = path.join(dir, CACHE_DIR, NOTES_CACHE_FILE);
   const cached = /** @type {any} */ (readJsonOrNull(cacheFile));
   if (cached?.version === CACHE_VERSION && cached.stamp === stamp) {
@@ -656,6 +662,8 @@ function joinLists(a, b, max) {
 export function addNote(dir, input, { now = new Date(), merge = true } = {}) {
   const fields = normalizeInput(input);
   assertNoSecrets(fields);
+  // Imports restore saved notes as-is. Recall skips legacy broad blockers.
+  if (fields.source.via !== 'import') assertSpecificBlockingTriggers(fields);
   const at = now.toISOString();
   return mutate(dir, (notes) => {
     const existing =
@@ -761,6 +769,9 @@ export function updateNote(
     protectBlockingNote(note, by);
     const next = normalizeInput({ ...note, ...set });
     assertNoSecrets(next);
+    if (Object.hasOwn(set, 'triggers') || Object.hasOwn(set, 'triggerMode')) {
+      assertSpecificBlockingTriggers(next);
+    }
     /** @type {Record<string, unknown>} */
     const diff = {};
     for (const key of Object.keys(set)) {

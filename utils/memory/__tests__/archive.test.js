@@ -183,6 +183,36 @@ test.each([false, true])(
   }
 );
 
+test.each([false, true])(
+  'should import a legacy blocking note with replace=%s',
+  (replace) => {
+    const note = {
+      id: 'm1',
+      scope: 'user',
+      type: 'howto',
+      text: 'Deployments use the release channel.',
+      tags: ['deployment'],
+      triggers: ['pwd', 'pnpm deploy'],
+      triggerMode: 'block',
+    };
+    write(
+      source,
+      `memory/${LOG_FILE}`,
+      `${JSON.stringify({ op: 'add', at: NOW.toISOString(), note })}\n`
+    );
+    const { file } = exportAll({ parts: ['memory'] });
+    const archive = readArchive(file);
+    const plan = planImport(target, archive, { include: null, replace });
+
+    expect(plan.notes?.invalid).toEqual([]);
+    expect(
+      applyImport(target, archive, plan, { now: NOW, detail: 'test', replace })
+        .added
+    ).toBe(1);
+    expect(loadNotes(memoryDir(target)).notes).toMatchObject([note]);
+  }
+);
+
 test('should preserve active and archived copies of the same note separately', () => {
   const sourceDir = memoryDir(source);
   const input = {
