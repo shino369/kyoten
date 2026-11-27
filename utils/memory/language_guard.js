@@ -151,13 +151,16 @@ function stripCode(text) {
  * a delimiter row), and a code span may continue onto it.
  */
 const LINE_BLOCK = /^(?: {0,3}#{1,6}(?:[ \t]|$)|[ \t]*(?:[-*_][ \t]*){3,}$)/u;
+/** A GFM table's delimiter row (`| :--- | --- |`): pipes, colons, dashes. */
+const TABLE_DELIMITER = /^(?=[^|]*\|)(?=[^-]*-)[ \t|:-]+$/u;
 /** A line that starts a new block: a list item or a quote. */
 const BLOCK_START = /^[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]|>)/u;
 
 /**
  * Split text into the blocks a code span cannot cross: paragraphs end at a
  * blank line, a list item, or a quote, and a heading or thematic break is a
- * block alone.
+ * block alone, as is each row of a table (a line with `|` followed by a
+ * delimiter row, through the next blank line).
  *
  * @param {string} text
  * @returns {string[]} blocks whose `\n`-join is the text
@@ -167,8 +170,19 @@ function blocks(text) {
   const groups = [];
   /** @type {string[] | null} */
   let current = null;
-  for (const line of text.split('\n')) {
-    const alone = line.trim() === '' || LINE_BLOCK.test(line);
+  const lines = text.split('\n');
+  let table = false;
+  lines.forEach((line, index) => {
+    const blank = line.trim() === '';
+    if (blank) table = false;
+    else if (
+      !table &&
+      line.includes('|') &&
+      TABLE_DELIMITER.test(lines[index + 1] ?? '')
+    ) {
+      table = true;
+    }
+    const alone = blank || table || LINE_BLOCK.test(line);
     if (alone || BLOCK_START.test(line) || current === null) {
       current = [line];
       groups.push(current);
@@ -176,7 +190,7 @@ function blocks(text) {
     } else {
       current.push(line);
     }
-  }
+  });
   return groups.map((group) => group.join('\n'));
 }
 

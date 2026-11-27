@@ -182,6 +182,31 @@ describe('measureReply', () => {
     expect(measureReply(text, 'ja')).toEqual({ letters: 6, inScript: 6 });
   });
 
+  test('should not pair backticks across the rows of a table', () => {
+    const text = [
+      '| 項目 | 説明 |',
+      '| :--- | --- |',
+      `| a | \\\` ${EN} |`,
+      '| b | \\` |',
+    ].join('\n');
+
+    expect(measureReply(text, 'ja').letters).toBeGreaterThanOrEqual(
+      measureReply(EN, 'ja').letters
+    );
+  });
+
+  test('should end a table at a blank line', () => {
+    const text = [
+      '| 項目 |',
+      '| --- |',
+      '',
+      'ですわ `someEnglish',
+      'identifierHere` ですわ',
+    ].join('\n');
+
+    expect(measureReply(text, 'ja')).toEqual({ letters: 8, inScript: 8 });
+  });
+
   test.each([
     ['a heading', '## 見出し `a', EN],
     ['a thematic break', '`', `---\n${EN}`],
