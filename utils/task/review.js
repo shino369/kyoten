@@ -26,6 +26,7 @@ import { SEVERITIES, VERDICTS, freshQuality, toFix } from './quality.js';
 import { addStep } from './state.js';
 import { taskRepoDir } from './store.js';
 import { relPosix } from '../paths.js';
+import { redactSecrets } from '../redact.js';
 
 /** Fallback base when the repository has no `origin/HEAD`. */
 export const DEFAULT_BASE = 'main';
@@ -34,6 +35,14 @@ export const DEFAULT_BASE = 'main';
  * rounds and the Stop hook stay on it. Never a git ref: refs cannot hold ':'.
  */
 export const FOLDER_BASE = ':task-folder';
+/** Context lines around each hunk in a round's pre-computed diff patch. */
+export const DIFF_CONTEXT_LINES = 8;
+/** Per-file cap of a diff patch; a longer file diff is truncated. */
+export const MAX_DIFF_FILE_BYTES = 40 * 1024;
+/** Total cap of a diff patch; the files left out are listed with their stats. */
+export const MAX_DIFF_TOTAL_BYTES = 200 * 1024;
+/** Text files larger than this are left out of a round's snapshot. */
+export const SNAPSHOT_MAX_FILE_BYTES = 256 * 1024;
 export const STANDARDS = [
   'AGENTS.md',
   '.claude/rules/working-with-script.md',
@@ -58,6 +67,8 @@ export const SEVERITY_RUBRIC = `- must-fix: wrong behavior, data loss, a securit
  * @typedef {import('./state.js').TaskState} TaskState
  * @typedef {import('./quality.js').Finding} Finding
  * @typedef {(args: string[], cwd: string) => string | null} RunGit
+ * @typedef {(args: string[], cwd: string) => { status: number | null, stdout: string }} RunGitStatus
+ * @typedef {{ added: number, deleted: number, binary?: boolean, untracked?: boolean }} FileStat
  * @typedef {{ base: string | null, since: string | null, files: string[] }} Scope
  *   `since` is the commit the git diff starts from (null for task code).
  * @typedef {{ unchecked: string[], aside: string[] }} FolderNotes
@@ -75,12 +86,41 @@ export const defaultRunGit = (args, cwd) =>
   );
 
 /**
+ * Like `defaultRunGit`, but keeps stdout for exit code 1: `git diff
+ * --no-index` exits 1 when the files differ, which is a success here.
+ *
+ * @type {RunGitStatus}
+ */
+export const defaultRunGitStatus = (args, cwd) => {
+  try {
+    const result = spawnSync('git', args, {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5000,
+    });
+    return { status: result.status, stdout: String(result.stdout ?? '') };
+  } catch {
+    return { status: null, stdout: '' };
+  }
+};
+
+/**
  * @param {string} name
  * @param {number} round
  */
 export const reviewFiles = (name, round) => ({
   brief: path.posix.join('reviews', `BRIEF_${name}-r${round}.md`),
   findings: path.posix.join('reviews', `REVIEW_${name}-r${round}.md`),
+  diff: path.posix.join('reviews', `DIFF_${name}-r${round}.patch`),
+  ...(round > 1
+    ? {
+        incrementalDiff: path.posix.join(
+          'reviews',
+          `DIFF_${name}-r${round - 1}-to-r${round}.patch`
+        ),
+      }
+    : {}),
 });
 
 /**
@@ -369,6 +409,387 @@ export function fingerprint(rootDir, files) {
 }
 
 /**
+ * The lines a text holds, not counting a final newline.
+ *
+ * @param {string} text
+ * @returns {number}
+ */
+const countLines = (text) => {
+  const lines = text.split(/\r?\n/);
+  if (lines.at(-1) === '') lines.pop();
+  return lines.length;
+};
+
+/**
+ * Whether a buffer looks binary: a NUL byte in its first 8 KB.
+ *
+ * @param {Buffer} buffer
+ * @returns {boolean}
+ */
+const isBinary = (buffer) => buffer.subarray(0, 8192).includes(0);
+
+/**
+ * A `git diff`-style patch for a file the base commit did not have.
+ *
+ * @param {string} file repo-relative POSIX path
+ * @param {Buffer} buffer
+ * @returns {string}
+ */
+function newFileDiff(file, buffer) {
+  const header = [`diff --git a/${file} b/${file}`, 'new file mode 100644'];
+  if (isBinary(buffer)) {
+    return [...header, `Binary file (new, ${buffer.length} bytes)`, ''].join(
+      '\n'
+    );
+  }
+  const lines = buffer.toString('utf-8').split(/\r?\n/);
+  if (lines.at(-1) === '') lines.pop();
+  if (lines.length === 0) return [...header, ''].join('\n');
+  return [
+    ...header,
+    '--- /dev/null',
+    `+++ b/${file}`,
+    `@@ -0,0 +1,${lines.length} @@`,
+    ...lines.map((line) => `+${line}`),
+    '',
+  ].join('\n');
+}
+
+/**
+ * A `git diff`-style patch for a snapshotted file the working tree no longer
+ * has.
+ *
+ * @param {string} file repo-relative POSIX path
+ * @param {Buffer} buffer
+ * @returns {string}
+ */
+function deletedFileDiff(file, buffer) {
+  const header = [`diff --git a/${file} b/${file}`, 'deleted file mode 100644'];
+  if (isBinary(buffer)) {
+    return [
+      ...header,
+      `Binary file (deleted, ${buffer.length} bytes)`,
+      '',
+    ].join('\n');
+  }
+  const lines = buffer.toString('utf-8').split(/\r?\n/);
+  if (lines.at(-1) === '') lines.pop();
+  if (lines.length === 0) return [...header, ''].join('\n');
+  return [
+    ...header,
+    `--- a/${file}`,
+    '+++ /dev/null',
+    `@@ -1,${lines.length} +0,0 @@`,
+    ...lines.map((line) => `-${line}`),
+    '',
+  ].join('\n');
+}
+
+/**
+ * Cap one file's diff on a line boundary and say how much was left out.
+ *
+ * @param {string} text
+ * @param {string} file
+ * @param {number} maxBytes
+ * @returns {string}
+ */
+function capFileDiff(text, file, maxBytes) {
+  if (text.length <= maxBytes) return text;
+  const cut = text.lastIndexOf('\n', maxBytes);
+  const kept = text.slice(0, cut === -1 ? maxBytes : cut);
+  const omitted = text
+    .slice(kept.length)
+    .split('\n')
+    .filter((line) => line !== '').length;
+  return `${kept}\n... [truncated: omitted ${omitted} more line(s) of ${file}; inspect targeted line ranges with read_file]\n`;
+}
+
+/**
+ * `+X/-Y` (or `binary`, or `unknown`) for a file's stats.
+ *
+ * @param {FileStat | undefined} stat
+ * @returns {string}
+ */
+const statLabel = (stat) =>
+  stat === undefined
+    ? 'unknown'
+    : stat.binary
+      ? 'binary'
+      : stat.untracked
+        ? `+${stat.added}/-0, new`
+        : `+${stat.added}/-${stat.deleted}`;
+
+/**
+ * Added and deleted line counts for the files in scope, for the brief. A git
+ * scope uses `git diff --numstat`; untracked files are counted from disk and
+ * flagged `untracked`. A task-folder scope has no base and returns nothing.
+ *
+ * @param {{ repoDir: string, scope: Scope, runGit?: RunGit }} options
+ * @returns {Map<string, FileStat>}
+ */
+export function diffStats({ repoDir, scope, runGit = defaultRunGit }) {
+  /** @type {Map<string, FileStat>} */
+  const stats = new Map();
+  if (scope.base === null || scope.since === null) return stats;
+  const lines = (/** @type {string | null} */ text) =>
+    (text ?? '').split('\n').filter(Boolean);
+  const inScope = new Set(scope.files);
+  for (const line of lines(
+    runGit(['diff', '--numstat', scope.since], repoDir)
+  )) {
+    const [added, deleted, ...rest] = line.split('\t');
+    const file = rest.join('\t');
+    if (!file || !inScope.has(file)) continue;
+    stats.set(
+      file,
+      added === '-' || deleted === '-'
+        ? { added: 0, deleted: 0, binary: true }
+        : { added: Number(added), deleted: Number(deleted) }
+    );
+  }
+  for (const file of lines(
+    runGit(['ls-files', '--others', '--exclude-standard'], repoDir)
+  )) {
+    if (!inScope.has(file) || stats.has(file)) continue;
+    let buffer;
+    try {
+      buffer = fs.readFileSync(path.join(repoDir, file));
+    } catch {
+      continue;
+    }
+    if (isBinary(buffer)) {
+      stats.set(file, { added: 0, deleted: 0, binary: true, untracked: true });
+      continue;
+    }
+    stats.set(file, {
+      added: countLines(buffer.toString('utf-8')),
+      deleted: 0,
+      untracked: true,
+    });
+  }
+  return stats;
+}
+
+/**
+ * The patch a reviewer reads first: a unified diff of the files in scope
+ * (`-U8` for surrounding context), with new/untracked files rendered as
+ * standard new-file diffs. Secrets are redacted; a huge file is truncated and
+ * a total cap lists the remaining files with their stats. Null for a
+ * task-folder scope (no base) or nothing to show.
+ *
+ * @param {{ repoDir: string, scope: Scope, runGit?: RunGit, maxFileBytes?: number, maxTotalBytes?: number }} options
+ * @returns {string | null}
+ */
+export function generateReviewDiff({
+  repoDir,
+  scope,
+  runGit = defaultRunGit,
+  maxFileBytes = MAX_DIFF_FILE_BYTES,
+  maxTotalBytes = MAX_DIFF_TOTAL_BYTES,
+}) {
+  if (scope.base === null || scope.since === null || scope.files.length === 0) {
+    return null;
+  }
+  const tracked = new Set(
+    (runGit(['diff', '--name-only', scope.since], repoDir) ?? '')
+      .split('\n')
+      .filter(Boolean)
+  );
+  /** @type {string[]} */
+  const chunks = [];
+  /** @type {string[]} */
+  const omitted = [];
+  let total = 0;
+  for (const file of [...scope.files].sort()) {
+    /** @type {string | null} */
+    let text = null;
+    if (tracked.has(file)) {
+      const diff = runGit(
+        [
+          'diff',
+          `--unified=${DIFF_CONTEXT_LINES}`,
+          '--no-ext-diff',
+          '--no-color',
+          scope.since,
+          '--',
+          file,
+        ],
+        repoDir
+      );
+      if (diff) text = `${diff}\n`;
+    } else {
+      try {
+        text = newFileDiff(file, fs.readFileSync(path.join(repoDir, file)));
+      } catch {
+        text = null;
+      }
+    }
+    if (text === null) continue;
+    text = redactSecrets(capFileDiff(text, file, maxFileBytes));
+    if (chunks.length > 0 && total + text.length > maxTotalBytes) {
+      omitted.push(file);
+      continue;
+    }
+    chunks.push(text);
+    total += text.length;
+  }
+  if (chunks.length === 0) return null;
+  if (omitted.length === 0) return chunks.join('');
+  const stats = diffStats({ repoDir, scope, runGit });
+  return `${chunks.join('')}${[
+    '',
+    `... [truncated: total patch cap of ${maxTotalBytes} bytes reached; ${omitted.length} more file(s) not shown — inspect targeted line ranges directly if needed]`,
+    ...omitted.map((file) => `  ${file} (${statLabel(stats.get(file))})`),
+    '',
+  ].join('\n')}`;
+}
+
+/**
+ * Save the working-tree versions of `files` under `dir` (relative paths
+ * mirrored) so a later round can diff against them. Binary and oversized
+ * files are left out. Returns the number of files saved.
+ *
+ * @param {{ repoDir: string, dir: string, files: string[] }} options
+ * @returns {number}
+ */
+export function saveSnapshot({ repoDir, dir, files }) {
+  fs.rmSync(dir, { recursive: true, force: true });
+  let saved = 0;
+  for (const file of files) {
+    let buffer;
+    try {
+      buffer = fs.readFileSync(path.join(repoDir, file));
+    } catch {
+      continue;
+    }
+    if (buffer.length > SNAPSHOT_MAX_FILE_BYTES || isBinary(buffer)) continue;
+    const target = path.join(dir, file);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, buffer);
+    saved++;
+  }
+  return saved;
+}
+
+/**
+ * The files a saved snapshot holds, as sorted POSIX paths.
+ *
+ * @param {string} dir
+ * @returns {string[]}
+ */
+export function listSnapshotFiles(dir) {
+  /** @type {string[]} */
+  const out = [];
+  /**
+   * @param {string} current
+   * @param {string} prefix
+   */
+  const walk = (current, prefix) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(path.join(current, entry.name), rel);
+      else out.push(rel);
+    }
+  };
+  if (fs.existsSync(dir)) walk(dir, '');
+  return out.sort();
+}
+
+/**
+ * Rewrite `git diff --no-index`'s two absolute paths to the repo-relative
+ * `a/<file>` / `b/<file>` form reviewers expect.
+ *
+ * @param {string} patch
+ * @param {string} file
+ * @returns {string}
+ */
+function rewriteNoIndexHeaders(patch, file) {
+  return patch
+    .replace(/^diff --git .*$/m, `diff --git a/${file} b/${file}`)
+    .replace(/^--- .*$/m, `--- a/${file}`)
+    .replace(/^\+\+\+ .*$/m, `+++ b/${file}`);
+}
+
+/**
+ * What changed since the previous round: the saved snapshot against the
+ * current working tree, as a unified diff with repo-relative paths. `files`
+ * should be the union of the current scope and the snapshot's files, so a
+ * file that appeared or disappeared still shows. Null when nothing changed.
+ *
+ * @param {{ repoDir: string, snapshotDir: string, files: string[], runGitStatus?: RunGitStatus, maxFileBytes?: number, maxTotalBytes?: number }} options
+ * @returns {string | null}
+ */
+export function generateIncrementalDiff({
+  repoDir,
+  snapshotDir,
+  files,
+  runGitStatus = defaultRunGitStatus,
+  maxFileBytes = MAX_DIFF_FILE_BYTES,
+  maxTotalBytes = MAX_DIFF_TOTAL_BYTES,
+}) {
+  /** @type {string[]} */
+  const chunks = [];
+  /** @type {string[]} */
+  const omitted = [];
+  let total = 0;
+  for (const file of [...files].sort()) {
+    const snapshotFile = path.join(snapshotDir, file);
+    const currentFile = path.join(repoDir, file);
+    /** @type {Buffer | null} */
+    let snapshot = null;
+    try {
+      snapshot = fs.readFileSync(snapshotFile);
+    } catch {
+      snapshot = null;
+    }
+    /** @type {string | null} */
+    let text = null;
+    if (snapshot === null) {
+      try {
+        text = newFileDiff(file, fs.readFileSync(currentFile));
+      } catch {
+        text = null;
+      }
+    } else if (!fs.existsSync(currentFile)) {
+      text = deletedFileDiff(file, snapshot);
+    } else {
+      const result = runGitStatus(
+        [
+          'diff',
+          '--no-index',
+          '--unified=8',
+          '--no-ext-diff',
+          '--no-color',
+          snapshotFile,
+          currentFile,
+        ],
+        repoDir
+      );
+      if ((result.status === 0 || result.status === 1) && result.stdout) {
+        text = rewriteNoIndexHeaders(result.stdout, file);
+        if (!text.endsWith('\n')) text += '\n';
+      }
+    }
+    if (text === null) continue;
+    text = redactSecrets(capFileDiff(text, file, maxFileBytes));
+    if (chunks.length > 0 && total + text.length > maxTotalBytes) {
+      omitted.push(file);
+      continue;
+    }
+    chunks.push(text);
+    total += text.length;
+  }
+  if (chunks.length === 0) return null;
+  if (omitted.length === 0) return chunks.join('');
+  return `${chunks.join('')}${[
+    '',
+    `... [truncated: total patch cap of ${maxTotalBytes} bytes reached; ${omitted.length} more file(s) not shown — inspect targeted line ranges directly if needed]`,
+    ...omitted.map((file) => `  ${file}`),
+    '',
+  ].join('\n')}`;
+}
+
+/**
  * Open the next review round, or return the open one unchanged.
  *
  * @param {TaskState} state
@@ -442,7 +863,7 @@ const where = (f) => `${f.file}${f.line ? `:${f.line}` : ''}`;
 /**
  * The brief a clean-context reviewer works from.
  *
- * @param {{ state: TaskState, round: number, scope: Scope, taskRel: string, folder?: FolderNotes }} options
+ * @param {{ state: TaskState, round: number, scope: Scope, taskRel: string, folder?: FolderNotes, diffPath?: string | null, incrementalDiffPath?: string | null, stats?: Map<string, FileStat> }} options
  * @returns {string}
  */
 export function formatReviewBrief({
@@ -451,6 +872,9 @@ export function formatReviewBrief({
   scope,
   taskRel,
   folder = { unchecked: [], aside: [] },
+  diffPath = null,
+  incrementalDiffPath = null,
+  stats = new Map(),
 }) {
   const unchecked = new Set(folder.unchecked);
   const quality = state.quality ?? freshQuality();
@@ -480,16 +904,34 @@ export function formatReviewBrief({
     `Plan (acceptance, steps, decisions): ${taskRel}/plan.md`,
     `Standards: ${STANDARDS.join('; ')}`,
     `E2E: ${state.e2e ?? 'no'}`,
+    ...(diffPath
+      ? [
+          `Diff: ${diffPath} (read this first; use bounded line-range reads only when surrounding source context is needed)`,
+        ]
+      : []),
+    ...(incrementalDiffPath
+      ? [
+          `Changes since round ${round - 1}: ${incrementalDiffPath} (start here for round ${round} fixes and regressions)`,
+        ]
+      : []),
     '',
     `## Scope — ${scope.files.length} file(s), ${scopeLine}`,
     '',
     ...(scope.files.length > 0
       ? scope.files.map(
           (file) =>
-            `- ${file}${unchecked.has(file) ? ' — pnpm task check does not lint or format it' : ''}`
+            `- ${file}${statLabel(stats.get(file)) === 'unknown' ? '' : ` (${statLabel(stats.get(file))})`}${unchecked.has(file) ? ' — pnpm task check does not lint or format it' : ''}`
         )
       : ['- (no files: nothing changed)']),
     '',
+    ...(diffPath
+      ? [
+          '## Reading budget',
+          '',
+          `Start with the pre-computed \`Diff:\` patch file${round > 1 ? ` and \`Changes since round ${round - 1}\`` : ''}. Only read specific line ranges (\`StartLine\`/\`EndLine\`) of source files when a hunk needs surrounding context. Avoid reading entire large test files unless a specific assertion needs full-file context.`,
+          '',
+        ]
+      : []),
     ...(folder.aside.length > 0
       ? [
           '## Also in the task folder (not in scope)',

@@ -69,13 +69,18 @@ import {
   toFix,
 } from './quality.js';
 import {
+  diffStats,
   findingsTemplate,
   fingerprint,
   formatReviewBrief,
+  generateIncrementalDiff,
+  generateReviewDiff,
+  listSnapshotFiles,
   openRound,
   parseFindings,
   recordFindings,
   reviewFiles,
+  saveSnapshot,
   scopeRoot,
   roundBase,
   taskFolderNotes,
@@ -138,7 +143,9 @@ Work
                                 iteration cap is reached (default 5).
   review [--base <ref> | --folder] [--force]
                                 Code tasks: open the next review round (max 2) and write the
-                                brief + findings file for clean-context reviewers. Scope: the
+                                brief, findings file, and pre-computed diff patch for
+                                clean-context reviewers (round 2 also an incremental patch
+                                since round 1). Scope: the
                                 task's code (no git), else git changes since --base (default:
                                 the default branch as fetched, e.g. origin/main, else main;
                                 for work committed on it, the commit the task started from;
@@ -1231,7 +1238,48 @@ export const COMMANDS = {
       { now, agent }
     );
     const files = reviewFiles(name, round);
-    fs.mkdirSync(path.join(task.dir, 'reviews'), { recursive: true });
+    const reviewsDir = path.join(task.dir, 'reviews');
+    fs.mkdirSync(reviewsDir, { recursive: true });
+    const scopeDir = scopeRoot(deps.rootDir, state, scope);
+    const stats = diffStats({ repoDir: scopeDir, scope, runGit: deps.runGit });
+    // The snapshot lets the next round show only what changed since this one;
+    // reopening an open round keeps it (the reviewed code must not move).
+    const snapshotDir = path.join(reviewsDir, `.snapshot-r${round}`);
+    if (!reopened && scope.files.length > 0) {
+      saveSnapshot({ repoDir: scopeDir, dir: snapshotDir, files: scope.files });
+    }
+    const patch = generateReviewDiff({
+      repoDir: scopeDir,
+      scope,
+      runGit: deps.runGit,
+    });
+    if (patch !== null) {
+      fs.writeFileSync(path.join(task.dir, files.diff), patch, 'utf-8');
+    }
+    const previousSnapshot = path.join(reviewsDir, `.snapshot-r${round - 1}`);
+    let incremental = null;
+    if (round > 1 && files.incrementalDiff && fs.existsSync(previousSnapshot)) {
+      incremental = generateIncrementalDiff({
+        repoDir: scopeDir,
+        snapshotDir: previousSnapshot,
+        files: [
+          ...new Set([...scope.files, ...listSnapshotFiles(previousSnapshot)]),
+        ].sort(),
+        runGitStatus: deps.runGitStatus,
+      });
+      if (incremental !== null) {
+        fs.writeFileSync(
+          path.join(task.dir, files.incrementalDiff),
+          incremental,
+          'utf-8'
+        );
+      }
+    }
+    const diffPath = patch === null ? null : `${taskRel}/${files.diff}`;
+    const incrementalPath =
+      incremental === null || !files.incrementalDiff
+        ? null
+        : `${taskRel}/${files.incrementalDiff}`;
     fs.writeFileSync(
       path.join(task.dir, files.brief),
       formatReviewBrief({
@@ -1239,6 +1287,9 @@ export const COMMANDS = {
         round,
         scope,
         taskRel,
+        diffPath,
+        incrementalDiffPath: incrementalPath,
+        stats,
         folder: taskFolderNotes({
           rootDir: deps.rootDir,
           taskDir: task.dir,
@@ -1268,16 +1319,29 @@ export const COMMANDS = {
     output(
       deps,
       options,
-      { ok: true, task: name, round, reopened, scope, brief, findings },
+      {
+        ok: true,
+        task: name,
+        round,
+        reopened,
+        scope,
+        brief,
+        findings,
+        diff: diffPath,
+        incrementalDiff: incrementalPath,
+      },
       [
         `${reopened ? 'Review round still open' : 'Opened review round'} ${round}/${quality.maxRounds} for ${name} (${scope.files.length} file(s)).`,
         `Brief: ${brief}`,
         `Findings: ${findings}`,
+        ...(diffPath ? [`Diff: ${diffPath}`] : []),
+        ...(incrementalPath ? [`Incremental diff: ${incrementalPath}`] : []),
         'Run the review and the triage in clean contexts, not yourself (you wrote the code):',
         `  Claude Code: Agent tool, subagent_type "reviewer", prompt "Follow ${brief}"; then subagent_type "verifier", prompt "Triage ${findings} as step 2 of ${brief} says".`,
         `  Codex: spawn_agent with agent_type "reviewer", message "Follow ${brief}", then wait_agent before you end the turn; then the same with agent_type "verifier" and "Triage ${findings} as step 2 of ${brief} says".`,
         `  DSH: subagent with prompt "Follow .claude/agents/reviewer.md, then ${brief}"; wait for its notice before you end the turn; then one with "Follow .claude/agents/verifier.md (triage mode), then triage ${findings} as step 2 of ${brief} says".`,
         `  Other harnesses: pnpm agent ask --agent <another agent> - < ${brief}, paste its rows into the findings table, then ask another agent for the triage.`,
+        `Cross-model (saves primary quota): pnpm agent ask --agent dscc - < ${brief}`,
         'Then: pnpm task review record',
       ].join('\n')
     );

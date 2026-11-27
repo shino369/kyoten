@@ -229,6 +229,7 @@ describe('runInnerLoop', () => {
     git: () => GIT,
     runCheck: vi.fn(),
     runGit: vi.fn(),
+    runGitStatus: vi.fn(() => ({ status: 0, stdout: '' })),
     runCommands: vi.fn(() => [
       {
         command: 'pnpm test',
@@ -765,6 +766,7 @@ describe('resetInnerLoop', () => {
     git: () => GIT,
     runCheck: vi.fn(),
     runGit: vi.fn(),
+    runGitStatus: vi.fn(() => ({ status: 0, stdout: '' })),
     runCommands: vi.fn(() => [
       { command: 'pnpm test', ok: false, code: 1, durationMs: 1, output: 'x' },
     ]),

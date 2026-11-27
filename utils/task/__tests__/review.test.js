@@ -5,13 +5,21 @@ import path from 'path';
 import { vi } from 'vitest';
 import { freshQuality } from '../quality.js';
 import {
+  DIFF_CONTEXT_LINES,
   FINDINGS_HEADER,
   FOLDER_BASE,
+  MAX_DIFF_FILE_BYTES,
+  MAX_DIFF_TOTAL_BYTES,
+  SNAPSHOT_MAX_FILE_BYTES,
   SEVERITY_RUBRIC,
   defaultRunGit,
+  diffStats,
   findingsTemplate,
   fingerprint,
   formatReviewBrief,
+  generateIncrementalDiff,
+  generateReviewDiff,
+  listSnapshotFiles,
   openRound,
   parseFindings,
   recordFindings,
@@ -22,6 +30,7 @@ import {
   reviewFiles,
   reviewScope,
   roundBase,
+  saveSnapshot,
   scopeRoot,
   splitRow,
   taskFolderNotes,
@@ -110,11 +119,25 @@ afterEach(() => {
 });
 
 describe('reviewFiles', () => {
-  test('should name the brief and findings files by round', () => {
+  test('should name the brief, findings, and diff files by round', () => {
     expect(reviewFiles(NAME, 2)).toEqual({
       brief: `reviews/BRIEF_${NAME}-r2.md`,
       findings: `reviews/REVIEW_${NAME}-r2.md`,
+      diff: `reviews/DIFF_${NAME}-r2.patch`,
+      incrementalDiff: `reviews/DIFF_${NAME}-r1-to-r2.patch`,
     });
+    expect(reviewFiles(NAME, 1)).toEqual({
+      brief: `reviews/BRIEF_${NAME}-r1.md`,
+      findings: `reviews/REVIEW_${NAME}-r1.md`,
+      diff: `reviews/DIFF_${NAME}-r1.patch`,
+    });
+  });
+
+  test('should cap diffs with the documented sizes', () => {
+    expect(DIFF_CONTEXT_LINES).toBe(8);
+    expect(MAX_DIFF_FILE_BYTES).toBe(40 * 1024);
+    expect(MAX_DIFF_TOTAL_BYTES).toBe(200 * 1024);
+    expect(SNAPSHOT_MAX_FILE_BYTES).toBe(256 * 1024);
   });
 });
 
@@ -813,6 +836,49 @@ describe('formatReviewBrief', () => {
     expect(text).toContain('E2E: no');
   });
 
+  test('should point at the pre-computed diffs and the line counts', () => {
+    const text = formatReviewBrief({
+      state: codeState(),
+      round: 2,
+      scope: {
+        base: 'main',
+        since: '0123456789abcdef',
+        files: ['app/a.js', 'app/new.js', 'app/blob.bin'],
+      },
+      taskRel: `tasks/${NAME}`,
+      diffPath: `tasks/${NAME}/reviews/DIFF_${NAME}-r2.patch`,
+      incrementalDiffPath: `tasks/${NAME}/reviews/DIFF_${NAME}-r1-to-r2.patch`,
+      stats: new Map([
+        ['app/a.js', { added: 10, deleted: 2 }],
+        ['app/new.js', { added: 7, deleted: 0, untracked: true }],
+        ['app/blob.bin', { added: 0, deleted: 0, binary: true }],
+      ]),
+    });
+
+    expect(text).toContain(
+      `Diff: tasks/${NAME}/reviews/DIFF_${NAME}-r2.patch (read this first; use bounded line-range reads only when surrounding source context is needed)`
+    );
+    expect(text).toContain(
+      `Changes since round 1: tasks/${NAME}/reviews/DIFF_${NAME}-r1-to-r2.patch (start here for round 2 fixes and regressions)`
+    );
+    expect(text).toContain('- app/a.js (+10/-2)\n');
+    expect(text).toContain('- app/new.js (+7/-0, new)\n');
+    expect(text).toContain('- app/blob.bin (binary)\n');
+    expect(text).toContain('## Reading budget');
+  });
+
+  test('should omit the diff lines and the reading budget for a task-folder scope', () => {
+    const text = formatReviewBrief({
+      state: codeState(),
+      round: 1,
+      scope: { base: null, since: null, files: ['a.js'] },
+      taskRel: 't',
+    });
+
+    expect(text).not.toContain('Diff:');
+    expect(text).not.toContain('## Reading budget');
+  });
+
   test('should list refuted and fixed findings from earlier rounds', () => {
     const state = codeState({
       quality: {
@@ -979,5 +1045,387 @@ describe('recordFindings', () => {
     );
     const { quality: _q, ...bare } = codeState();
     expect(() => recordFindings(bare, [])).toThrow(/phase build/);
+  });
+});
+
+describe('diffStats', () => {
+  const gitScope = (/** @type {string[]} */ files) => ({
+    base: 'main',
+    since: 'abc123',
+    files,
+  });
+
+  test('should count added and deleted lines for in-scope tracked files', () => {
+    /** @type {import('../review.js').RunGit} */
+    const runGit = vi.fn((args) =>
+      args[0] === 'diff'
+        ? '10\t2\tutils/a.js\n3\t0\tutils/b.js\n1\t1\toutside.js'
+        : ''
+    );
+
+    const stats = diffStats({
+      repoDir: root,
+      scope: gitScope(['utils/a.js', 'utils/b.js']),
+      runGit,
+    });
+
+    expect(stats.get('utils/a.js')).toEqual({ added: 10, deleted: 2 });
+    expect(stats.get('utils/b.js')).toEqual({ added: 3, deleted: 0 });
+    expect(stats.has('outside.js')).toBe(false);
+    expect(runGit).toHaveBeenCalledWith(['diff', '--numstat', 'abc123'], root);
+  });
+
+  test('should count untracked files as new lines and flag binaries', () => {
+    fs.mkdirSync(path.join(root, 'lib'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'lib/new.js'), 'a\nb\r\nc');
+    fs.writeFileSync(path.join(root, 'lib/blob.bin'), Buffer.from([0, 1, 2]));
+    /** @type {import('../review.js').RunGit} */
+    const runGit = (args) =>
+      args[0] === 'diff' ? '' : 'lib/new.js\nlib/blob.bin\nlib/gone.js';
+
+    const stats = diffStats({
+      repoDir: root,
+      scope: gitScope(['lib/new.js', 'lib/blob.bin', 'lib/gone.js']),
+      runGit,
+    });
+
+    expect(stats.get('lib/new.js')).toEqual({
+      added: 3,
+      deleted: 0,
+      untracked: true,
+    });
+    expect(stats.get('lib/blob.bin')).toEqual({
+      added: 0,
+      deleted: 0,
+      binary: true,
+      untracked: true,
+    });
+    expect(stats.has('lib/gone.js')).toBe(false);
+  });
+
+  test('should not query git for a task-folder scope', () => {
+    const runGit = vi.fn();
+
+    const stats = diffStats({
+      repoDir: root,
+      scope: { base: null, since: null, files: ['app/a.js'] },
+      runGit,
+    });
+
+    expect(stats.size).toBe(0);
+    expect(runGit).not.toHaveBeenCalled();
+  });
+});
+
+describe('generateReviewDiff', () => {
+  const gitScope = (/** @type {string[]} */ files) => ({
+    base: 'main',
+    since: 'abc123',
+    files,
+  });
+  const patchOf = (/** @type {string} */ name) =>
+    [
+      `diff --git a/${name} b/${name}`,
+      `--- a/${name}`,
+      `+++ b/${name}`,
+      '@@ -1 +1 @@',
+      '-a',
+      '+b',
+    ].join('\n');
+  /**
+   * @param {Record<string, string | null>} diffs
+   * @param {string[]} tracked
+   * @returns {import('../review.js').RunGit}
+   */
+  const runGitFor = (diffs, tracked) =>
+    vi.fn((args) => {
+      if (args[0] === 'diff' && args[1] === '--name-only') {
+        return tracked.join('\n');
+      }
+      if (args[0] === 'diff' && args[1] === '--numstat') {
+        return tracked.map((file) => `1\t1\t${file}`).join('\n');
+      }
+      if (args[0] === 'diff') return diffs[args.at(-1) ?? ''] ?? null;
+      return '';
+    });
+
+  test('should return null without a git base or without files', () => {
+    expect(
+      generateReviewDiff({
+        repoDir: root,
+        scope: { base: null, since: null, files: ['a.js'] },
+      })
+    ).toBeNull();
+    expect(
+      generateReviewDiff({ repoDir: root, scope: gitScope([]) })
+    ).toBeNull();
+  });
+
+  test('should concatenate tracked diffs and synthetic new-file diffs', () => {
+    fs.mkdirSync(path.join(root, 'lib'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'lib/new.js'), 'one\ntwo\n');
+    const runGit = runGitFor({ 'src/a.js': patchOf('src/a.js') }, ['src/a.js']);
+
+    const patch = generateReviewDiff({
+      repoDir: root,
+      scope: gitScope(['lib/new.js', 'src/a.js']),
+      runGit,
+    });
+
+    expect(patch).toContain(patchOf('src/a.js'));
+    expect(patch).toContain('diff --git a/lib/new.js b/lib/new.js');
+    expect(patch).toContain('new file mode 100644');
+    expect(patch).toContain('@@ -0,0 +1,2 @@\n+one\n+two');
+    expect(runGit).toHaveBeenCalledWith(
+      [
+        'diff',
+        '--unified=8',
+        '--no-ext-diff',
+        '--no-color',
+        'abc123',
+        '--',
+        'src/a.js',
+      ],
+      root
+    );
+  });
+
+  test('should describe an untracked binary file without inlining it', () => {
+    fs.writeFileSync(path.join(root, 'blob.bin'), Buffer.from([0, 1, 2]));
+    const runGit = runGitFor({}, []);
+
+    const patch = generateReviewDiff({
+      repoDir: root,
+      scope: gitScope(['blob.bin']),
+      runGit,
+    });
+
+    expect(patch).toContain('diff --git a/blob.bin b/blob.bin');
+    expect(patch).toContain('Binary file (new, 3 bytes)');
+    expect(patch).not.toContain('\u0000');
+  });
+
+  test('should redact secrets from the generated patch', () => {
+    const runGit = runGitFor(
+      {
+        'src/a.js': `${patchOf('src/a.js')}\n+TOKEN=ghp_${'a'.repeat(36)}`,
+      },
+      ['src/a.js']
+    );
+
+    const patch = generateReviewDiff({
+      repoDir: root,
+      scope: gitScope(['src/a.js']),
+      runGit,
+    });
+
+    expect(patch).toContain('[REDACTED]');
+    expect(patch).not.toContain('ghp_');
+  });
+
+  test('should truncate one huge file and point at targeted line ranges', () => {
+    const big = [
+      'diff --git a/big.js b/big.js',
+      '@@ -1 +1,200 @@',
+      ...Array.from({ length: 200 }, () => '+x'),
+    ].join('\n');
+    const runGit = runGitFor({ 'big.js': big }, ['big.js']);
+
+    const patch = generateReviewDiff({
+      repoDir: root,
+      scope: gitScope(['big.js']),
+      runGit,
+      maxFileBytes: 200,
+      maxTotalBytes: 10_000,
+    });
+
+    expect(patch).toContain('truncated: omitted');
+    expect(patch).toContain(
+      'of big.js; inspect targeted line ranges with read_file'
+    );
+    expect(/** @type {string} */ (patch).length).toBeLessThan(big.length);
+  });
+
+  test('should stop at the total cap and list omitted files with their stats', () => {
+    const runGit = runGitFor(
+      {
+        'a.js': patchOf('a.js'),
+        'b.js': patchOf('b.js'),
+        'c.js': patchOf('c.js'),
+      },
+      ['a.js', 'b.js', 'c.js']
+    );
+
+    const patch = generateReviewDiff({
+      repoDir: root,
+      scope: gitScope(['a.js', 'b.js', 'c.js']),
+      runGit,
+      maxFileBytes: 10_000,
+      maxTotalBytes: 80,
+    });
+
+    expect(patch).toContain('diff --git a/a.js b/a.js');
+    expect(patch).toContain('total patch cap');
+    expect(patch).toContain('b.js (+1/-1)');
+    expect(patch).toContain('c.js (+1/-1)');
+    expect(patch).not.toContain('+++ b/b.js');
+    expect(patch).not.toContain('+++ b/c.js');
+  });
+});
+
+describe('saveSnapshot and listSnapshotFiles', () => {
+  test('should mirror text files and skip binaries and oversized files', () => {
+    fs.writeFileSync(path.join(root, 'a.js'), 'one\n');
+    fs.writeFileSync(
+      path.join(root, 'big.js'),
+      'x'.repeat(SNAPSHOT_MAX_FILE_BYTES + 1)
+    );
+    fs.writeFileSync(path.join(root, 'blob.bin'), Buffer.from([0]));
+    const dir = path.join(root, '.snapshot-r1');
+
+    expect(
+      saveSnapshot({
+        repoDir: root,
+        dir,
+        files: ['a.js', 'big.js', 'blob.bin', 'missing.js'],
+      })
+    ).toBe(1);
+    expect(listSnapshotFiles(dir)).toEqual(['a.js']);
+    expect(fs.readFileSync(path.join(dir, 'a.js'), 'utf-8')).toBe('one\n');
+  });
+
+  test('should replace an existing snapshot and list nested files', () => {
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'src', 'a.js'), 'new\n');
+    const dir = path.join(root, '.snapshot-r1');
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'old.js'), 'old\n');
+
+    saveSnapshot({ repoDir: root, dir, files: ['src/a.js'] });
+
+    expect(listSnapshotFiles(dir)).toEqual(['src/a.js']);
+    expect(fs.existsSync(path.join(dir, 'src', 'old.js'))).toBe(false);
+  });
+
+  test('should list nothing without a snapshot folder', () => {
+    expect(listSnapshotFiles(path.join(root, 'missing'))).toEqual([]);
+  });
+});
+
+describe('generateIncrementalDiff', () => {
+  test('should diff the snapshot against the current tree with repo-relative headers', () => {
+    const snapshotDir = path.join(root, '.snapshot-r1');
+    fs.mkdirSync(path.join(snapshotDir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(snapshotDir, 'src', 'a.js'), 'one\ntwo\n');
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'src', 'a.js'), 'one\nTWO\n');
+    const snapshotFile = path.join(snapshotDir, 'src', 'a.js');
+    const currentFile = path.join(root, 'src', 'a.js');
+    /** @type {(args: string[], cwd: string) => { status: number | null, stdout: string }} */
+    const runGitStatus = vi.fn(() => ({
+      status: 1,
+      stdout: [
+        `diff --git a/${snapshotFile} b/${currentFile}`,
+        'index 111..222 100644',
+        `--- a/${snapshotFile}`,
+        `+++ b/${currentFile}`,
+        '@@ -1,2 +1,2 @@',
+        ' one',
+        '-two',
+        '+TWO',
+        '',
+      ].join('\n'),
+    }));
+
+    const patch = generateIncrementalDiff({
+      repoDir: root,
+      snapshotDir,
+      files: ['src/a.js'],
+      runGitStatus,
+    });
+
+    expect(patch).toContain('diff --git a/src/a.js b/src/a.js');
+    expect(patch).toContain('--- a/src/a.js');
+    expect(patch).toContain('+++ b/src/a.js');
+    expect(patch).toContain('-two\n+TWO');
+    expect(runGitStatus).toHaveBeenCalledWith(
+      [
+        'diff',
+        '--no-index',
+        '--unified=8',
+        '--no-ext-diff',
+        '--no-color',
+        snapshotFile,
+        currentFile,
+      ],
+      root
+    );
+  });
+
+  test('should show new and deleted files against the snapshot', () => {
+    const snapshotDir = path.join(root, '.snapshot-r1');
+    fs.mkdirSync(snapshotDir, { recursive: true });
+    fs.writeFileSync(path.join(snapshotDir, 'removed.js'), 'gone\n');
+    fs.writeFileSync(path.join(root, 'added.js'), 'fresh\n');
+    const runGitStatus = vi.fn(() => ({ status: 0, stdout: '' }));
+
+    const patch = generateIncrementalDiff({
+      repoDir: root,
+      snapshotDir,
+      files: ['added.js', 'removed.js'],
+      runGitStatus,
+    });
+
+    expect(patch).toContain('diff --git a/added.js b/added.js');
+    expect(patch).toContain('+fresh');
+    expect(patch).toContain('diff --git a/removed.js b/removed.js');
+    expect(patch).toContain('-gone');
+    expect(runGitStatus).not.toHaveBeenCalled();
+  });
+
+  test('should skip unchanged files and failed diffs', () => {
+    const snapshotDir = path.join(root, '.snapshot-r1');
+    fs.mkdirSync(snapshotDir, { recursive: true });
+    fs.writeFileSync(path.join(snapshotDir, 'same.js'), 'same\n');
+    fs.writeFileSync(path.join(root, 'same.js'), 'same\n');
+    fs.writeFileSync(path.join(snapshotDir, 'broken.js'), 'a\n');
+    fs.writeFileSync(path.join(root, 'broken.js'), 'b\n');
+    /** @type {(args: string[], cwd: string) => { status: number | null, stdout: string }} */
+    const runGitStatus = vi.fn((args) =>
+      args.includes(path.join(root, 'broken.js'))
+        ? { status: 2, stdout: '' }
+        : { status: 0, stdout: '' }
+    );
+
+    expect(
+      generateIncrementalDiff({
+        repoDir: root,
+        snapshotDir,
+        files: ['same.js', 'broken.js'],
+        runGitStatus,
+      })
+    ).toBeNull();
+  });
+
+  test('should cap and redact the incremental patch', () => {
+    const snapshotDir = path.join(root, '.snapshot-r1');
+    fs.mkdirSync(snapshotDir, { recursive: true });
+    fs.writeFileSync(path.join(snapshotDir, 'a.js'), 'old\n');
+    fs.writeFileSync(path.join(root, 'a.js'), 'new\n');
+    /** @type {(args: string[], cwd: string) => { status: number | null, stdout: string }} */
+    const runGitStatus = vi.fn(() => ({
+      status: 1,
+      stdout: `diff --git a/x b/y\n--- a/x\n+++ b/y\n@@ -1 +1 @@\n-old\n+TOKEN=ghp_${'a'.repeat(36)}\n`,
+    }));
+
+    const patch = generateIncrementalDiff({
+      repoDir: root,
+      snapshotDir,
+      files: ['a.js'],
+      runGitStatus,
+    });
+
+    expect(patch).toContain('[REDACTED]');
+    expect(patch).not.toContain('ghp_');
   });
 });

@@ -410,7 +410,9 @@ Work
                                 iteration cap is reached (default 5).
   review [--base <ref> | --folder] [--force]
                                 Code tasks: open the next review round (max 2) and write the
-                                brief + findings file for clean-context reviewers. Scope: the
+                                brief, findings file, and pre-computed diff patch for
+                                clean-context reviewers (round 2 also an incremental patch
+                                since round 1). Scope: the
                                 task's code (no git), else git changes since --base (default:
                                 the default branch as fetched, e.g. origin/main, else main;
                                 for work committed on it, the commit the task started from;

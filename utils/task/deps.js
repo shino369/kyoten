@@ -3,7 +3,7 @@
  */
 import { ROOT_DIR } from '../workspace-config.js';
 import { runTaskCheck } from './check.js';
-import { defaultRunGit } from './review.js';
+import { defaultRunGit, defaultRunGitStatus } from './review.js';
 import { gitInfo } from './git.js';
 import { TEMPLATES_DIR } from './store.js';
 import { runCommands } from './verify.js';
@@ -19,6 +19,7 @@ import { runCommands } from './verify.js';
  *   runCommands: typeof runCommands,
  *   runCheck: typeof runTaskCheck,
  *   runGit: import('./review.js').RunGit,
+ *   runGitStatus: import('./review.js').RunGitStatus,
  * }} Deps
  */
 
@@ -37,6 +38,7 @@ export function defaultDeps(overrides = {}) {
     runCommands,
     runCheck: runTaskCheck,
     runGit: defaultRunGit,
+    runGitStatus: defaultRunGitStatus,
     ...overrides,
   };
 }
