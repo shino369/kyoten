@@ -1,34 +1,37 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { vi } from 'vitest';
 import { HELP, runCli } from '../cli.js';
 
 /** @type {string} */
-let tmp;
+let root;
 
 beforeEach(() => {
-  tmp = fs.realpathSync(
+  root = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), 'kyoten-remote-cli-'))
   );
 });
 
 afterEach(() => {
-  fs.rmSync(tmp, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true });
 });
 
-/** @param {string[]} argv */
-async function cli(argv) {
+/** @param {string[]} argv @param {Record<string, any>} [extra] */
+async function cli(argv, extra = {}) {
   /** @type {string[]} */
   const lines = [];
   const code = await runCli(argv, {
-    rootDir: tmp,
+    rootDir: root,
     out: (line) => lines.push(line),
+    ...extra,
   });
   return { code, lines, text: lines.join('\n') };
 }
 
-describe('remote cli (osc7501)', () => {
-  test('prints Usage help with no args, help, or --help', async () => {
+describe('remote cli', () => {
+  test('prints Usage help for empty args, help, and --help', async () => {
     for (const args of [[], ['help'], ['--help'], ['-h']]) {
       const res = await cli(args);
       expect(res.code).toBe(0);
@@ -37,18 +40,134 @@ describe('remote cli (osc7501)', () => {
     }
   });
 
-  test('toggles osc7501 and reports status', async () => {
-    expect((await cli(['status'])).text).toBe('OSC 7501: off');
+  test('manages osc7501 and status defaults', async () => {
+    expect((await cli(['status'])).text).toContain(
+      'OSC 7501: off | Web Push: off'
+    );
     expect((await cli(['osc7501', 'on'])).text).toContain('turned on');
-    expect(JSON.parse((await cli(['status', '--json'])).text)).toEqual({
-      osc7501: true,
-    });
-    expect((await cli(['osc7501', 'off'])).text).toContain('turned off');
   });
 
-  test('rejects invalid commands and options', async () => {
+  test('exercises full vapid and push workflow including dry-run and test delivery', async () => {
+    await expect(cli(['push', 'on'])).rejects.toThrow(/initializing VAPID/);
+    await expect(cli(['vapid', 'show'])).rejects.toThrow(/not initialized/);
+
+    const initRes = await cli([
+      'vapid',
+      'init',
+      '--subject=mailto:me@example.com',
+    ]);
+    expect(initRes.text).toContain('Initialized VAPID keypair');
+    await expect(cli(['vapid', 'init'])).rejects.toThrow(/already exists/);
+
+    const showJson = JSON.parse((await cli(['vapid', 'show', '--json'])).text);
+    expect(showJson.subject).toBe('mailto:me@example.com');
+
+    expect((await cli(['push', 'list'])).text).toBe(
+      'No push subscriptions registered.'
+    );
+    expect((await cli(['push', 'on'])).text).toContain('turned on');
+
+    const ecdh = crypto.createECDH('prime256v1');
+    ecdh.generateKeys();
+    const p256dh = ecdh
+      .getPublicKey(undefined, 'uncompressed')
+      .toString('base64url');
+    const auth = crypto.randomBytes(16).toString('base64url');
+
+    const addRes = await cli([
+      'push',
+      'add',
+      '--endpoint',
+      'https://updates.push.services.mozilla.com/wpush/v2/abc',
+      '--p256dh',
+      p256dh,
+      '--auth',
+      auth,
+      '--label',
+      'Android',
+      '--json',
+    ]);
+    const subId = JSON.parse(addRes.text).id;
+
+    expect((await cli(['push', 'list'])).text).toContain('Android');
+    expect((await cli(['status', '--json'])).text).toContain(subId);
+
+    const dryTest = await cli(['push', 'test', '--dry-run']);
+    expect(dryTest.text).toContain('[dry-run] Would send');
+
+    const fetchFn = vi.fn(async () => new Response(null, { status: 201 }));
+    const sendTest = await cli(['push', 'test', '--title', 'Ping'], {
+      fetchFn,
+    });
+    expect(sendTest.text).toBe('Push test: sent=1, failed=0, pruned=0.');
+
+    expect((await cli(['push', 'remove', subId])).text).toContain(
+      'Removed push subscription'
+    );
+    await expect(cli(['push', 'remove', subId])).rejects.toThrow(
+      /No subscription/
+    );
+
+    const pwaDir = path.join(root, 'pwa-out');
+    const pageRes = await cli([
+      'push',
+      'subscribe-page',
+      '--out',
+      pwaDir,
+      '--base-url',
+      'https://example.github.io/kyoten-push/',
+      '--json',
+    ]);
+    const pageJson = JSON.parse(pageRes.text);
+    expect(pageJson.files).toEqual([
+      'index.html',
+      'sw.js',
+      'manifest.webmanifest',
+    ]);
+    expect(pageJson.subscribeUrl).toContain('#vapid=');
+    expect(fs.existsSync(path.join(pwaDir, 'index.html'))).toBe(true);
+
+    const serveRes = await cli(['push', 'subscribe-serve', '--json'], {
+      waitForClose: async () => {},
+    });
+    const serveJson = JSON.parse(serveRes.text);
+    expect(serveJson.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/#vapid=/);
+
+    const plainPage = await cli(['push', 'subscribe-page', '--out', pwaDir]);
+    expect(plainPage.text).toContain('Wrote static Web Push subscribe PWA');
+
+    const plainServe = await cli(['push', 'subscribe-serve'], {
+      waitForClose: async () => {},
+    });
+    expect(plainServe.text).toContain('Subscribe URL:');
+    expect(plainServe.text).toContain('tailscale serve');
+  });
+
+  test('validates invalid options and subcommands', async () => {
     await expect(cli(['unknown'])).rejects.toThrow(/Unknown remote command/);
-    await expect(cli(['status', '--bogus'])).rejects.toThrow(/Unknown option/);
+    await expect(cli(['status', '--bad'])).rejects.toThrow(/Unknown option/);
     await expect(cli(['osc7501', 'maybe'])).rejects.toThrow(/Usage:/);
+    await expect(cli(['vapid', 'bad'])).rejects.toThrow(
+      /Unknown vapid subcommand/
+    );
+    await expect(cli(['push', 'bad'])).rejects.toThrow(
+      /Unknown push subcommand/
+    );
+    await expect(cli(['push', 'add', '--endpoint'])).rejects.toThrow(
+      /needs a value/
+    );
+    await expect(cli(['push', 'add'])).rejects.toThrow(
+      /Missing required flags/
+    );
+    await expect(cli(['push', 'remove'])).rejects.toThrow(
+      /Subscription id is required/
+    );
+    await expect(cli(['push', 'subscribe-page'])).rejects.toThrow(/--out/);
+    await expect(cli(['push', 'subscribe-serve'])).rejects.toThrow(
+      /VAPID keypair is not initialized/
+    );
+    await expect(
+      cli(['push', 'subscribe-serve', '--port', 'not-a-port'])
+    ).rejects.toThrow(/Invalid --port/);
   });
 });

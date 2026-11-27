@@ -276,11 +276,20 @@ Options
 ```text
 Usage: pnpm remote <command> [options]
 
-Manage OSC 7501 status hooks (Herdr/Rex).
+Manage OSC 7501 status hooks (Herdr/Rex) and host-direct E2EE Web Push alerts.
 
 Commands
   status [--json]
   osc7501 on|off
+  vapid init [--subject <mailto:...|https://...>] [--force] [--json]
+  vapid show [--json]
+  push on|off
+  push add --endpoint <url> --p256dh <key> --auth <secret> [--label <name>]
+  push remove <id>
+  push list [--json]
+  push test [--title <text>] [--body <text>] [--dry-run] [--json]
+  push subscribe-page --out <dir> [--base-url <https://...>] [--json]
+  push subscribe-serve [--port <n>] [--json]
   help
 
 Options
