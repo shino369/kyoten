@@ -208,8 +208,9 @@ Settings
   personalize --for ${PERSONA_KEYS.join('|')} [--show | --reset]
       [--persona … | --persona-file <file.md>] [--compact [--dry-run] | --audit]
                                 One persona per agent (ds: dsh and dscc; KYOTEN_AGENT,
-                                else the hook's harness), kept in memory/persona.<agent>.md, with the
-                                same limit, audit, and --agent as the default persona. The
+                                else the hook's harness), kept in
+                                memory/persona.<agent>.md, with the same limit, audit,
+                                and --agent as the default persona. The
                                 other settings stay the default ones; an agent without a
                                 file uses the default persona. --reset removes the file
                                 (a snapshot and tasks/.trash keep it; pnpm memory undo
