@@ -33,7 +33,7 @@ import {
   tryLock,
 } from '../queue.js';
 import { PERSONALIZATION_FILE, writePersonalization } from '../personalize.js';
-import { RECALL_HEADER } from '../recall.js';
+import { RECALL_HEADER, RECALL_LIMIT } from '../recall.js';
 import {
   AGENTS_LOCAL_FILE,
   CLAUDE_LOCAL_FILE,
@@ -402,6 +402,38 @@ describe('PreToolUse', () => {
       permissionDecisionReason: expect.stringContaining('company proxy'),
     });
     expect(pre('gh pr create')).toBeNull();
+  });
+
+  test('should keep blocking notes the deny reason had no room for', () => {
+    const ids = Array.from(
+      { length: RECALL_LIMIT + 1 },
+      (_, index) =>
+        addNote(
+          dir,
+          {
+            scope: 'machine',
+            type: 'howto',
+            text: `Deploy rule ${index + 1}: check the release channel before deploying.`,
+            tags: ['deploy'],
+            triggers: ['deploy'],
+            triggerMode: 'block',
+          },
+          { now: NOW }
+        ).note.id
+    );
+    /** @type {string[]} */
+    const reasons = [];
+    for (let attempt = 0; attempt < ids.length; attempt += 1) {
+      const output = /** @type {any} */ (pre('pnpm deploy'));
+      if (output === null) break;
+      expect(output.hookSpecificOutput.permissionDecision).toBe('deny');
+      reasons.push(output.hookSpecificOutput.permissionDecisionReason);
+    }
+
+    for (const id of ids) {
+      expect(reasons.join('\n')).toMatch(new RegExp(`- ${id} `));
+    }
+    expect(pre('pnpm deploy')).toBeNull();
   });
 
   test('should stay silent without a matching trigger or command', () => {

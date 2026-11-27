@@ -400,7 +400,7 @@ function injectText(store, pick) {
   });
 }
 
-/** @param {HookStore} store @param {Set<string>} injected @param {string} text */
+/** @param {HookStore} store @param {Set<string>} injected @param {string} text @returns {string[]} the ids shown */
 function recordInjection({ dir, now }, injected, text) {
   const ids = text
     .split('\n')
@@ -408,6 +408,7 @@ function recordInjection({ dir, now }, injected, text) {
     .filter((id) => id !== undefined);
   recordHits(dir, ids, now);
   ids.forEach((id) => injected.add(id));
+  return ids;
 }
 
 /**
@@ -438,10 +439,11 @@ function triggerOutput(store, harness, matches) {
       { now: store.now }
     );
     if (!text) return null;
-    recordInjection(store, injected, text);
+    const shown = recordInjection(store, injected, text);
     if (blockers.length === 0)
       return contextOutput('PreToolUse', text, harness);
-    blockers.forEach((note) => blocked.add(note.id));
+    // Only notes the reason shows count as delivered; the rest block next time.
+    shown.forEach((id) => blocked.add(id));
     return {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
