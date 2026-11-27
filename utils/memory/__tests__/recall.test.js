@@ -267,6 +267,13 @@ describe('recall', () => {
       expect(match('サーバ', 'サーバー')).toBe(false);
     });
 
+    test('should keep katakana word boundaries when a combining dakuten precedes ー', () => {
+      const cue = 'ア\u3099ー';
+
+      expect(match(cue, `${cue}ズ`)).toBe(false);
+      expect(match(cue, `${cue}が出た`)).toBe(true);
+    });
+
     test('should take the script of a phrase edge from inside the phrase', () => {
       expect(match('APIサーバー', 'APIサーバーを起動')).toBe(true);
       expect(match('APIサーバー', 'APIサーバーズ')).toBe(false);
@@ -283,6 +290,16 @@ describe('recall', () => {
       expect(match('APIー', 'APIーを起動')).toBe(true);
       expect(match('APIー', 'APIーX')).toBe(false);
     });
+
+    test.each([' ', ':'])(
+      'should stop inferring the script of ー at the separator %j',
+      (separator) => {
+        const cue = `API${separator}ー`;
+
+        expect(match(cue, `${cue}カタカナ`)).toBe(false);
+        expect(match(cue, cue)).toBe(true);
+      }
+    );
 
     test('should treat a cue that starts with ー by its next character', () => {
       expect(match('ーめん', 'らーめん')).toBe(false);
@@ -379,8 +396,8 @@ describe('recall', () => {
 
   test('should rank cue matches by score', () => {
     const notes = [
-      note('a', { cues: ['kubectl'], tags: ['kubectl', 'cluster'] }),
       note('b', { cues: ['kubectl'], tags: ['kubectl'] }),
+      note('a', { cues: ['kubectl'], tags: ['kubectl', 'cluster'] }),
       ...FILLERS,
     ];
 
@@ -675,6 +692,22 @@ describe('matchTriggers', () => {
 
   test('should match a * wildcard', () => {
     expect(matched('gh api -X PUT repos/o/r/pulls/12/merge')).toEqual(['m1']);
+  });
+
+  test('should match a literal trigger ending in ー only at a word boundary', () => {
+    const notes = [note('m1', { triggers: ['エラー'] })];
+
+    expect(matchTriggers(notes, 'echo エラーが出た')).toEqual(notes);
+    expect(matchTriggers(notes, 'echo エラーズ')).toEqual([]);
+  });
+
+  test('should keep kana word boundaries when a wildcard precedes ー', () => {
+    const notes = [
+      note('m1', { triggerMode: 'block', triggers: ['echo *ー'] }),
+    ];
+
+    expect(matchTriggers(notes, 'echo サーバールーム')).toEqual([]);
+    expect(matchTriggers(notes, 'echo サーバー')).toEqual(notes);
   });
 
   test('should ignore case', () => {

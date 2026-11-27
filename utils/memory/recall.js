@@ -73,7 +73,7 @@ const CJK_OWN_SCRIPT = CJK_SCRIPTS.map(
 );
 /** A character-class body of all CJK scripts, to subtract from \p{L}. */
 const CJK_EXTENSIONS = CJK_SCRIPTS.map(cjkExtension).join('');
-const COMMON_CHAR = /\p{Script=Common}/u;
+const COMMON_OR_INHERITED = /[\p{Script=Common}\p{Script=Inherited}]/u;
 
 /**
  * @typedef {import('./store.js').Note} Note
@@ -396,10 +396,11 @@ const cjkScripts = (char, tests) =>
 /**
  * The CJK scripts of the phrase edge at `chars[from]`. A character of one
  * script names it (か, カ, 漢). One that extends to both kana (ー) takes the
- * script of the nearest unambiguous CJK character inward, walking over Common
- * characters only: 漢字ー is Han, while APIー finds no CJK inward and belongs
- * to no CJK script. A phrase with no such character keeps the edge's own
- * scripts, so ー alone still continues both kana.
+ * script of the first character with its own script in the same word.
+ * Common characters and Inherited marks such as combining dakuten do not
+ * supply a script. 漢字ー takes Han, while APIー takes no CJK script. Stop at
+ * separators and wildcards. If the word supplies no script, retain the
+ * edge's script extensions, so ー alone still continues both kana.
  *
  * @param {string[]} chars the phrase's characters
  * @param {number} from the edge character's index
@@ -407,16 +408,18 @@ const cjkScripts = (char, tests) =>
  * @returns {string[]}
  */
 function edgeScripts(chars, from, step) {
-  const own = cjkScripts(chars[from], CJK_CONTINUATION);
-  if (own.length < 2) {
-    return own;
+  const extensions = cjkScripts(chars[from], CJK_CONTINUATION);
+  if (extensions.length < 2) {
+    return extensions;
   }
   for (let i = from + step; i >= 0 && i < chars.length; i += step) {
-    if (!COMMON_CHAR.test(chars[i])) {
-      return cjkScripts(chars[i], CJK_OWN_SCRIPT);
+    const char = chars[i];
+    if (!WORD_CHAR.test(char)) break;
+    if (!COMMON_OR_INHERITED.test(char)) {
+      return cjkScripts(char, CJK_OWN_SCRIPT);
     }
   }
-  return own;
+  return extensions;
 }
 
 /**
