@@ -27,6 +27,7 @@ const HELP_COMMANDS = {
   'skills:install': '--help',
   'skills:link': '--help',
   swarm: '--help',
+  sync: '--help',
   task: '--help',
   tools: '--help',
   'workspace:setup': '--help',

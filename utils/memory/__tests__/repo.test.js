@@ -9,6 +9,7 @@ import {
   mainCheckout,
   nameFromUrl,
   originUrl,
+  repoIdentity,
   repoName,
 } from '../repo.js';
 
@@ -224,5 +225,39 @@ describe('mainCheckout', () => {
     fs.writeFileSync(path.join(top, '.git'), 'gitdir: ../store/modules/sub');
 
     expect(mainCheckout(top)).toBe(top);
+  });
+});
+
+describe('repoIdentity', () => {
+  test('should unify SSH and HTTPS origin URLs to the same hash', () => {
+    const ssh = checkout('a', ORIGIN('git@github.com:Shino369/Kyoten.git'));
+    const https = checkout(
+      'b',
+      ORIGIN('https://github.com/shino369/kyoten.git/')
+    );
+
+    const idSsh = repoIdentity(ssh);
+    const idHttps = repoIdentity(https);
+
+    expect(idSsh?.hash).toBe(idHttps?.hash);
+    expect(idSsh?.name).toBe('Kyoten');
+    expect(idHttps?.name).toBe('kyoten');
+    expect(idSsh?.hash).toMatch(/^[0-9a-f]{12}$/);
+  });
+
+  test('should distinguish different repos with the same basename', () => {
+    const personal = checkout('p', ORIGIN('git@github.com:me/app.git'));
+    const work = checkout('w', ORIGIN('git@github.com:corp/app.git'));
+
+    expect(repoIdentity(personal)?.name).toBe('app');
+    expect(repoIdentity(work)?.name).toBe('app');
+    expect(repoIdentity(personal)?.hash).not.toBe(repoIdentity(work)?.hash);
+  });
+
+  test('should return null hash without origin and null outside a repo', () => {
+    const local = checkout('scratch', '[core]\n\tbare = false\n');
+
+    expect(repoIdentity(local)).toEqual({ name: 'scratch', hash: null });
+    expect(repoIdentity(tmp)).toBeNull();
   });
 });

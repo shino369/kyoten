@@ -1477,4 +1477,34 @@ describe('per-agent personas', () => {
     expect(text).toContain('## Memory');
     expect(text).toContain('- Persona: Own persona.');
   });
+
+  test('should track v2 device-scoped note IDs as injected', () => {
+    addNote(
+      dir,
+      {
+        scope: 'user',
+        type: 'fact',
+        text: 'Zirconium alloy catalyst works best at 400C.',
+        tags: ['zirconium', 'catalyst'],
+      },
+      { now: NOW, deviceId: 'a3f10000' }
+    );
+
+    const first = context(
+      hook({
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'Check the zirconium catalyst notes',
+      })
+    );
+    const second = context(
+      hook({
+        hook_event_name: 'UserPromptSubmit',
+        prompt: 'Check the zirconium catalyst notes again',
+      })
+    );
+
+    expect(first).toContain('m-a3f1-1');
+    expect(readInjected(dir, SESSION).has('m-a3f1-1')).toBe(true);
+    expect(second).not.toContain('m-a3f1-1');
+  });
 });

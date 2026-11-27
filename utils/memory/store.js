@@ -14,6 +14,7 @@
  * scope and repo updates that note instead. See
  * tasks/memory-system-261120/docs/DESIGN_memory-system.md §5.
  */
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { findSecrets } from '../redact.js';
@@ -36,6 +37,7 @@ export const VIAS = [
   'digest',
   'consolidate',
   'import',
+  'sync',
 ];
 export const LIMITS = {
   text: 1000,
@@ -51,7 +53,12 @@ export const STALE_DAYS = 90;
 
 const CACHE_VERSION = 1;
 const DAY_MS = 86_400_000;
-const ID_RE = /^[mt][1-9]\d*$/;
+export const ID_RE = /^[mt](?:[1-9]\d*|-[0-9a-f]{4,8}-[1-9]\d*)$/;
+const LEGACY_ID_RE = /^([mt])([1-9]\d*)$/;
+const V2_ID_RE = /^([mt])-([0-9a-f]{4,8})-([1-9]\d*)$/;
+const DEVICE_HEX_RE = /^[0-9a-f]{4,16}$/;
+const HLC_RE = /^(\d{15})-([0-9a-f]{4})-([0-9a-z_-]+)$/;
+const HLC_MAX_COUNTER = 0xffff;
 const OPS = ['add', 'update', 'delete', 'pin', 'check'];
 const EDITABLE = ['text', 'tags', 'triggers', 'type', 'scope', 'repo'];
 const SOURCE_FIELDS = /** @type {const} */ (['harness', 'session', 'task']);
@@ -96,6 +103,10 @@ const SOURCE_FIELDS = /** @type {const} */ (['harness', 'session', 'task']);
  * @property {string} op
  * @property {string} at ISO time
  * @property {string} [id]
+ * @property {string} [opId] globally unique operation id (sync v2)
+ * @property {string} [device] authoring device id (sync v2)
+ * @property {string} [hlc] hybrid logical clock timestamp (sync v2)
+ * @property {string} [syncedAt] local sync pull timestamp (sync v2)
  * @property {Record<string, unknown>} [note] add
  * @property {Record<string, unknown>} [set] update
  * @property {string} [why] delete
@@ -280,18 +291,202 @@ export function assertNoSecrets({ text, tags, triggers }) {
   }
 }
 
+/** @param {unknown} id @returns {id is string} */
+export function isValidNoteId(id) {
+  return typeof id === 'string' && ID_RE.test(id);
+}
+
+/**
+ * Parse a legacy (`m12`) or v2 (`m-a3f1-42`) note ID for deterministic ordering.
+ *
+ * @param {string} id
+ * @returns {{ prefix: string, device: string, seq: number } | null}
+ */
+function parseNoteId(id) {
+  const legacy = LEGACY_ID_RE.exec(id);
+  if (legacy) {
+    return { prefix: legacy[1], device: '', seq: Number(legacy[2]) };
+  }
+  const v2 = V2_ID_RE.exec(id);
+  if (v2) {
+    return { prefix: v2[1], device: v2[2], seq: Number(v2[3]) };
+  }
+  return null;
+}
+
+/**
+ * Compare two note IDs deterministically: legacy IDs (empty device) sort before
+ * device-scoped v2 IDs, then by device tag, then numeric sequence, then prefix.
+ *
+ * @param {string} a
+ * @param {string} b
+ * @returns {number}
+ */
+export function compareNoteIds(a, b) {
+  const pa = parseNoteId(a);
+  const pb = parseNoteId(b);
+  if (!pa || !pb) return a.localeCompare(b);
+  const devDiff = pa.device.localeCompare(pb.device);
+  if (devDiff !== 0) return devDiff;
+  if (pa.seq !== pb.seq) return pa.seq - pb.seq;
+  return pa.prefix.localeCompare(pb.prefix);
+}
+
+/** @param {string} a @param {string} b */
+const asciiCompare = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * Validate a device hex identifier for v2 IDs / ops.
+ *
+ * @param {string} deviceId
+ * @returns {string}
+ */
+function normalizeDeviceId(deviceId) {
+  const normalized =
+    typeof deviceId === 'string' ? deviceId.trim().toLowerCase() : '';
+  if (!DEVICE_HEX_RE.test(normalized)) {
+    invalid(
+      `Invalid deviceId "${String(deviceId)}": expected 4-16 hex characters.`
+    );
+  }
+  return normalized;
+}
+
+/**
+ * Format a Hybrid Logical Clock timestamp: `<15-digit-ms>-<4-hex-counter>-<node>`.
+ * Lexicographic ASCII order matches causal order.
+ *
+ * @param {number} ms
+ * @param {number} counter
+ * @param {string} [node]
+ * @returns {string}
+ */
+export function formatHlc(ms, counter, node = 'local') {
+  const safeMs = Number.isFinite(ms) ? Math.max(0, Math.floor(ms)) : 0;
+  const safeCounter = Number.isFinite(counter)
+    ? Math.max(0, Math.min(HLC_MAX_COUNTER, Math.floor(counter)))
+    : 0;
+  const safeNode =
+    typeof node === 'string'
+      ? node
+          .trim()
+          .toLowerCase()
+          .replace(/[^0-9a-z_-]/g, '') || 'local'
+      : 'local';
+  return `${String(safeMs).padStart(15, '0')}-${safeCounter.toString(16).padStart(4, '0')}-${safeNode}`;
+}
+
+/**
+ * Parse a formatted HLC string, or return null if invalid.
+ *
+ * @param {unknown} value
+ * @returns {{ ms: number, counter: number, node: string } | null}
+ */
+export function parseHlc(value) {
+  if (typeof value !== 'string') return null;
+  const m = HLC_RE.exec(value);
+  if (!m) return null;
+  return {
+    ms: Number(m[1]),
+    counter: parseInt(m[2], 16),
+    node: m[3],
+  };
+}
+
+/**
+ * Compare two HLC strings deterministically.
+ *
+ * @param {string} a
+ * @param {string} b
+ * @returns {number}
+ */
+export function compareHlc(a, b) {
+  const pa = parseHlc(a);
+  const pb = parseHlc(b);
+  if (pa && pb) {
+    if (pa.ms !== pb.ms) return pa.ms - pb.ms;
+    if (pa.counter !== pb.counter) return pa.counter - pb.counter;
+    return asciiCompare(pa.node, pb.node);
+  }
+  return asciiCompare(a, b);
+}
+
+/**
+ * Advance a Hybrid Logical Clock relative to `lastSeenHlc` and local wall clock `nowMs`.
+ *
+ * @param {string | null | undefined} lastSeenHlc
+ * @param {number} nowMs
+ * @param {string} [node]
+ * @returns {string}
+ */
+export function nextHlc(lastSeenHlc, nowMs, node = 'local') {
+  const prev = parseHlc(lastSeenHlc);
+  if (!prev || nowMs > prev.ms) {
+    return formatHlc(nowMs, 0, node);
+  }
+  if (prev.counter >= HLC_MAX_COUNTER) {
+    return formatHlc(prev.ms + 1, 0, node);
+  }
+  return formatHlc(prev.ms, prev.counter + 1, node);
+}
+
+/**
+ * Find the maximum valid `op.hlc` across an op list, or null when none carry HLC.
+ *
+ * @param {Op[]} ops
+ * @returns {string | null}
+ */
+export function maxHlcFromOps(ops) {
+  /** @type {string | null} */
+  let best = null;
+  for (const op of ops) {
+    if (!isObject(op) || !parseHlc(op.hlc)) continue;
+    const hlc = /** @type {string} */ (op.hlc);
+    if (best === null || compareHlc(hlc, best) > 0) {
+      best = hlc;
+    }
+  }
+  return best;
+}
+
+/**
+ * Canonical ordering key for an op: prefers `op.hlc` when valid, otherwise derives
+ * an HLC-shaped key from `op.at` and `op.device`/`op.opId` for backward compatibility.
+ *
+ * @param {Op} op
+ * @returns {string}
+ */
+function opOrderKey(op) {
+  if (typeof op?.hlc === 'string' && parseHlc(op.hlc)) {
+    return op.hlc;
+  }
+  const parsedMs = typeof op?.at === 'string' ? Date.parse(op.at) : 0;
+  const ms = Number.isFinite(parsedMs) ? parsedMs : 0;
+  const node =
+    typeof op?.device === 'string' && op.device
+      ? op.device
+      : typeof op?.opId === 'string' && op.opId
+        ? op.opId
+        : 'local';
+  return formatHlc(ms, 0, node);
+}
+
 /**
  * Apply one op to the notes. Returns a problem, or null when applied.
+ * When `lww` is provided (v2 opId/hlc replay), per-field LWW prevents older remote
+ * edits from overwriting newer field values.
  *
  * @param {Map<string, Note>} notes
  * @param {Op} op
+ * @param {Map<string, Record<string, string>>} [lww]
  * @returns {string | null}
  */
-function applyOp(notes, op) {
+function applyOp(notes, op, lww) {
   if (!isObject(op) || typeof op.at !== 'string') return 'an op without a time';
   const label = `${op.op} ${op.id ?? op.note?.id ?? '?'} at ${op.at}`;
   if (!OPS.includes(op.op)) return `${label}: unknown op`;
   const day = op.at.slice(0, 10);
+  const stamp = `${opOrderKey(op)}\0${typeof op.opId === 'string' ? op.opId : ''}`;
   try {
     if (op.op === 'add') {
       const id = op.note?.id;
@@ -310,19 +505,50 @@ function applyOp(notes, op) {
         checked: unchecked ? null : day,
         status: 'active',
       });
+      if (lww) {
+        lww.set(id, {
+          text: stamp,
+          tags: stamp,
+          triggers: stamp,
+          type: stamp,
+          scope: stamp,
+          repo: stamp,
+          pinned: stamp,
+          checked: stamp,
+        });
+      }
       return null;
     }
     const note = notes.get(/** @type {string} */ (op.id));
     if (!note) return `${label}: unknown note`;
     if (note.status === 'deleted') return `${label}: the note is deleted`;
+    const noteStamps = lww?.get(note.id);
+    const newer = (/** @type {string} */ field) =>
+      !noteStamps ||
+      !noteStamps[field] ||
+      asciiCompare(stamp, noteStamps[field]) >= 0;
     if (op.op === 'update') {
+      const candidateChanges = normalizeChanges(op.set);
+      /** @type {Record<string, unknown>} */
+      const filtered = {};
+      for (const [key, value] of Object.entries(candidateChanges)) {
+        if (newer(key)) filtered[key] = value;
+      }
       const { text, tags, triggers, type, scope, repo } = normalizeInput({
         ...note,
-        ...normalizeChanges(op.set),
+        ...filtered,
       });
-      Object.assign(note, { text, tags, triggers, type, scope, repo });
-      note.updated = day;
-      note.checked = day;
+      if (Object.keys(filtered).length > 0) {
+        Object.assign(note, { text, tags, triggers, type, scope, repo });
+        if (noteStamps) {
+          for (const key of Object.keys(filtered)) noteStamps[key] = stamp;
+        }
+        if (day > note.updated) note.updated = day;
+      }
+      if (newer('checked')) {
+        note.checked = day;
+        if (noteStamps) noteStamps.checked = stamp;
+      }
     } else if (op.op === 'delete') {
       Object.assign(note, {
         status: 'deleted',
@@ -330,9 +556,15 @@ function applyOp(notes, op) {
         why: op.why ?? '',
       });
     } else if (op.op === 'pin') {
-      note.pinned = op.pinned === true;
+      if (newer('pinned')) {
+        note.pinned = op.pinned === true;
+        if (noteStamps) noteStamps.pinned = stamp;
+      }
     } else {
-      note.checked = day;
+      if (newer('checked')) {
+        note.checked = day;
+        if (noteStamps) noteStamps.checked = stamp;
+      }
     }
     return null;
   } catch (error) {
@@ -341,8 +573,10 @@ function applyOp(notes, op) {
 }
 
 /**
- * Replay ops into notes (in id order of creation), with the problems found:
- * ops that are malformed or refer to unknown or deleted notes are skipped.
+ * Replay ops into notes. When any op carries a v2 `opId` or `hlc`, ops are
+ * deduplicated by `opId`, causally ordered (`add` before mutations, then
+ * `(hlc, opId)`), and replayed with per-field LWW. Legacy logs without `opId`
+ * or `hlc` replay in log order.
  *
  * @param {Op[]} ops
  * @returns {{ notes: Note[], problems: string[] }}
@@ -352,8 +586,52 @@ export function replay(ops) {
   const notes = new Map();
   /** @type {string[]} */
   const problems = [];
-  for (const op of ops) {
-    const problem = applyOp(notes, op);
+  const hasV2 = ops.some(
+    (op) =>
+      isObject(op) &&
+      ((typeof op.opId === 'string' && op.opId.length > 0) ||
+        Boolean(parseHlc(op.hlc)))
+  );
+  if (!hasV2) {
+    for (const op of ops) {
+      const problem = applyOp(notes, op);
+      if (problem) problems.push(problem);
+    }
+    return { notes: [...notes.values()], problems };
+  }
+  /** @type {Set<string>} */
+  const seenOpIds = new Set();
+  /** @type {{ op: Op, index: number }[]} */
+  const ordered = [];
+  ops.forEach((op, index) => {
+    if (!isObject(op) || typeof op.at !== 'string') {
+      ordered.push({ op, index });
+      return;
+    }
+    if (typeof op.opId === 'string' && op.opId.length > 0) {
+      if (seenOpIds.has(op.opId)) return;
+      seenOpIds.add(op.opId);
+    }
+    ordered.push({ op, index });
+  });
+  ordered.sort((a, b) => {
+    const aValid = isObject(a.op) && typeof a.op.at === 'string';
+    const bValid = isObject(b.op) && typeof b.op.at === 'string';
+    if (!aValid || !bValid) return a.index - b.index;
+    const aAdd = a.op.op === 'add' ? 0 : 1;
+    const bAdd = b.op.op === 'add' ? 0 : 1;
+    if (aAdd !== bAdd) return aAdd - bAdd;
+    const hlcCmp = compareHlc(opOrderKey(a.op), opOrderKey(b.op));
+    if (hlcCmp !== 0) return hlcCmp;
+    const aId = typeof a.op.opId === 'string' ? a.op.opId : '';
+    const bId = typeof b.op.opId === 'string' ? b.op.opId : '';
+    if (aId !== bId) return asciiCompare(aId, bId);
+    return a.index - b.index;
+  });
+  /** @type {Map<string, Record<string, string>>} */
+  const lww = new Map();
+  for (const { op } of ordered) {
+    const problem = applyOp(notes, op, lww);
     if (problem) problems.push(problem);
   }
   return { notes: [...notes.values()], problems };
@@ -510,14 +788,26 @@ function activeNote(notes, id) {
 
 /**
  * The next id: `t<n>` for a task digest, else `m<n>`, from one sequence.
+ * When `deviceTag` (4-8 hex chars) is given, allocates a globally unique
+ * device-scoped v2 id (`m-<deviceTag>-<n>` / `t-<deviceTag>-<n>`).
  *
  * @param {Map<string, Note>} notes
  * @param {string} via
+ * @param {string | null} [deviceTag]
  */
-function nextId(notes, via) {
+function nextId(notes, via, deviceTag = null) {
+  const prefix = via === 'digest' ? 't' : 'm';
   let max = 0;
-  for (const id of notes.keys()) max = Math.max(max, Number(id.slice(1)));
-  return `${via === 'digest' ? 't' : 'm'}${max + 1}`;
+  for (const id of notes.keys()) {
+    const parsed = parseNoteId(id);
+    if (!parsed) continue;
+    if (deviceTag ? parsed.device === deviceTag : parsed.device === '') {
+      max = Math.max(max, parsed.seq);
+    }
+  }
+  return deviceTag
+    ? `${prefix}-${deviceTag}-${max + 1}`
+    : `${prefix}${max + 1}`;
 }
 
 /**
@@ -563,27 +853,75 @@ function joinLists(a, b, max) {
 }
 
 /**
+ * Resolve optional `hlc` for a write op. To stay backward-compatible with local
+ * legacy logs, `hlc` is emitted only when `deviceId` is given, `hlc` is passed
+ * explicitly, or the existing log already contains v2 `hlc` ops.
+ *
+ * @param {string} dir
+ * @param {Date} now
+ * @param {{ deviceId?: string, hlc?: string }} [options]
+ * @returns {string | undefined}
+ */
+function resolveWriteHlc(dir, now, { deviceId, hlc } = {}) {
+  if (hlc !== undefined) {
+    if (!parseHlc(hlc)) {
+      invalid(`Invalid HLC timestamp "${String(hlc)}".`);
+    }
+    return hlc;
+  }
+  const existingOps = readLog(dir).ops;
+  const lastHlc = maxHlcFromOps(existingOps);
+  if (deviceId === undefined && lastHlc === null) return undefined;
+  return nextHlc(lastHlc, now.getTime(), deviceId ?? 'local');
+}
+
+/**
  * Save a note. A near-duplicate of an active note in the same scope and repo
  * updates that note instead (new text and type, tags and triggers joined),
  * unless `merge` is false (task digests: two similar tasks are two notes).
+ * When `deviceId` is provided, allocates a device-scoped v2 note id and stamps
+ * `opId` + `device` + `hlc` on the committed ops.
  *
  * @param {string} dir the memory directory
  * @param {NoteInput} input
- * @param {{ now?: Date, merge?: boolean }} [options]
+ * @param {{ now?: Date, merge?: boolean, deviceId?: string, opId?: string, hlc?: string }} [options]
  * @returns {{ action: 'added' | 'merged' | 'unchanged', note: Note }}
  */
-export function addNote(dir, input, { now = new Date(), merge = true } = {}) {
+export function addNote(
+  dir,
+  input,
+  { now = new Date(), merge = true, deviceId, opId, hlc } = {}
+) {
   const fields = normalizeInput(input);
   assertNoSecrets(fields);
+  const device =
+    deviceId === undefined ? undefined : normalizeDeviceId(deviceId);
+  const deviceTag = device ? device.slice(0, 4) : null;
   const at = now.toISOString();
+  const resolvedOpId =
+    opId ??
+    (device
+      ? `${device}-${now.getTime()}-${crypto.randomUUID().slice(0, 8)}`
+      : undefined);
   return mutate(dir, (notes) => {
+    const resolvedHlc = resolveWriteHlc(dir, now, { deviceId: device, hlc });
     const existing = merge ? findNearDuplicate(notes.values(), fields) : null;
-    if (existing) return mergeInto(dir, notes, existing, fields, at);
+    if (existing) {
+      return mergeInto(dir, notes, existing, fields, at, {
+        device,
+        opId: resolvedOpId,
+        hlc: resolvedHlc,
+        nowMs: now.getTime(),
+      });
+    }
     const { unchecked, ...rest } = fields;
-    const id = nextId(notes, fields.source.via);
+    const id = nextId(notes, fields.source.via, deviceTag);
     const note = commit(dir, notes, {
       op: 'add',
       at,
+      ...(resolvedOpId ? { opId: resolvedOpId } : {}),
+      ...(device ? { device } : {}),
+      ...(resolvedHlc ? { hlc: resolvedHlc } : {}),
       note: { id, ...rest, ...(unchecked ? { checked: null } : {}) },
     });
     return { action: /** @type {const} */ ('added'), note };
@@ -596,9 +934,10 @@ export function addNote(dir, input, { now = new Date(), merge = true } = {}) {
  * @param {Note} existing
  * @param {NoteFields} fields
  * @param {string} at
+ * @param {{ device?: string, opId?: string, hlc?: string, nowMs?: number }} [meta]
  * @returns {{ action: 'merged' | 'unchanged', note: Note }}
  */
-function mergeInto(dir, notes, existing, fields, at) {
+function mergeInto(dir, notes, existing, fields, at, meta = {}) {
   /** @type {Record<string, unknown>} */
   const set = {};
   if (fields.text !== existing.text) set.text = fields.text;
@@ -615,10 +954,148 @@ function mergeInto(dir, notes, existing, fields, at) {
   const pin = fields.pinned && !existing.pinned;
   const { id } = existing;
   // commit applies each op to `existing` itself (it is the object in `notes`).
-  if (update)
-    commit(dir, notes, { op: 'update', id, at, set, source: fields.source });
-  if (pin) commit(dir, notes, { op: 'pin', id, at, pinned: true });
+  if (update) {
+    commit(dir, notes, {
+      op: 'update',
+      id,
+      at,
+      ...(meta.opId ? { opId: meta.opId } : {}),
+      ...(meta.device ? { device: meta.device } : {}),
+      ...(meta.hlc ? { hlc: meta.hlc } : {}),
+      set,
+      source: fields.source,
+    });
+  }
+  if (pin) {
+    const pinHlc = meta.hlc
+      ? update
+        ? nextHlc(
+            meta.hlc,
+            meta.nowMs ?? Date.parse(at),
+            meta.device ?? 'local'
+          )
+        : meta.hlc
+      : undefined;
+    commit(dir, notes, {
+      op: 'pin',
+      id,
+      at,
+      ...(meta.opId ? { opId: `${meta.opId}-pin` } : {}),
+      ...(meta.device ? { device: meta.device } : {}),
+      ...(pinHlc ? { hlc: pinHlc } : {}),
+      pinned: true,
+    });
+  }
   return { action: update || pin ? 'merged' : 'unchanged', note: existing };
+}
+
+/**
+ * Merge validated remote sync ops into the local memory log under the store
+ * lock. Deduplicates by `opId`, enforces Plane 2 (never imports `machine`
+ * scope), refuses secrets, and stamps `syncedAt` for `pnpm memory undo`.
+ *
+ * @param {string} dir
+ * @param {Op[]} incomingOps
+ * @param {{ now?: Date }} [options]
+ * @returns {{ applied: number, skipped: number, refused: number, problems: string[] }}
+ */
+export function mergeSyncedOps(dir, incomingOps, { now = new Date() } = {}) {
+  const syncedAt = now.toISOString();
+  return mutate(dir, (notes) => {
+    const existingLog = readLog(dir);
+    /** @type {Set<string>} */
+    const seenOpIds = new Set();
+    for (const existing of existingLog.ops) {
+      if (typeof existing.opId === 'string' && existing.opId) {
+        seenOpIds.add(existing.opId);
+      }
+    }
+    const ordered = [...incomingOps].sort((a, b) => {
+      const aAdd = a?.op === 'add' ? 0 : 1;
+      const bAdd = b?.op === 'add' ? 0 : 1;
+      if (aAdd !== bAdd) return aAdd - bAdd;
+      const hlcCmp = compareHlc(opOrderKey(a), opOrderKey(b));
+      if (hlcCmp !== 0) return hlcCmp;
+      return asciiCompare(String(a?.opId ?? ''), String(b?.opId ?? ''));
+    });
+
+    let applied = 0;
+    let skipped = 0;
+    let refused = 0;
+    /** @type {string[]} */
+    const problems = [];
+
+    for (const raw of ordered) {
+      if (
+        !isObject(raw) ||
+        typeof raw.at !== 'string' ||
+        !OPS.includes(raw.op) ||
+        typeof raw.opId !== 'string' ||
+        !raw.opId
+      ) {
+        problems.push('malformed synced op');
+        skipped += 1;
+        continue;
+      }
+      if (seenOpIds.has(raw.opId)) {
+        skipped += 1;
+        continue;
+      }
+      if (
+        (raw.op === 'add' && raw.note?.scope === 'machine') ||
+        (raw.op === 'update' && raw.set?.scope === 'machine')
+      ) {
+        refused += 1;
+        problems.push(`${raw.opId}: machine-scoped op refused`);
+        continue;
+      }
+      try {
+        if (raw.op === 'add') {
+          const id = raw.note?.id;
+          if (typeof id !== 'string' || !ID_RE.test(id)) {
+            problems.push(`${raw.opId}: invalid note id`);
+            skipped += 1;
+            continue;
+          }
+          if (notes.has(id)) {
+            skipped += 1;
+            continue;
+          }
+          const normalized = normalizeInput({
+            ...raw.note,
+            unchecked: raw.note?.checked === null,
+          });
+          assertNoSecrets(normalized);
+        } else {
+          const note = notes.get(/** @type {string} */ (raw.id));
+          if (!note || note.status === 'deleted') {
+            problems.push(`${raw.opId}: target note missing or deleted`);
+            skipped += 1;
+            continue;
+          }
+          if (raw.op === 'update') {
+            const changes = normalizeChanges(raw.set);
+            const next = normalizeInput({ ...note, ...changes });
+            assertNoSecrets(next);
+          }
+        }
+      } catch (error) {
+        if (error instanceof MemoryError && error.code === 'secret') {
+          refused += 1;
+          problems.push(`${raw.opId}: ${error.message}`);
+        } else {
+          skipped += 1;
+          problems.push(`${raw.opId}: ${/** @type {Error} */ (error).message}`);
+        }
+        continue;
+      }
+      commit(dir, notes, { ...raw, syncedAt });
+      seenOpIds.add(raw.opId);
+      applied += 1;
+    }
+
+    return { applied, skipped, refused, problems };
+  });
 }
 
 /**
@@ -628,17 +1105,19 @@ function mergeInto(dir, notes, existing, fields, at) {
  * @param {string} dir
  * @param {string} id
  * @param {Partial<Pick<NoteFields, 'text' | 'tags' | 'triggers' | 'type' | 'scope' | 'repo'>>} changes
- * @param {{ now?: Date, source?: Source }} [options]
+ * @param {{ now?: Date, source?: Source, deviceId?: string, hlc?: string }} [options]
  * @returns {Note}
  */
 export function updateNote(
   dir,
   id,
   changes,
-  { now = new Date(), source } = {}
+  { now = new Date(), source, deviceId, hlc } = {}
 ) {
   const set = normalizeChanges(changes);
   const by = normalizeSource(source);
+  const device =
+    deviceId === undefined ? undefined : normalizeDeviceId(deviceId);
   return mutate(dir, (notes) => {
     const note = activeNote(notes, id);
     const next = normalizeInput({ ...note, ...set });
@@ -655,10 +1134,13 @@ export function updateNote(
       }
     }
     if (Object.keys(diff).length === 0) return note;
+    const resolvedHlc = resolveWriteHlc(dir, now, { deviceId: device, hlc });
     return commit(dir, notes, {
       op: 'update',
       id,
       at: now.toISOString(),
+      ...(device ? { device } : {}),
+      ...(resolvedHlc ? { hlc: resolvedHlc } : {}),
       set: diff,
       source: by,
     });
@@ -672,19 +1154,29 @@ export function updateNote(
  * @param {string} dir
  * @param {string} id
  * @param {string} why
- * @param {{ now?: Date, source?: Source }} [options]
+ * @param {{ now?: Date, source?: Source, deviceId?: string, hlc?: string }} [options]
  * @returns {Note}
  */
-export function deleteNote(dir, id, why, { now = new Date(), source } = {}) {
+export function deleteNote(
+  dir,
+  id,
+  why,
+  { now = new Date(), source, deviceId, hlc } = {}
+) {
   const reason = why.trim();
   if (!reason) invalid(`Give a reason for deleting ${id} (-m "why").`);
   const by = normalizeSource(source);
+  const device =
+    deviceId === undefined ? undefined : normalizeDeviceId(deviceId);
   return mutate(dir, (notes) => {
     activeNote(notes, id);
+    const resolvedHlc = resolveWriteHlc(dir, now, { deviceId: device, hlc });
     return commit(dir, notes, {
       op: 'delete',
       id,
       at: now.toISOString(),
+      ...(device ? { device } : {}),
+      ...(resolvedHlc ? { hlc: resolvedHlc } : {}),
       why: reason,
       source: by,
     });
@@ -695,14 +1187,29 @@ export function deleteNote(dir, id, why, { now = new Date(), source } = {}) {
  * @param {string} dir
  * @param {string} id
  * @param {boolean} pinned
- * @param {{ now?: Date }} [options]
+ * @param {{ now?: Date, deviceId?: string, hlc?: string }} [options]
  * @returns {Note}
  */
-export function setPinned(dir, id, pinned, { now = new Date() } = {}) {
+export function setPinned(
+  dir,
+  id,
+  pinned,
+  { now = new Date(), deviceId, hlc } = {}
+) {
+  const device =
+    deviceId === undefined ? undefined : normalizeDeviceId(deviceId);
   return mutate(dir, (notes) => {
     const note = activeNote(notes, id);
     if (note.pinned === pinned) return note;
-    return commit(dir, notes, { op: 'pin', id, at: now.toISOString(), pinned });
+    const resolvedHlc = resolveWriteHlc(dir, now, { deviceId: device, hlc });
+    return commit(dir, notes, {
+      op: 'pin',
+      id,
+      at: now.toISOString(),
+      ...(device ? { device } : {}),
+      ...(resolvedHlc ? { hlc: resolvedHlc } : {}),
+      pinned,
+    });
   });
 }
 
@@ -711,13 +1218,22 @@ export function setPinned(dir, id, pinned, { now = new Date() } = {}) {
  *
  * @param {string} dir
  * @param {string} id
- * @param {{ now?: Date }} [options]
+ * @param {{ now?: Date, deviceId?: string, hlc?: string }} [options]
  * @returns {Note}
  */
-export function checkNote(dir, id, { now = new Date() } = {}) {
+export function checkNote(dir, id, { now = new Date(), deviceId, hlc } = {}) {
+  const device =
+    deviceId === undefined ? undefined : normalizeDeviceId(deviceId);
   return mutate(dir, (notes) => {
     activeNote(notes, id);
-    return commit(dir, notes, { op: 'check', id, at: now.toISOString() });
+    const resolvedHlc = resolveWriteHlc(dir, now, { deviceId: device, hlc });
+    return commit(dir, notes, {
+      op: 'check',
+      id,
+      at: now.toISOString(),
+      ...(device ? { device } : {}),
+      ...(resolvedHlc ? { hlc: resolvedHlc } : {}),
+    });
   });
 }
 
