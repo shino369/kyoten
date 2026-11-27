@@ -59,9 +59,21 @@ const RECALL_FOOTER =
   'More: pnpm memory recall "<query>" · full note: pnpm memory show <id>';
 const DAY_MS = 86_400_000;
 const WORD_CHAR = /[\p{L}\p{M}\p{N}_]/u;
-const CJK_SCRIPTS = ['Han', 'Hiragana', 'Katakana'].map(
-  (script) => `\\p{Script_Extensions=${script}}`
+const CJK_SCRIPTS = ['Han', 'Hiragana', 'Katakana'];
+
+/** @param {string} script */
+const cjkExtension = (script) => `\\p{Script_Extensions=${script}}`;
+/** Characters that continue a word in each CJK script (ー: both kana). */
+const CJK_CONTINUATION = CJK_SCRIPTS.map(
+  (script) => new RegExp(cjkExtension(script), 'u')
 );
+/** Characters whose own Script is exactly one CJK script (ー is Common). */
+const CJK_OWN_SCRIPT = CJK_SCRIPTS.map(
+  (script) => new RegExp(`\\p{Script=${script}}`, 'u')
+);
+/** A character-class body of all CJK scripts, to subtract from \p{L}. */
+const CJK_EXTENSIONS = CJK_SCRIPTS.map(cjkExtension).join('');
+const COMMON_CHAR = /\p{Script=Common}/u;
 
 /**
  * @typedef {import('./store.js').Note} Note
@@ -372,31 +384,73 @@ export function formatRecall(
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
- * Characters that continue a word at the edge of a phrase. Latin and CJK
- * text can meet without spaces, and kana particles can follow kanji or
- * katakana terms. Digits and underscores continue words in either script.
+ * The CJK scripts a character belongs to, by the given tests.
  *
- * @param {string} edge
+ * @param {string} char
+ * @param {RegExp[]} tests one per CJK script, in CJK_SCRIPTS order
+ * @returns {string[]}
  */
-function wordContinuation(edge) {
-  const scripts = CJK_SCRIPTS.filter((script) =>
-    new RegExp(script, 'u').test(edge)
-  );
-  return scripts.length > 0
-    ? `[${scripts.join('')}\\p{M}\\p{N}_]`
-    : `[[\\p{L}\\p{M}\\p{N}_]--[${CJK_SCRIPTS.join('')}]]`;
+const cjkScripts = (char, tests) =>
+  CJK_SCRIPTS.filter((_, index) => tests[index].test(char));
+
+/**
+ * The CJK scripts of the phrase edge at `chars[from]`. A character of one
+ * script names it (か, カ, 漢). One that extends to both kana (ー) takes the
+ * script of the nearest unambiguous CJK character inward, walking over Common
+ * characters only: 漢字ー is Han, while APIー finds no CJK inward and belongs
+ * to no CJK script. A phrase with no such character keeps the edge's own
+ * scripts, so ー alone still continues both kana.
+ *
+ * @param {string[]} chars the phrase's characters
+ * @param {number} from the edge character's index
+ * @param {1 | -1} step which way is inward
+ * @returns {string[]}
+ */
+function edgeScripts(chars, from, step) {
+  const own = cjkScripts(chars[from], CJK_CONTINUATION);
+  if (own.length < 2) {
+    return own;
+  }
+  for (let i = from + step; i >= 0 && i < chars.length; i += step) {
+    if (!COMMON_CHAR.test(chars[i])) {
+      return cjkScripts(chars[i], CJK_OWN_SCRIPT);
+    }
+  }
+  return own;
+}
+
+/**
+ * Characters that continue a word at the edge of a phrase. Latin and CJK text
+ * can meet without spaces, and kana particles can follow kanji or katakana
+ * terms, so a CJK edge also continues in the characters its script extends
+ * to: ー keeps continuing Katakana, so the cue サーバ does not match サーバー,
+ * while a cue ending in ー takes the script before it, so エラー still matches
+ * エラーが出た. Digits and underscores continue words in either script; an
+ * edge of no CJK script continues only outside CJK.
+ *
+ * @param {string[]} chars the phrase's characters
+ * @param {number} from the edge character's index
+ * @param {1 | -1} step which way is inward
+ */
+function wordContinuation(chars, from, step) {
+  const scripts = edgeScripts(chars, from, step);
+  return scripts.length === 0
+    ? `[[\\p{L}\\p{M}\\p{N}_]--[${CJK_EXTENSIONS}]]`
+    : `[${scripts.map(cjkExtension).join('')}\\p{M}\\p{N}_]`;
 }
 
 /** @param {string} phrase @param {boolean} [wildcards] */
 function phrasePattern(phrase, wildcards = false) {
   const chars = [...phrase];
-  const first = chars[0] ?? '';
-  const last = chars.at(-1) ?? '';
   const body = wildcards
     ? phrase.split(/\*+/).map(escapeRegExp).join('.*?')
     : escapeRegExp(phrase);
-  const start = WORD_CHAR.test(first) ? `(?<!${wordContinuation(first)})` : '';
-  const end = WORD_CHAR.test(last) ? `(?!${wordContinuation(last)})` : '';
+  const start = WORD_CHAR.test(chars[0] ?? '')
+    ? `(?<!${wordContinuation(chars, 0, 1)})`
+    : '';
+  const end = WORD_CHAR.test(chars.at(-1) ?? '')
+    ? `(?!${wordContinuation(chars, chars.length - 1, -1)})`
+    : '';
   return new RegExp(`${start}${body}${end}`, 'iv');
 }
 
