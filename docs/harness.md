@@ -403,7 +403,7 @@ digests, at most 3,000 characters) that every session loads. Rules for agents: A
   or Chinese (or is written in that script) and the Stop input's `last_assistant_message` has at
   least 40 letters of prose (fenced blocks, inline code, URLs, paths, and `>` quotes removed) of
   which under 20% are in that script, it blocks once with a one-line rewrite request. The stop
-  right after its own block always passes (kept in `memory/cache/language-guard.json`, since the
+  right after its own block always passes (a per-session mark under `memory/cache/language-guard/`, since the
   DSH bridge always sends `stop_hook_active: false`), so it never loops. It adds nothing to a
   reply already in the Language and passes while personalization is off, in headless runs
   (`MEMORY_EXTRACT`), for the reviewer and verifier, and on any error. DSH and Antigravity send no

@@ -19,7 +19,7 @@ import fs from 'fs';
 import path from 'path';
 import { normalizeHookInput, parseHarness } from '../harness/input.js';
 import { runIfMain } from '../module-runner.js';
-import { SESSION_ID_RE } from '../task/store.js';
+import { SESSION_ID_RE, writeFileAtomic } from '../task/store.js';
 import { ROOT_DIR } from '../workspace-config.js';
 import { readConfig } from './config.js';
 import { EXTRACT_ENV } from './extract-env.js';
@@ -31,8 +31,10 @@ import { memoryDir } from './store.js';
 export const MIN_LETTERS = 40;
 /** A reply passes when at least this share of its letters is in the target script. */
 export const MIN_SHARE = 0.2;
-/** Sessions blocked at their last stop, relative to the memory directory. */
-export const GUARD_STATE_FILE = path.join('cache', 'language-guard.json');
+/** One `<session>.json` mark per session blocked at its last stop, under the memory directory. */
+export const GUARD_STATE_DIR = path.join('cache', 'language-guard');
+/** Only the start of a reply is measured: a share needs no more, and it bounds the regex work. */
+export const MAX_CHARS = 20_000;
 const STATE_TTL_MS = 24 * 60 * 60 * 1000;
 const ROLE_AGENTS = ['reviewer', 'verifier'];
 
@@ -42,14 +44,16 @@ const ROLE_AGENTS = ['reviewer', 'verifier'];
 const HANGUL = /[ᄀ-ᇿ㄰-㆏가-힯]/gu;
 const HAN = /[㐀-䶿一-鿿]/gu;
 const LETTER = /[A-Za-zÀ-ɏ぀-ヿ㐀-䶿一-鿿ᄀ-ᇿ㄰-㆏가-힯]/gu;
-/** @type {Record<Script, RegExp>} */
 // Japanese prose is kana plus kanji; a Chinese reply would also pass for a
 // Japanese Language, which is accepted (the guard is for slips into English).
+/** @type {Record<Script, RegExp>} */
 const SCRIPT_RE = {
   ja: /[぀-ヿ㐀-䶿一-鿿]/gu,
   ko: HANGUL,
   zh: HAN,
 };
+/** Fixed names for the reason: the user's free-text setting is never echoed into it. */
+const SCRIPT_LABEL = { ja: '日本語', ko: '한국어', zh: '中文' };
 
 /**
  * The first phrase of a Language setting ("日本語。…" → "日本語"): the part
@@ -120,11 +124,14 @@ function stripFences(text) {
  * @param {string} text
  */
 function prose(text) {
-  return stripFences(text)
-    .replace(/`[^`\n]*`/gu, '')
-    .replace(/https?:\/\/\S+/gu, '')
-    .replace(/[\w.~-]*\/[\w./~-]+/gu, '')
-    .replace(/^[ \t]*>.*$/gmu, '');
+  return (
+    stripFences(text)
+      .replace(/`[^`\n]*`/gu, '')
+      .replace(/https?:\/\/\S+/gu, '')
+      // The lookbehind tries each run once (no quadratic backtracking).
+      .replace(/(?<![\w.~-])[\w.~-]*\/[\w./~-]+/gu, '')
+      .replace(/^[ \t]*>.*$/gmu, '')
+  );
 }
 
 /**
@@ -133,7 +140,7 @@ function prose(text) {
  * @returns {{ letters: number, inScript: number }}
  */
 export function measureReply(text, script) {
-  const body = prose(text);
+  const body = prose(text.slice(0, MAX_CHARS));
   return {
     letters: (body.match(LETTER) ?? []).length,
     inScript: (body.match(SCRIPT_RE[script]) ?? []).length,
@@ -141,44 +148,42 @@ export function measureReply(text, script) {
 }
 
 /**
- * @param {string} file
- * @returns {Record<string, { blockedAt: string }>}
- */
-function readState(file) {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed
-      : {};
-  } catch {
-    return {};
-  }
-}
-
-/**
  * Whether this session's previous stop was blocked by the guard, then record
- * whether this one is. Entries older than a day are dropped.
+ * whether this one is. Each session has its own mark file (no shared file to
+ * race on), written by rename so a symlink is replaced, not followed. Marks
+ * older than a day count as absent and are pruned.
  *
  * @param {string} dir the memory directory
- * @param {string} session
+ * @param {string} session a SESSION_ID_RE-checked id, safe as a file name
  * @param {(wasBlocked: boolean) => boolean} decide whether to block now
  * @param {Date} now
  * @returns {boolean} the decision
  */
 function recordStop(dir, session, decide, now) {
-  const file = path.join(dir, GUARD_STATE_FILE);
-  const state = readState(file);
-  const wasBlocked = Boolean(state[session]);
-  const block = decide(wasBlocked);
-  for (const [id, entry] of Object.entries(state)) {
-    const at = Date.parse(entry?.blockedAt);
-    if (!(now.getTime() - at < STATE_TTL_MS)) delete state[id];
+  const stateDir = path.join(dir, GUARD_STATE_DIR);
+  const file = path.join(stateDir, `${session}.json`);
+  const fresh = (/** @type {string} */ name) => {
+    try {
+      const stat = fs.lstatSync(path.join(stateDir, name));
+      return now.getTime() - stat.mtimeMs < STATE_TTL_MS;
+    } catch {
+      return false;
+    }
+  };
+  const block = decide(fresh(`${session}.json`));
+  if (block) {
+    fs.mkdirSync(stateDir, { recursive: true });
+    writeFileAtomic(
+      file,
+      `${JSON.stringify({ blockedAt: now.toISOString() })}\n`
+    );
+  } else {
+    fs.rmSync(file, { force: true });
   }
-  if (block) state[session] = { blockedAt: now.toISOString() };
-  else delete state[session];
-  if (wasBlocked || block) {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, `${JSON.stringify(state)}\n`);
+  if (fs.existsSync(stateDir)) {
+    for (const name of fs.readdirSync(stateDir)) {
+      if (!fresh(name)) fs.rmSync(path.join(stateDir, name), { force: true });
+    }
   }
   return block;
 }
@@ -215,10 +220,15 @@ export function checkStop(input, options = {}) {
   }
   const script = targetScript(language);
   if (!script) return null;
-  const session =
-    typeof event.session_id === 'string' && SESSION_ID_RE.test(event.session_id)
-      ? event.session_id
-      : null;
+  // Without a usable session id the one-retry mark cannot be kept, so pass
+  // rather than risk blocking every stop.
+  if (
+    typeof event.session_id !== 'string' ||
+    !SESSION_ID_RE.test(event.session_id)
+  ) {
+    return null;
+  }
+  const session = event.session_id;
 
   const { letters, inScript } = measureReply(reply, script);
   const slipped = letters >= MIN_LETTERS && inScript / letters < MIN_SHARE;
@@ -226,10 +236,9 @@ export function checkStop(input, options = {}) {
   // stop_hook_active is not used: it is also true after another Stop hook
   // (the task loop) continued the turn, and DSH always sends false.
   const decide = (/** @type {boolean} */ wasBlocked) => slipped && !wasBlocked;
-  const block = session ? recordStop(dir, session, decide, now) : decide(false);
-  if (!block) return null;
+  if (!recordStop(dir, session, decide, now)) return null;
 
-  const name = languageName(/** @type {string} */ (language));
+  const name = SCRIPT_LABEL[script];
   const reason = `[Persona] Your last reply was not in ${name}. Rewrite the whole reply in ${name} (the Language setting); keep code, commands, paths, and identifiers as they are.`;
   return harness === 'agy'
     ? { decision: 'continue', reason }
