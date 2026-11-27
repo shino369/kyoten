@@ -155,6 +155,11 @@
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/task_loop.js --harness claude",
             "timeout": 300
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/utils/memory/language_guard.js --harness claude",
+            "timeout": 5
           }
         ]
       }

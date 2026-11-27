@@ -284,6 +284,14 @@ describe('persona reminder', () => {
     expect(context(prompt('what a lovely morning'))).toBe(PERSONA_REMINDER);
   });
 
+  test('should not remind of a persona when only the language guard is set', () => {
+    writePersonalization(dir, { guard: 'ja' });
+
+    expect(context(prompt('what a lovely morning')) ?? '').not.toContain(
+      '[Persona]'
+    );
+  });
+
   test('should name the language when one is set', () => {
     writePersonalization(dir, { persona: 'お嬢様', language: '日本語' });
 

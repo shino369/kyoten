@@ -396,6 +396,29 @@ digests, at most 3,000 characters) that every session loads. Rules for agents: A
   agents answer in the language the user writes in (`pnpm memory status` says so). In Claude
   Code, `"language": "<name>"` in `.claude/settings.local.json` adds a system-prompt rule; it
   also asks for code comments in that language and changes session titles.
+- **Language guard** (`utils/memory/language_guard.js`, Stop, Claude Code and Codex). A reply that
+  slips out of the Language tends to be copied by the next turns (in this checkout's transcripts,
+  2026-11-21..27: 62-67% of replies after an English reply were English, 6% after a Japanese one),
+  so the guard catches the first slip. It checks only the workspace's languages besides English,
+  Japanese and Chinese (as in the README), and only when it is turned on with
+  `pnpm memory personalize --guard ja|zh`: a field of its own in `personalization.json`, not
+  rendered into the core block, so the guard never guesses a language from the free-text Language.
+  Older kyoten versions refuse a `personalization.json` with this field, so turn it on after every
+  checkout that shares `memory/` is updated, and run `pnpm memory personalize --guard off` before
+  going back to an older version. When it is set and the reply has at least 40 letters of prose
+  (letters of any script; fenced and indented code blocks, including those inside list items, code
+  spans, URLs, POSIX and Windows paths, and `>` quotes removed before the first 20,000 characters of
+  prose are measured) of which under 20% are in that script, it blocks once with a one-line rewrite
+  request. The reply is the Stop input's `last_assistant_message`; in Claude Code, when that is
+  missing, the last assistant message in the transcript's tail (never an earlier one: no text there
+  means no reply). The stop right after its own block passes: a per-session mark under
+  `memory/cache/language-guard/` together with `stop_hook_active`, so it never loops, and a rewrite
+  that was interrupted does not exempt the next turn (any stop it does not block, a stop without
+  reply text included, clears the mark). It writes and prunes only its own mark files (regular files
+  named `<session id>.json`), and passes when `memory/`, `memory/cache`, or that folder is a link.
+  It adds nothing to a reply already in that language and passes while personalization is off, in
+  headless runs (`MEMORY_EXTRACT`), for the reviewer and verifier, and on any error. DSH and
+  Antigravity send no reply text at Stop, so it is not registered there.
 - **Pause personalization.** `pnpm memory personalize --off` pauses the workspace's saved
   response settings across sessions. The memory hooks report the paused state on session start
   and at each typed prompt. You can still edit, audit, and compact the saved persona while it

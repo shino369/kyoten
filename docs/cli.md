@@ -227,9 +227,12 @@ Settings
   personalize --presets         List the available presets
   personalize [--preset <name>] [--call-me …] [--about-me …] [--language …]
       [--persona … | --persona-file <file.md>] [--tone <text|preset>] [--traits a,b]
-      [--extra …] [--reset]
+      [--extra …] [--guard ja|zh|off] [--reset]
                                 Set how agents talk to you in conversations. An empty
-                                value clears a field. --persona-file reads the
+                                value clears a field. --guard turns on the Stop-time
+                                language guard for Japanese or Chinese (Claude Code and
+                                Codex): a reply mostly in another script is sent back
+                                once for a rewrite. --persona-file reads the
                                 persona from markdown (comments and heading marks
                                 dropped; the same 1,500-character limit). Keep the
                                 persona in memory/persona.md instead and pnpm memory init

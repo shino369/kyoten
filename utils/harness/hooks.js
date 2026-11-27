@@ -117,6 +117,15 @@ export const HOOKS = [
     agy: [{ event: 'Stop' }],
   },
   {
+    id: 'language-guard',
+    script: 'utils/memory/language_guard.js',
+    timeout: 5,
+    // Needs last_assistant_message in the Stop input: Claude Code (also
+    // dscc) and Codex send it; the DSH bridge and Antigravity do not.
+    claude: [{ event: 'Stop' }],
+    codex: [{ event: 'Stop' }],
+  },
+  {
     id: 'task-loop-reset',
     script: '.claude/hooks/task_loop.js',
     args: ['--reset'],

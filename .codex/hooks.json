@@ -127,6 +127,11 @@
             "type": "command",
             "command": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/task_loop.js\" --harness codex",
             "timeout": 300
+          },
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/utils/memory/language_guard.js\" --harness codex",
+            "timeout": 5
           }
         ]
       }
