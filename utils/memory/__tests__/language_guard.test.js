@@ -195,6 +195,29 @@ describe('measureReply', () => {
     );
   });
 
+  test('should end a table at a heading right after it', () => {
+    const text = [
+      '| 項目 |',
+      '| --- |',
+      '## 見出し',
+      'ですわ `someEnglish',
+      'identifierHere` ですわ',
+    ].join('\n');
+
+    expect(measureReply(text, 'ja')).toEqual({ letters: 11, inScript: 11 });
+  });
+
+  test('should not start a table when the delimiter row has another column count', () => {
+    const text = [
+      'ですわ `someEnglishIdentifier',
+      '| first',
+      '| - | -- |',
+      'otherEnglishWords` ですわ',
+    ].join('\n');
+
+    expect(measureReply(text, 'ja')).toEqual({ letters: 6, inScript: 6 });
+  });
+
   test('should end a table at a blank line', () => {
     const text = [
       '| 項目 |',

@@ -153,14 +153,27 @@ function stripCode(text) {
 const LINE_BLOCK = /^(?: {0,3}#{1,6}(?:[ \t]|$)|[ \t]*(?:[-*_][ \t]*){3,}$)/u;
 /** A GFM table's delimiter row (`| :--- | --- |`): pipes, colons, dashes. */
 const TABLE_DELIMITER = /^(?=[^|]*\|)(?=[^-]*-)[ \t|:-]+$/u;
+/**
+ * The cells of a table row (GFM): one leading and one trailing pipe are
+ * dropped, and an escaped pipe does not split.
+ *
+ * @param {string} line
+ */
+const cellCount = (line) =>
+  line
+    .trim()
+    .replace(/^\|/u, '')
+    .replace(/(?<!\\)\|$/u, '')
+    .split(/(?<!\\)\|/u).length;
 /** A line that starts a new block: a list item or a quote. */
 const BLOCK_START = /^[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]|>)/u;
 
 /**
  * Split text into the blocks a code span cannot cross: paragraphs end at a
  * blank line, a list item, or a quote, and a heading or thematic break is a
- * block alone, as is each row of a table (a line with `|` followed by a
- * delimiter row, through the next blank line).
+ * block alone, as is each row of a table: a line with `|` followed by a
+ * delimiter row of as many cells, through the line before the next blank
+ * line or other block (a heading, thematic break, list item, or quote).
  *
  * @param {string} text
  * @returns {string[]} blocks whose `\n`-join is the text
@@ -174,13 +187,13 @@ function blocks(text) {
   let table = false;
   lines.forEach((line, index) => {
     const blank = line.trim() === '';
-    if (blank) table = false;
-    else if (
-      !table &&
-      line.includes('|') &&
-      TABLE_DELIMITER.test(lines[index + 1] ?? '')
-    ) {
-      table = true;
+    const other = LINE_BLOCK.test(line) || BLOCK_START.test(line);
+    if (blank || other) table = false;
+    else if (!table && line.includes('|')) {
+      const delimiter = lines[index + 1] ?? '';
+      table =
+        TABLE_DELIMITER.test(delimiter) &&
+        cellCount(delimiter) === cellCount(line);
     }
     const alone = blank || table || LINE_BLOCK.test(line);
     if (alone || BLOCK_START.test(line) || current === null) {
