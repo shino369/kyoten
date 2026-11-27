@@ -166,6 +166,24 @@ describe('checkStop', () => {
     ).toBeNull();
   });
 
+  test('should pass a kanji-heavy Japanese reply with English terms', () => {
+    const reply =
+      '完了ですわ。変更内容：language_guard 追加、Stop hook 登録（Claude Code、Codex）、文書更新、試験四十八件合格、検証完了。';
+
+    expect(stop({ last_assistant_message: reply })).toBeNull();
+  });
+
+  test('should strip a fence opened on a list-marker line and still check the prose after it', () => {
+    const reply = [
+      '- ```bash',
+      '  pnpm check',
+      '  ```',
+      'The fix is finished on the branch, and every test passes. Next I will open a review round.',
+    ].join('\n');
+
+    expect(stop({ last_assistant_message: reply })?.decision).toBe('block');
+  });
+
   test('should pass a Japanese step list with an indented code block', () => {
     const reply = [
       '手順をまとめましたわ。',

@@ -39,12 +39,17 @@ const ROLE_AGENTS = ['reviewer', 'verifier'];
 /** @typedef {'ja' | 'ko' | 'zh'} Script */
 /** @typedef {{ decision: 'block' | 'continue', reason: string }} GuardOutput */
 
-const KANA = /[぀-ヿ]/gu;
 const HANGUL = /[ᄀ-ᇿ㄰-㆏가-힯]/gu;
 const HAN = /[㐀-䶿一-鿿]/gu;
 const LETTER = /[A-Za-zÀ-ɏ぀-ヿ㐀-䶿一-鿿ᄀ-ᇿ㄰-㆏가-힯]/gu;
 /** @type {Record<Script, RegExp>} */
-const SCRIPT_RE = { ja: KANA, ko: HANGUL, zh: HAN };
+// Japanese prose is kana plus kanji; a Chinese reply would also pass for a
+// Japanese Language, which is accepted (the guard is for slips into English).
+const SCRIPT_RE = {
+  ja: /[぀-ヿ㐀-䶿一-鿿]/gu,
+  ko: HANGUL,
+  zh: HAN,
+};
 
 /**
  * The first phrase of a Language setting ("日本語。…" → "日本語"): the part
@@ -91,7 +96,8 @@ function stripFences(text) {
   /** @type {string | null} */
   let open = null;
   for (const line of text.split('\n')) {
-    const fence = /^\s*(`{3,}|~{3,})/u.exec(line)?.[1];
+    // A fence may follow a list marker ("- ```bash", "1. ```").
+    const fence = /^\s*(?:(?:[-*+]|\d+[.)])\s+)?(`{3,}|~{3,})/u.exec(line)?.[1];
     if (open === null) {
       if (fence) open = fence;
       else kept.push(line);
