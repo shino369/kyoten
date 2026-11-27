@@ -19,7 +19,13 @@ import {
   recall,
   scoreTerms,
 } from '../recall.js';
-import { CACHE_DIR, LOG_FILE, addNote, memoryDir } from '../store.js';
+import {
+  CACHE_DIR,
+  LOG_FILE,
+  NOTES_CACHE_FILE,
+  addNote,
+  memoryDir,
+} from '../store.js';
 
 /** @typedef {import('../store.js').Note} Note */
 
@@ -139,6 +145,23 @@ describe('scoreTerms', () => {
   ];
   const index = buildIndex(notes);
 
+  test.each([0.1, 0.75])(
+    'should preserve evidence at the same document share %s',
+    (share) => {
+      const corpus = (/** @type {number} */ size) =>
+        buildIndex(
+          Array.from({ length: size }, (_, i) =>
+            note(`note${i}`, { tags: [i < size * share ? 'shared' : 'filler'] })
+          )
+        );
+
+      const initial = scoreTerms(corpus(220), 'note0', ['shared']).evidence;
+      const grown = scoreTerms(corpus(2200), 'note0', ['shared']).evidence;
+
+      expect(grown).toBe(initial);
+    }
+  );
+
   test('should score a tag match above a text match', () => {
     const tag = scoreTerms(index, 'tag', ['kubectl']);
     const text = scoreTerms(index, 'text', ['kubectl']);
@@ -217,6 +240,84 @@ describe('scoreTerms', () => {
 });
 
 describe('recall', () => {
+  test('should match cues next to Japanese text and respect same-script word boundaries', () => {
+    const notes = [note('a', { cues: ['PR', 'プルリク'] })];
+
+    expect(ids(notes, 'ＰＲを作って')).toEqual(['a']);
+    expect(ids(notes, 'プルリクを作って')).toEqual(['a']);
+    expect(ids(notes, 'APRIL プルリクエスト')).toEqual([]);
+  });
+
+  describe('cue boundaries around ー', () => {
+    /** @param {string} cue @param {string} query */
+    const match = (cue, query) =>
+      ids([note('a', { cues: [cue] })], query).includes('a');
+
+    test('should match a katakana cue ending in ー before a hiragana particle', () => {
+      // ー extends to both kana, so the cue takes the script before it.
+      expect(match('エラー', 'エラーが出た')).toBe(true);
+      expect(match('サーバー', 'サーバーを起動して')).toBe(true);
+      expect(match('ユーザー', 'ユーザーに確認して')).toBe(true);
+      expect(match('ワークフロー', 'ワークフローを作って')).toBe(true);
+    });
+
+    test('should keep katakana word boundaries around ー', () => {
+      expect(match('エラー', 'エラーズ')).toBe(false);
+      expect(match('エラー', 'ビルドエラー')).toBe(false);
+      expect(match('サーバ', 'サーバー')).toBe(false);
+    });
+
+    test('should keep katakana word boundaries when a combining dakuten precedes ー', () => {
+      const cue = 'ア\u3099ー';
+
+      expect(match(cue, `${cue}ズ`)).toBe(false);
+      expect(match(cue, `${cue}が出た`)).toBe(true);
+    });
+
+    test('should take the script of a phrase edge from inside the phrase', () => {
+      expect(match('APIサーバー', 'APIサーバーを起動')).toBe(true);
+      expect(match('APIサーバー', 'APIサーバーズ')).toBe(false);
+      expect(match('らー', 'らーめん')).toBe(false);
+      expect(match('らー', 'らー めん')).toBe(true);
+      expect(match('漢字ー', '漢字ーが')).toBe(true);
+      expect(match('漢字ー', '漢字ー漢')).toBe(false);
+    });
+
+    test('should not walk past a non-CJK character to find a script', () => {
+      // 漢字APIー stops at the Latin I inward: the Han character after it
+      // does not continue the word, and Latin still does.
+      expect(match('漢字APIー', '漢字APIー漢')).toBe(true);
+      expect(match('APIー', 'APIーを起動')).toBe(true);
+      expect(match('APIー', 'APIーX')).toBe(false);
+    });
+
+    test.each([' ', ':'])(
+      'should stop inferring the script of ー at the separator %j',
+      (separator) => {
+        const cue = `API${separator}ー`;
+
+        expect(match(cue, `${cue}カタカナ`)).toBe(false);
+        expect(match(cue, cue)).toBe(true);
+      }
+    );
+
+    test('should treat a cue that starts with ー by its next character', () => {
+      expect(match('ーめん', 'らーめん')).toBe(false);
+      expect(match('ーめん', 'Xーめん')).toBe(true);
+    });
+
+    test('should handle a cue made of only ー', () => {
+      expect(match('ー', 'ー')).toBe(true);
+      expect(match('ー', 'エラー')).toBe(false);
+      expect(match('ーー', 'ーー')).toBe(true);
+    });
+
+    test('should ignore an empty cue', () => {
+      // An empty cue matches, but is falsy, so it never prioritizes a note.
+      expect(match('', 'kubectl')).toBe(false);
+    });
+  });
+
   test('should return nothing for an empty store', () => {
     expect(ids([], 'kubectl')).toEqual([]);
   });
@@ -291,6 +392,16 @@ describe('recall', () => {
     ];
 
     expect(ids(notes, 'kubectl upgrade helm')).toEqual(['b', 'a']);
+  });
+
+  test('should rank cue matches by score', () => {
+    const notes = [
+      note('b', { cues: ['kubectl'], tags: ['kubectl'] }),
+      note('a', { cues: ['kubectl'], tags: ['kubectl', 'cluster'] }),
+      ...FILLERS,
+    ];
+
+    expect(ids(notes, 'kubectl cluster')).toEqual(['a', 'b']);
   });
 
   test('should return at most 4 notes, or the given limit', () => {
@@ -583,6 +694,22 @@ describe('matchTriggers', () => {
     expect(matched('gh api -X PUT repos/o/r/pulls/12/merge')).toEqual(['m1']);
   });
 
+  test('should match a literal trigger ending in ー only at a word boundary', () => {
+    const notes = [note('m1', { triggers: ['エラー'] })];
+
+    expect(matchTriggers(notes, 'echo エラーが出た')).toEqual(notes);
+    expect(matchTriggers(notes, 'echo エラーズ')).toEqual([]);
+  });
+
+  test('should keep kana word boundaries when a wildcard precedes ー', () => {
+    const notes = [
+      note('m1', { triggerMode: 'block', triggers: ['echo *ー'] }),
+    ];
+
+    expect(matchTriggers(notes, 'echo サーバールーム')).toEqual([]);
+    expect(matchTriggers(notes, 'echo サーバー')).toEqual(notes);
+  });
+
   test('should ignore case', () => {
     expect(matched('Docker Compose up')).toEqual(['m2']);
   });
@@ -668,6 +795,44 @@ describe('loadIndex', () => {
     fs.writeFileSync(indexFile(), JSON.stringify({ version: 0 }));
 
     expect(loadIndex(dir).index.N).toBe(1);
+  });
+
+  test('should recover a legacy note missing from both previous caches', () => {
+    const note = {
+      id: 'm1',
+      scope: 'user',
+      type: 'howto',
+      text: 'Deployments use the release channel.',
+      tags: ['deployment'],
+      triggers: ['pwd'],
+      triggerMode: 'block',
+    };
+    const log = path.join(dir, LOG_FILE);
+    const cacheDir = path.join(dir, CACHE_DIR);
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(
+      log,
+      `${JSON.stringify({ op: 'add', at: NOW.toISOString(), note })}\n`
+    );
+    const { size, mtimeMs } = fs.statSync(log);
+    const stamp = `${size}:${mtimeMs}`;
+    fs.writeFileSync(
+      path.join(cacheDir, NOTES_CACHE_FILE),
+      JSON.stringify({
+        version: 1,
+        stamp,
+        notes: [],
+        problems: ['short trigger'],
+      })
+    );
+    fs.writeFileSync(
+      indexFile(),
+      JSON.stringify({ version: 1, stamp, index: buildIndex([]) })
+    );
+
+    const { notes, index } = loadIndex(dir);
+
+    expect(ids(notes, 'deployment', { index })).toEqual([note.id]);
   });
 
   test('should not cache an index for a log that changed while read', () => {

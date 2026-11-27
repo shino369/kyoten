@@ -285,6 +285,21 @@ describe('memory store', () => {
         { supersedes: 7 },
         /supersedes field must be a note id/,
       ],
+      [
+        'a blocking trigger that is only a wildcard',
+        { triggers: ['*'], triggerMode: 'block' },
+        /blocking trigger needs a run of at least 4 characters/,
+      ],
+      [
+        'a blocking trigger too short to name a command',
+        { triggers: ['gh pr', 'l * s'], triggerMode: 'block' },
+        /blocking trigger needs a run of at least 4 characters besides spaces between \*s: "l \* s"/,
+      ],
+      [
+        'a blocking trigger whose letters are spread out by wildcards',
+        { triggers: ['*e*e*e*e*'], triggerMode: 'block' },
+        /run of at least 4 characters/,
+      ],
     ])('should refuse %s', (_label, over, message) => {
       const value = over === null ? null : input(/** @type {any} */ (over));
 
@@ -355,6 +370,57 @@ describe('memory store', () => {
       expect(merged.action).toBe('merged');
       expect(merged.note.type).toBe('fact');
       expect(merged.note.triggers).toEqual(['gh pr', 'graphql']);
+    });
+
+    test.each(
+      /** @type {Array<['inject' | 'block', 'inject' | 'block']>} */ ([
+        ['inject', 'block'],
+        ['block', 'inject'],
+      ])
+    )(
+      'should refuse to turn a %s note into %s through a near-duplicate',
+      (from, to) => {
+        const first = addNote(
+          dir,
+          input({ triggers: ['gh pr'], triggerMode: from })
+        );
+
+        const error = caught(() =>
+          addNote(
+            dir,
+            input({
+              text: PROXY_EDIT,
+              triggers: ['gh pr', 'graphql'],
+              triggerMode: to,
+            })
+          )
+        );
+
+        expect(error.code).toBe('invalid');
+        expect(error.message).toMatch(
+          `pnpm memory edit m1 --trigger-mode ${to} --trigger "gh pr" --trigger "graphql"`
+        );
+        expect(loadNotes(dir).notes[0]).toEqual(first.note);
+      }
+    );
+
+    test("should keep a blocking note's triggers when a near-duplicate brings others", () => {
+      addNote(dir, input({ triggers: ['gh pr'], triggerMode: 'block' }));
+
+      const merged = addNote(
+        dir,
+        input({
+          text: PROXY_EDIT,
+          triggers: ['git push'],
+          triggerMode: 'block',
+        })
+      );
+
+      expect(merged.note).toMatchObject({
+        text: PROXY_EDIT,
+        triggers: ['gh pr'],
+        triggerMode: 'block',
+      });
     });
 
     test('should pin the existing note when the duplicate asks for it', () => {
@@ -634,7 +700,7 @@ describe('memory store', () => {
       const built = loadNotes(dir);
       const cached = loadNotes(dir);
 
-      expect(built.stamp).toMatch(/^\d+:[\d.]+$/);
+      expect(built.stamp).toMatch(/^\d+:\d+:[\d.]+$/);
       expect(cached.stamp).toBe(built.stamp);
     });
 
@@ -738,6 +804,38 @@ describe('memory store', () => {
       op: 'add',
       at,
       note: { id, ...input(), ...over },
+    });
+
+    test('should preserve legacy blocking notes and updates from the journal', () => {
+      const legacy = { triggers: ['pwd'], triggerMode: 'block' };
+      const ops = [
+        add('m1', legacy),
+        add('m2'),
+        { op: 'update', id: 'm2', at, set: { text: PROXY_EDIT, ...legacy } },
+      ];
+      fs.mkdirSync(dir);
+      fs.writeFileSync(
+        path.join(dir, LOG_FILE),
+        ops.map((op) => JSON.stringify(op)).join('\n') + '\n'
+      );
+
+      const { notes, problems } = loadNotes(dir);
+
+      expect(problems).toEqual([]);
+      expect(notes).toMatchObject([
+        { id: 'm1', text: PROXY, ...legacy },
+        { id: 'm2', text: PROXY_EDIT, ...legacy },
+      ]);
+      expect(updateNote(dir, 'm1', { tags: ['proxy'] })).toMatchObject({
+        tags: ['proxy'],
+        ...legacy,
+      });
+      expect(() => updateNote(dir, 'm1', { triggers: ['*'] })).toThrow(
+        /blocking trigger needs/
+      );
+      expect(
+        updateNote(dir, 'm1', { triggers: ['git status'] }).triggers
+      ).toEqual(['git status']);
     });
 
     test('should apply ops in order', () => {

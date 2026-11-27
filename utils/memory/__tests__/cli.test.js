@@ -41,6 +41,7 @@ import {
   LOG_FILE,
   USAGE_FILE,
   addNote,
+  archiveNote,
   deleteNote,
   loadNotes,
   memoryDir,
@@ -2349,6 +2350,43 @@ describe('history', () => {
 });
 
 describe('edit', () => {
+  test('should search the archive separately and restore a note to regular recall', () => {
+    const { note } = addNote(
+      dir,
+      {
+        text: 'The catalog keeps tofu specimens.',
+        scope: 'user',
+        type: 'fact',
+        tags: ['tofu'],
+      },
+      { now: new Date('2025-01-01') }
+    );
+    archiveNote(dir, note.id, NOW);
+
+    expect(runJson(['recall', 'tofu'])).toEqual([]);
+    expect(runJson(['recall', 'tofu', '--archived'])).toMatchObject([
+      { id: note.id, note: { status: 'archived' } },
+    ]);
+    expect(run(['show', note.id]).out).toContain('archived');
+    run(['restore', note.id]);
+    expect(runJson(['recall', 'tofu'])).toMatchObject([
+      { id: note.id, note: { status: 'active' } },
+    ]);
+  });
+  test('should store repeatable cues and recall a cue shared by common notes', () => {
+    const note = save({ text: 'Changes ship through the REST endpoint.' });
+    save({
+      text: 'PR discussion and PR labels are on the board.',
+      tags: ['PR'],
+    });
+
+    run(['edit', note.id, '--cue', 'create a PR', '--cue', 'PR']);
+
+    expect(run(['recall', 'create a PR']).out.split('\n')[0]).toContain(
+      note.id
+    );
+    expect(run(['show', note.id]).out).toContain('Cues: create a PR, PR');
+  });
   test('should change the text and announce it', () => {
     save();
 
@@ -2417,7 +2455,7 @@ describe('edit', () => {
     save();
 
     expect(() => run(['edit', 'm1'])).toThrow(
-      'Nothing to change: give new text, or --tags, --trigger, --type, --scope, --repo.'
+      'Nothing to change: give new text, or --tags, --cue, --trigger, --trigger-mode, --type, --scope, --repo.'
     );
   });
 

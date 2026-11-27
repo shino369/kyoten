@@ -33,7 +33,7 @@ import {
   tryLock,
 } from '../queue.js';
 import { PERSONALIZATION_FILE, writePersonalization } from '../personalize.js';
-import { RECALL_HEADER } from '../recall.js';
+import { RECALL_HEADER, RECALL_LIMIT } from '../recall.js';
 import {
   AGENTS_LOCAL_FILE,
   CLAUDE_LOCAL_FILE,
@@ -48,6 +48,7 @@ import {
   USAGE_FILE,
   addNote,
   memoryDir,
+  updateNote,
 } from '../store.js';
 
 /** @type {string} */
@@ -389,6 +390,72 @@ describe('PreToolUse', () => {
     pre('gh pr create');
 
     expect(pre('gh pr view')).toBeNull();
+  });
+
+  test('should deny the first matching command even after prompt recall', () => {
+    updateNote(dir, 'm1', { triggerMode: 'block' }, { now: NOW });
+    expect(context(prompt('GitHub GraphQL proxy merge'))).toMatch(/- m1 /);
+
+    expect(pre('gh pr create')?.hookSpecificOutput).toMatchObject({
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: expect.stringContaining('company proxy'),
+    });
+    expect(pre('gh pr create')).toBeNull();
+  });
+
+  test('should skip legacy short patterns while honoring specific patterns on the same blocking note', () => {
+    const note = {
+      id: 'm9',
+      scope: 'user',
+      type: 'howto',
+      text: 'Deployments use the release channel.',
+      triggers: ['pwd', 'pnpm deploy'],
+      triggerMode: 'block',
+    };
+    fs.appendFileSync(
+      path.join(dir, LOG_FILE),
+      `${JSON.stringify({ op: 'add', at: NOW.toISOString(), note })}\n`
+    );
+
+    expect(pre('pwd')).toBeNull();
+    expect(pre('pnpm deploy')?.hookSpecificOutput).toMatchObject({
+      permissionDecision: 'deny',
+      permissionDecisionReason: expect.stringContaining(note.text),
+    });
+    expect(pre('pnpm deploy')).toBeNull();
+  });
+
+  test('should keep blocking notes the deny reason had no room for', () => {
+    const ids = Array.from(
+      { length: RECALL_LIMIT + 1 },
+      (_, index) =>
+        addNote(
+          dir,
+          {
+            scope: 'machine',
+            type: 'howto',
+            text: `Deploy rule ${index + 1}: check the release channel before deploying.`,
+            tags: ['deploy'],
+            triggers: ['deploy'],
+            triggerMode: 'block',
+          },
+          { now: NOW }
+        ).note.id
+    );
+    /** @type {string[]} */
+    const reasons = [];
+    for (let attempt = 0; attempt < ids.length; attempt += 1) {
+      const output = /** @type {any} */ (pre('pnpm deploy'));
+      if (output === null) break;
+      expect(output.hookSpecificOutput.permissionDecision).toBe('deny');
+      reasons.push(output.hookSpecificOutput.permissionDecisionReason);
+    }
+
+    for (const id of ids) {
+      expect(reasons.join('\n')).toMatch(new RegExp(`- ${id} `));
+    }
+    expect(pre('pnpm deploy')).toBeNull();
   });
 
   test('should stay silent without a matching trigger or command', () => {

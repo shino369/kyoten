@@ -119,6 +119,7 @@ import {
   noteHistory,
   readLog,
   readUsage,
+  restoreNote,
   setPinned,
   updateNote,
 } from './store.js';
@@ -133,20 +134,23 @@ Status
 
 Save and change
   add "<text>" --scope user|machine|repo --type preference|fact|howto|episode
-      [--repo <name|path>] [--tags a,b] [--trigger "<pattern>"]… [--pin] [--force]
+      [--repo <name|path>] [--tags a,b] [--cue "<phrase>"]… [--trigger "<pattern>"]…
+      [--trigger-mode inject|block] [--pin] [--force]
                                 Save a note and print its id. Secrets are refused; a
                                 near-duplicate is merged into the old note. A repo note
                                 defaults to the current repository (the task's --repo, else
                                 this folder). --force saves while saving is off
-  edit <id> ["<text>"] [--tags a,b] [--trigger "…"]… [--type …] [--scope …] [--repo …]
-                                Change a note (--tags and --trigger replace the old lists)
+  edit <id> ["<text>"] [--tags a,b] [--cue "…"]… [--trigger "…"]…
+      [--trigger-mode inject|block] [--type …] [--scope …] [--repo …]
+                                Change a note (--tags, --cue, and --trigger replace the old lists)
   rm <id> -m "why"              Delete a note (it stays in the journal)
   pin <id> · unpin <id>         Pinned notes are in every session's core block
   check <id>                    Mark a note confirmed today (no longer stale)
+  restore <id>                  Bring an archived note back into active recall
 
 Find
-  recall "<query>" [--scope …] [--repo …] [--limit N] [--failure]
-                                Search like the hooks do (--failure: the query is an error)
+  recall "<query>" [--scope …] [--repo …] [--limit N] [--failure] [--archived]
+                                Search like the hooks do (--archived searches archived notes)
   list [--scope …] [--type …] [--repo …] [--pinned] [--stale] [--all]
                                 Browse notes (--all includes deleted ones)
   show <id>                     A note with its source and history
@@ -239,7 +243,9 @@ const VALUE_FLAGS = {
   '--repo': 'repo',
   '--type': 'type',
   '--tags': 'tags',
+  '--cue': 'cues',
   '--trigger': 'triggers',
+  '--trigger-mode': 'triggerMode',
   '--limit': 'limit',
   '--grep': 'grep',
   '--message': 'message',
@@ -263,7 +269,7 @@ const VALUE_FLAGS = {
   '--tasks': 'tasks',
   '--out': 'out',
 };
-const REPEATABLE = new Set(['triggers']);
+const REPEATABLE = new Set(['cues', 'triggers']);
 const PERSONALIZATION_TOGGLE_FLAG = /^--(?:on|off)(?:=|$)/;
 const BOOLEAN_FLAGS = {
   '--pin': 'pin',
@@ -272,6 +278,7 @@ const BOOLEAN_FLAGS = {
   '--pinned': 'pinned',
   '--stale': 'stale',
   '--all': 'all',
+  '--archived': 'archived',
   '--reset': 'reset',
   '--show': 'show',
   '--presets': 'presets',
@@ -317,8 +324,10 @@ const FIRST_NOTE =
  *   traits?: string, extra?: string, guard?: string, extractModel?: string, extractAgent?: string, budget?: string,
  *   include?: string, tasks?: string, out?: string, personaFile?: string, agent?: string, for?: string,
  *   triggers: string[],
+ *   cues: string[],
+ *   triggerMode?: string,
  *   pin: boolean, force: boolean, failure: boolean, pinned: boolean,
- *   stale: boolean, all: boolean, reset: boolean, show: boolean,
+ *   stale: boolean, all: boolean, archived: boolean, reset: boolean, show: boolean,
  *   presets: boolean, on?: boolean, off?: boolean, compact: boolean, audit: boolean,
  *   session: boolean, dryRun: boolean,
  *   allowSecrets: boolean, allowCrossSide: boolean, replace: boolean, json: boolean, help: boolean,
@@ -348,12 +357,14 @@ export function parseArgs(argv) {
   const options = {
     positionals: [],
     triggers: [],
+    cues: [],
     pin: false,
     force: false,
     failure: false,
     pinned: false,
     stale: false,
     all: false,
+    archived: false,
     reset: false,
     show: false,
     presets: false,
@@ -501,13 +512,22 @@ function output(deps, options, json, text) {
 /** @param {Options} options */
 function checkPersonaOptions(options) {
   if (options.on || options.off) {
-    const { on, off, json: _json, positionals, triggers, ...other } = options;
+    const {
+      on,
+      off,
+      json: _json,
+      positionals,
+      triggers,
+      cues,
+      ...other
+    } = options;
     if (on && off) {
       throw new Error('Use one of --on and --off.');
     }
     if (
       positionals.length !== 1 ||
       triggers.length > 0 ||
+      cues.length > 0 ||
       Object.values(other).some((value) => value !== false)
     ) {
       throw new Error('Use --on or --off by itself, with optional --json.');
@@ -1166,7 +1186,8 @@ export const COMMANDS = {
       ),
       pinned: active.filter((note) => note.pinned).length,
       stale: active.filter((note) => isStale(note, now)).length,
-      deleted: notes.length - active.length,
+      deleted: notes.filter((note) => note.status === 'deleted').length,
+      archived: notes.filter((note) => note.status === 'archived').length,
     };
     const core = renderStored(deps.rootDir);
     const warnings = [
@@ -1221,7 +1242,7 @@ export const COMMANDS = {
     const summary =
       notes.length === 0
         ? `Memory: no notes yet. Save one: ${FIRST_NOTE}`
-        : `Memory: ${plural(counts.active, 'note')} (${SCOPES.map((scope) => `${scope} ${counts.scopes[scope]}`).join(', ')}); ${counts.pinned} pinned; ${counts.stale} stale; ${counts.deleted} deleted`;
+        : `Memory: ${plural(counts.active, 'note')} (${SCOPES.map((scope) => `${scope} ${counts.scopes[scope]}`).join(', ')}); ${counts.pinned} pinned; ${counts.stale} stale; ${counts.deleted} deleted${counts.archived ? `; ${counts.archived} archived` : ''}`;
     output(
       deps,
       options,
@@ -1316,7 +1337,12 @@ export const COMMANDS = {
         repo: noteRepo(deps, options, options.scope),
         type: options.type,
         tags: splitList(options.tags ?? ''),
+        cues: options.cues.length > 0 ? options.cues : undefined,
         triggers: options.triggers,
+        triggerMode:
+          /** @type {import('./store.js').NoteInput['triggerMode']} */ (
+            options.triggerMode
+          ),
         source: writerSource({ env: deps.env, rootDir: deps.rootDir }),
         pinned: options.pin,
       },
@@ -1339,12 +1365,15 @@ export const COMMANDS = {
     const limit = parseLimit(options.limit, RECALL_LIMIT, MAX_RECALL);
     const dir = dirOf(deps);
     const now = deps.now();
-    const { notes, index } = loadIndex(dir);
+    const { notes, index } = options.archived
+      ? { ...loadNotes(dir), index: undefined }
+      : loadIndex(dir);
     const results = recall(
       scope ? notes.filter((note) => note.scope === scope) : notes,
       query,
       {
         index,
+        archived: options.archived,
         repo:
           options.repo !== undefined
             ? repoArg(deps, options.repo)
@@ -1430,8 +1459,11 @@ export const COMMANDS = {
       `${id} (${headLabels(note, deps.now())})`,
       note.text,
       ...(note.tags.length > 0 ? [`Tags: ${note.tags.join(', ')}`] : []),
+      ...(note.cues?.length ? [`Cues: ${note.cues.join(', ')}`] : []),
       ...(note.triggers.length > 0
-        ? [`Triggers: ${note.triggers.join(', ')}`]
+        ? [
+            `Triggers: ${note.triggers.join(', ')}${note.triggerMode === 'block' ? ' (block)' : ''}`,
+          ]
         : []),
       `Source: ${[
         source.via,
@@ -1492,7 +1524,10 @@ export const COMMANDS = {
     const changes = {};
     if (text) changes.text = text;
     if (options.tags !== undefined) changes.tags = splitList(options.tags);
+    if (options.cues.length > 0) changes.cues = options.cues;
     if (options.triggers.length > 0) changes.triggers = options.triggers;
+    if (options.triggerMode !== undefined)
+      changes.triggerMode = options.triggerMode;
     if (options.type !== undefined) changes.type = options.type;
     if (options.scope !== undefined) {
       changes.scope = options.scope;
@@ -1502,7 +1537,7 @@ export const COMMANDS = {
     }
     if (Object.keys(changes).length === 0) {
       throw new Error(
-        'Nothing to change: give new text, or --tags, --trigger, --type, --scope, --repo.'
+        'Nothing to change: give new text, or --tags, --cue, --trigger, --trigger-mode, --type, --scope, --repo.'
       );
     }
     const note = updateNote(dirOf(deps), id, changes, {
@@ -1514,6 +1549,17 @@ export const COMMANDS = {
       options,
       note,
       `Edited ${id} (${kindLabel(note)}): ${shorten(note.text, ANNOUNCE_CHARS)}`
+    );
+  },
+
+  restore(options, deps) {
+    const id = needId(options, 'restore');
+    const note = restoreNote(dirOf(deps), id, deps.now());
+    return reportChange(
+      deps,
+      options,
+      note,
+      `Active ${id}: ${shorten(note.text, ANNOUNCE_CHARS)}`
     );
   },
 

@@ -45,7 +45,15 @@ import {
 } from './queue.js';
 import { PROFILE_FILE, renderStored } from './render.js';
 import { takeSnapshot } from './snapshot.js';
-import { LOG_FILE, loadNotes, memoryDir, readJsonOrNull } from './store.js';
+import { namesRepo, repoName } from './repo.js';
+import {
+  LOG_FILE,
+  canArchive,
+  loadNotes,
+  memoryDir,
+  readJsonOrNull,
+  readUsage,
+} from './store.js';
 import { jaccard, termSet } from './tokenize.js';
 
 export const CONSOLIDATED_FILE = 'consolidated.json';
@@ -54,9 +62,10 @@ export const WEEK_MS = 7 * DAY_MS;
 /** Ops written since the last run before a weekly run is worth it. */
 export const MIN_CHANGES = 20;
 /** Notes at least this similar are shown to the model as a group. */
-export const CLUSTER_SIMILARITY = 0.5;
+export const CLUSTER_SIMILARITY = 0.3;
 /** Notes shown to the model at most. */
 export const MAX_SHOWN = 60;
+const MAX_USER_NOTES = 30;
 /** Only the newest notes are compared for groups (pairs grow quadratically). */
 export const MAX_GROUPED = 1500;
 export const PROFILE_MAX = 15;
@@ -67,7 +76,7 @@ const BUDGET_WARNING = 'The core block is over';
  * @typedef {import('./store.js').Note} Note
  * @typedef {import('./extract.js').ExtractDeps} ExtractDeps
  * @typedef {import('./extract.js').Run} Run
- * @typedef {{ at?: string, ops?: number, tried?: string }} ConsolidatedState
+ * @typedef {{ at?: string, ops?: number, tried?: string, cursor?: number }} ConsolidatedState
  */
 
 /** @param {string} dir */
@@ -132,7 +141,8 @@ export function consolidationDue(rootDir, { now = new Date() } = {}) {
     return null;
   }
   const changes = countOps(dir) - (state?.ops ?? 0);
-  if (since(state?.at) >= WEEK_MS && changes >= MIN_CHANGES) return 'weekly';
+  if (since(state?.at) >= WEEK_MS && (changes >= MIN_CHANGES || state?.cursor))
+    return 'weekly';
   if (
     since(state?.at) >= DAY_MS &&
     renderStored(rootDir).warnings.some((w) => w.startsWith(BUDGET_WARNING))
@@ -145,6 +155,7 @@ export function consolidationDue(rootDir, { now = new Date() } = {}) {
 /** @param {Note} note */
 const tidyable = (note) =>
   note.status === 'active' && note.source.via !== 'digest';
+const idNumber = (/** @type {string} */ id) => Number(id.slice(1));
 
 /**
  * Groups (ids, two or more) of similar notes in one scope and repo.
@@ -158,18 +169,24 @@ export function similarGroups(notes) {
     .sort((a, b) => b.updated.localeCompare(a.updated))
     .slice(0, MAX_GROUPED);
   const terms = pool.map((note) => termSet(note.text));
+  const tags = pool.map(
+    (note) => new Set(note.tags.flatMap((tag) => [...termSet(tag)]))
+  );
   /** @type {number[]} */
   const parent = pool.map((_, i) => i);
   /** @param {number} i @returns {number} */
   const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
   for (let i = 0; i < pool.length; i++) {
     for (let j = i + 1; j < pool.length; j++) {
-      if (
-        pool[i].scope === pool[j].scope &&
-        pool[i].repo === pool[j].repo &&
-        jaccard(terms[i], terms[j]) >= CLUSTER_SIMILARITY
-      ) {
-        parent[find(j)] = find(i);
+      if (pool[i].scope === pool[j].scope && pool[i].repo === pool[j].repo) {
+        const text = jaccard(terms[i], terms[j]);
+        const tag = jaccard(tags[i], tags[j]);
+        if (
+          text >= CLUSTER_SIMILARITY ||
+          (text >= 0.2 && 0.7 * text + 0.3 * tag >= CLUSTER_SIMILARITY)
+        ) {
+          parent[find(j)] = find(i);
+        }
       }
     }
   }
@@ -180,35 +197,86 @@ export function similarGroups(notes) {
     groups.set(root, [...(groups.get(root) ?? []), note]);
   });
   const byId = (/** @type {Note} */ a, /** @type {Note} */ b) =>
-    Number(a.id.slice(1)) - Number(b.id.slice(1));
+    idNumber(a.id) - idNumber(b.id);
   return [...groups.values()]
     .filter((group) => group.length > 1)
     .map((group) => group.sort(byId).map((note) => note.id));
 }
 
 /**
- * What the model sees: the user notes (for the profile), then whole groups
- * of similar notes, within MAX_SHOWN notes.
+ * Reserve half the prompt for upkeep. The cursor is the last reviewed unit's
+ * numeric id, so archiving or merging a note cannot shift the next page.
  *
  * @param {Note[]} notes
- * @returns {{ shown: Note[], groups: string[][] }}
+ * @param {{ cursor?: number, now?: Date, usage?: Record<string, import('./store.js').Usage>, repo?: string | null }} [options]
  */
-export function consolidationInput(notes) {
-  const shown = notes
-    .filter((note) => tidyable(note) && note.scope === 'user')
-    .sort((a, b) => b.updated.localeCompare(a.updated))
-    .slice(0, MAX_SHOWN);
+export function consolidationInput(
+  notes,
+  { cursor = 0, now = new Date(), usage = {}, repo = null } = {}
+) {
   const byId = new Map(notes.map((note) => [note.id, note]));
+  const archive = new Set(
+    notes
+      .filter((note) => canArchive(note, now, usage[note.id]))
+      .map((note) => note.id)
+  );
+  const repos = [
+    ...new Set(
+      [repo, ...notes.map((note) => note.repo)].filter((name) => name !== null)
+    ),
+  ];
+  const scopes = new Map(
+    notes
+      .filter((note) => tidyable(note) && note.scope === 'machine')
+      .flatMap((note) => {
+        const matches = repos.filter((name) => namesRepo(note.text, name));
+        return matches.length === 1 ? [[note.id, matches[0]]] : [];
+      })
+  );
+  const units = similarGroups(notes).flatMap((group) => {
+    const [anchor, ...rest] = group;
+    const pages = [];
+    for (let i = 0; i < rest.length; i += MAX_USER_NOTES - 1) {
+      pages.push([anchor, ...rest.slice(i, i + MAX_USER_NOTES - 1)]);
+    }
+    return pages;
+  });
+  const grouped = new Set(units.flat());
+  for (const id of new Set([...archive, ...scopes.keys()])) {
+    if (!grouped.has(id)) units.push([id]);
+  }
+  const end = (/** @type {string[]} */ unit) => idNumber(unit[unit.length - 1]);
+  units.sort((a, b) => end(a) - end(b));
+  const remaining = units.filter((unit) => end(unit) > cursor);
+  const page = remaining.length > 0 ? remaining : units;
+  const selected = new Set();
   /** @type {string[][]} */
   const groups = [];
-  for (const group of similarGroups(notes)) {
-    const ids = new Set(shown.map((note) => note.id));
-    const extra = group.filter((id) => !ids.has(id));
-    if (shown.length + extra.length > MAX_SHOWN) continue;
-    shown.push(...extra.map((id) => /** @type {Note} */ (byId.get(id))));
-    groups.push(group);
+  let nextCursor = 0;
+  for (const [i, unit] of page.entries()) {
+    const extra = unit.filter((id) => !selected.has(id));
+    if (selected.size + extra.length > MAX_SHOWN - MAX_USER_NOTES) break;
+    unit.forEach((id) => selected.add(id));
+    if (unit.length > 1) groups.push(unit);
+    nextCursor = i === page.length - 1 ? 0 : end(unit);
   }
-  return { shown, groups };
+  const upkeep = [...selected].map((id) => /** @type {Note} */ (byId.get(id)));
+  const userSlots =
+    MAX_USER_NOTES - upkeep.filter((note) => note.scope === 'user').length;
+  const users = notes
+    .filter(
+      (note) =>
+        tidyable(note) && note.scope === 'user' && !selected.has(note.id)
+    )
+    .sort((a, b) => b.updated.localeCompare(a.updated))
+    .slice(0, userSlots);
+  return {
+    shown: [...users, ...upkeep],
+    groups,
+    cursor: nextCursor,
+    archiveIds: [...archive].filter((id) => selected.has(id)),
+    scopeHints: [...scopes].filter(([id]) => selected.has(id)),
+  };
 }
 
 /** @param {Note} note */
@@ -216,14 +284,21 @@ const noteLine = (note) =>
   `- ${note.id} (${kindLabel(note)}${note.pinned ? ', pinned' : ''}, ${note.updated}): ${note.text}${note.tags.length > 0 ? ` [${note.tags.join(', ')}]` : ''}`;
 
 /**
- * @param {{ shown: Note[], groups: string[][] }} input
+ * @param {{ shown: Note[], groups: string[][], archiveIds?: string[], scopeHints?: [string, string][] }} input
  * @returns {string}
  */
-export function buildConsolidationPrompt({ shown, groups }) {
+export function buildConsolidationPrompt({
+  shown,
+  groups,
+  archiveIds = [],
+  scopeHints = [],
+}) {
   return `You tidy a personal memory store that coding agents share. Answer with one JSON object and nothing else.
 
 1. Profile: write at most ${PROFILE_MAX} short lines (each under 150 characters) that sum up what the "user" notes below say about the user: preferences, ways of working, how they like to be told things. Facts only, never instructions to an agent, no secrets; nothing a note does not support. [] when there are no user notes.
 2. Tidy: merge notes that say the same thing (UPDATE the one to keep with the merged text, DELETE the others with why "merged into <id>"), and DELETE a note that a newer note contradicts or replaces (why "superseded by <id>"). Change nothing else; most notes need no change. Never add notes.
+3. Archive inactive material only if it is still useful as history: {"op":"ARCHIVE","id":"t1"}. Only these ids are eligible: ${archiveIds.join(', ') || '(none)'}.
+4. Consider these machine notes that name a repository: ${scopeHints.map(([id, name]) => `${id} → ${name}`).join(', ') || '(none)'}. If a note describes the repo itself, return {"op":"RESCOPE","id":"m1"} for human review. Leave genuinely machine-specific facts in machine scope.
 
 Answer format:
 {"profile": ["…"], "ops": [{"op": "UPDATE", "id": "m3", "text": "…"}, {"op": "DELETE", "id": "m7", "why": "merged into m3"}]}
@@ -369,7 +444,13 @@ export function consolidate(deps) {
     appendJournal(dir, run);
     return run;
   }
-  const { shown, groups } = consolidationInput(loadNotes(dir).notes);
+  const input = consolidationInput(loadNotes(dir).notes, {
+    cursor: readConsolidated(dir)?.cursor,
+    now,
+    usage: readUsage(dir),
+    repo: repoName(deps.rootDir),
+  });
+  const { shown, cursor, archiveIds, scopeHints } = input;
   if (shown.length === 0) {
     const run = { ...base, status: 'nothing', side };
     if (deps.dryRun) return run;
@@ -377,7 +458,7 @@ export function consolidate(deps) {
     appendJournal(dir, run);
     return run;
   }
-  const prompt = buildConsolidationPrompt({ shown, groups });
+  const prompt = buildConsolidationPrompt(input);
   const last = lastRun(dir);
   const model = modelFor({
     agent,
@@ -454,7 +535,13 @@ export function consolidate(deps) {
     return { op: 'NOOP' };
   });
   const source = { via: 'consolidate' };
-  const checked = validateOps(ops, { related: shown, repo: null, source });
+  const checked = validateOps(ops, {
+    related: shown,
+    repo: null,
+    source,
+    archiveIds,
+    scopeHints,
+  });
   const profile = cleanProfile(answer.profile);
   const writes = checked.apply.length > 0 || profile.lines.length > 0;
   // Every op below has this run's time, which is how undo finds them.
@@ -472,7 +559,11 @@ export function consolidate(deps) {
     dir,
     checked.quarantined.map((held) => ({ at, job: 'consolidation', ...held }))
   );
-  writeConsolidated(dir, { at, ops: countOps(dir) });
+  writeConsolidated(dir, {
+    at,
+    ops: countOps(dir),
+    ...(cursor ? { cursor } : {}),
+  });
   const warnings = writes ? refreshAfterWrite(deps.rootDir) : [];
   const run = {
     ...base,

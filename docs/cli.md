@@ -172,20 +172,23 @@ Status
 
 Save and change
   add "<text>" --scope user|machine|repo --type preference|fact|howto|episode
-      [--repo <name|path>] [--tags a,b] [--trigger "<pattern>"]… [--pin] [--force]
+      [--repo <name|path>] [--tags a,b] [--cue "<phrase>"]… [--trigger "<pattern>"]…
+      [--trigger-mode inject|block] [--pin] [--force]
                                 Save a note and print its id. Secrets are refused; a
                                 near-duplicate is merged into the old note. A repo note
                                 defaults to the current repository (the task's --repo, else
                                 this folder). --force saves while saving is off
-  edit <id> ["<text>"] [--tags a,b] [--trigger "…"]… [--type …] [--scope …] [--repo …]
-                                Change a note (--tags and --trigger replace the old lists)
+  edit <id> ["<text>"] [--tags a,b] [--cue "…"]… [--trigger "…"]…
+      [--trigger-mode inject|block] [--type …] [--scope …] [--repo …]
+                                Change a note (--tags, --cue, and --trigger replace the old lists)
   rm <id> -m "why"              Delete a note (it stays in the journal)
   pin <id> · unpin <id>         Pinned notes are in every session's core block
   check <id>                    Mark a note confirmed today (no longer stale)
+  restore <id>                  Bring an archived note back into active recall
 
 Find
-  recall "<query>" [--scope …] [--repo …] [--limit N] [--failure]
-                                Search like the hooks do (--failure: the query is an error)
+  recall "<query>" [--scope …] [--repo …] [--limit N] [--failure] [--archived]
+                                Search like the hooks do (--archived searches archived notes)
   list [--scope …] [--type …] [--repo …] [--pinned] [--stale] [--all]
                                 Browse notes (--all includes deleted ones)
   show <id>                     A note with its source and history

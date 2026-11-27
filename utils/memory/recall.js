@@ -20,7 +20,13 @@
 import fs from 'fs';
 import path from 'path';
 import { writeFileAtomic } from '../task/store.js';
-import { CACHE_DIR, isStale, loadNotes, readJsonOrNull } from './store.js';
+import {
+  CACHE_DIR,
+  isSpecificBlockingTrigger,
+  isStale,
+  loadNotes,
+  readJsonOrNull,
+} from './store.js';
 import { tokenize } from './tokenize.js';
 
 export const INDEX_CACHE_FILE = 'index.json';
@@ -32,6 +38,7 @@ const WEIGHT = { text: 1, tags: 2 };
 const LENGTH_NORM = { text: 0.75, tags: 0.3 };
 /** Evidence of a term found only in the text; a tag match counts 1. */
 const TEXT_EVIDENCE = 0.5;
+const EVIDENCE_REFERENCE_DOCS = 213;
 
 export const GATE = { relative: 0.4, minEvidence: 1 };
 export const BOOSTS = {
@@ -51,7 +58,22 @@ export const RECALL_HEADER =
 const RECALL_FOOTER =
   'More: pnpm memory recall "<query>" · full note: pnpm memory show <id>';
 const DAY_MS = 86_400_000;
-const WORD_CHAR = /[\p{L}\p{N}_]/u;
+const WORD_CHAR = /[\p{L}\p{M}\p{N}_]/u;
+const CJK_SCRIPTS = ['Han', 'Hiragana', 'Katakana'];
+
+/** @param {string} script */
+const cjkExtension = (script) => `\\p{Script_Extensions=${script}}`;
+/** Characters that continue a word in each CJK script (ー: both kana). */
+const CJK_CONTINUATION = CJK_SCRIPTS.map(
+  (script) => new RegExp(cjkExtension(script), 'u')
+);
+/** Characters whose own Script is exactly one CJK script (ー is Common). */
+const CJK_OWN_SCRIPT = CJK_SCRIPTS.map(
+  (script) => new RegExp(`\\p{Script=${script}}`, 'u')
+);
+/** A character-class body of all CJK scripts, to subtract from \p{L}. */
+const CJK_EXTENSIONS = CJK_SCRIPTS.map(cjkExtension).join('');
+const COMMON_OR_INHERITED = /[\p{Script=Common}\p{Script=Inherited}]/u;
 
 /**
  * @typedef {import('./store.js').Note} Note
@@ -70,6 +92,7 @@ const WORD_CHAR = /[\p{L}\p{N}_]/u;
  * @property {Record<string, Usage>} [usage]
  * @property {Date} [now]
  * @property {number} [limit]
+ * @property {boolean} [archived]
  */
 
 /**
@@ -118,9 +141,10 @@ function tagEvidence(tags) {
  * the core block, so recalling them would repeat them).
  *
  * @param {Note[]} notes
+ * @param {'active' | 'archived'} [status]
  * @returns {Index}
  */
-export function buildIndex(notes) {
+export function buildIndex(notes, status = 'active') {
   const df = Object.create(null);
   const docs = Object.create(null);
   let N = 0;
@@ -129,7 +153,7 @@ export function buildIndex(notes) {
   const sum = { text: 0, tags: 0 };
   const withField = { text: 0, tags: 0 };
   for (const note of notes) {
-    if (note.status !== 'active' || note.pinned) continue;
+    if (note.status !== status || note.pinned) continue;
     const tf = {
       text: termCounts(tokenize(note.text)),
       tags: termCounts(note.tags.flatMap(tokenize)),
@@ -170,7 +194,7 @@ const lengthNorm = (len, avg, b) => 1 - b + b * (avg > 0 ? len / avg : 1);
  * BM25F score of one note for distinct query terms, with its evidence: per
  * matched term, its tag evidence (1, or 1/k in a k-word tag) or 0.5 for a
  * text match, whichever is larger, scaled by how distinctive the term is
- * (its idf over the largest idf).
+ * (its idf over the largest idf in the reference corpus).
  *
  * @param {Index} index
  * @param {string} id
@@ -182,7 +206,10 @@ export function scoreTerms(index, id, terms) {
   const matched = [];
   if (!Object.hasOwn(index.docs, id)) return { score: 0, evidence: 0, matched };
   const doc = index.docs[id];
-  const maxIdf = idf(1, index.N);
+  // Preserve the small-store gate. Larger stores project both corpus size
+  // and document frequency to the reference size at the same prevalence.
+  const referenceSize = Math.min(index.N, EVIDENCE_REFERENCE_DOCS);
+  const maxIdf = idf(1, referenceSize);
   let score = 0;
   let evidence = 0;
   for (const term of terms) {
@@ -194,13 +221,18 @@ export function scoreTerms(index, id, terms) {
         lengthNorm(doc.len.text, index.avg.text, LENGTH_NORM.text) +
       (WEIGHT.tags * inTags) /
         lengthNorm(doc.len.tags, index.avg.tags, LENGTH_NORM.tags);
-    const termIdf = idf(count(index.df, term), index.N);
+    const documentCount = count(index.df, term);
+    const termIdf = idf(documentCount, index.N);
     score += (termIdf * tf) / (K1 + tf);
     const weight = Math.max(
       count(doc.tagEvidence, term),
       inText > 0 ? TEXT_EVIDENCE : 0
     );
-    evidence += (weight * termIdf) / maxIdf;
+    const evidenceIdf =
+      referenceSize === index.N
+        ? termIdf
+        : idf((documentCount / index.N) * referenceSize, referenceSize);
+    evidence += weight * Math.min(1, evidenceIdf / maxIdf);
     matched.push(term);
   }
   return { score, evidence, matched };
@@ -238,7 +270,8 @@ export function recall(
   notes,
   query,
   {
-    index = buildIndex(notes),
+    archived = false,
+    index = buildIndex(notes, archived ? 'archived' : 'active'),
     repo = null,
     failure = false,
     usage = {},
@@ -247,11 +280,16 @@ export function recall(
   } = {}
 ) {
   const terms = [...new Set(tokenize(query))];
-  if (terms.length === 0 || index.N === 0) return [];
+  if (index.N === 0) return [];
   const lowerQuery = query.toLowerCase();
+  const cueQuery = query.normalize('NFKC');
+  /** @type {RecallResult[]} */
+  const prioritized = [];
   /** @type {RecallResult[]} */
   const results = [];
   for (const note of notes) {
+    if (note.status !== (archived ? 'archived' : 'active') || note.pinned)
+      continue;
     if (
       note.scope === 'repo' &&
       note.repo !== repo &&
@@ -260,13 +298,23 @@ export function recall(
       continue;
     }
     const { score, evidence, matched } = scoreTerms(index, note.id, terms);
-    if (evidence + 1e-9 < GATE.minEvidence) continue;
+    const cue = failure
+      ? undefined
+      : note.cues?.find((phrase) =>
+          phrasePattern(phrase.normalize('NFKC')).test(cueQuery)
+        );
+    if (!cue && evidence + 1e-9 < GATE.minEvidence) continue;
     const factor = contextFactor(note, { repo, failure, usage, now });
-    results.push({ note, score: score * factor, matched });
+    const result = { note, score: score * factor, matched };
+    if (cue) prioritized.push(result);
+    else results.push(result);
   }
+  prioritized.sort((a, b) => b.score - a.score);
   results.sort((a, b) => b.score - a.score);
   const floor = (results[0]?.score ?? 0) * GATE.relative;
-  return results.filter((result) => result.score >= floor).slice(0, limit);
+  return prioritized
+    .concat(results.filter((result) => result.score >= floor))
+    .slice(0, limit);
 }
 
 /**
@@ -294,6 +342,7 @@ export function noteLabels(note, now = new Date()) {
       ];
   if (note.checked === null) parts.push('unchecked');
   else if (isStale(note, now)) parts.push('stale');
+  if (note.status === 'archived') parts.push('archived');
   return parts.join(', ');
 }
 
@@ -335,19 +384,77 @@ export function formatRecall(
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
- * A trigger as a case-insensitive pattern: `*` matches anything, and a
- * trigger that starts or ends with a word character must not start or end
- * inside a word (`gh pr` does not match `gh prune`).
+ * The CJK scripts a character belongs to, by the given tests.
  *
- * @param {string} trigger
+ * @param {string} char
+ * @param {RegExp[]} tests one per CJK script, in CJK_SCRIPTS order
+ * @returns {string[]}
  */
-function triggerPattern(trigger) {
-  const body = trigger.split('*').map(escapeRegExp).join('.*?');
-  const start = WORD_CHAR.test(trigger.charAt(0)) ? '(?<![\\p{L}\\p{N}_])' : '';
-  const end = WORD_CHAR.test(trigger.charAt(trigger.length - 1))
-    ? '(?![\\p{L}\\p{N}_])'
+const cjkScripts = (char, tests) =>
+  CJK_SCRIPTS.filter((_, index) => tests[index].test(char));
+
+/**
+ * The CJK scripts of the phrase edge at `chars[from]`. A character of one
+ * script names it (か, カ, 漢). One that extends to both kana (ー) takes the
+ * script of the first character with its own script in the same word.
+ * Common characters and Inherited marks such as combining dakuten do not
+ * supply a script. 漢字ー takes Han, while APIー takes no CJK script. Stop at
+ * separators and wildcards. If the word supplies no script, retain the
+ * edge's script extensions, so ー alone still continues both kana.
+ *
+ * @param {string[]} chars the phrase's characters
+ * @param {number} from the edge character's index
+ * @param {1 | -1} step which way is inward
+ * @returns {string[]}
+ */
+function edgeScripts(chars, from, step) {
+  const extensions = cjkScripts(chars[from], CJK_CONTINUATION);
+  if (extensions.length < 2) {
+    return extensions;
+  }
+  for (let i = from + step; i >= 0 && i < chars.length; i += step) {
+    const char = chars[i];
+    if (!WORD_CHAR.test(char)) break;
+    if (!COMMON_OR_INHERITED.test(char)) {
+      return cjkScripts(char, CJK_OWN_SCRIPT);
+    }
+  }
+  return extensions;
+}
+
+/**
+ * Characters that continue a word at the edge of a phrase. Latin and CJK text
+ * can meet without spaces, and kana particles can follow kanji or katakana
+ * terms, so a CJK edge also continues in the characters its script extends
+ * to: ー keeps continuing Katakana, so the cue サーバ does not match サーバー,
+ * while a cue ending in ー takes the script before it, so エラー still matches
+ * エラーが出た. Digits and underscores continue words in either script; an
+ * edge of no CJK script continues only outside CJK.
+ *
+ * @param {string[]} chars the phrase's characters
+ * @param {number} from the edge character's index
+ * @param {1 | -1} step which way is inward
+ */
+function wordContinuation(chars, from, step) {
+  const scripts = edgeScripts(chars, from, step);
+  return scripts.length === 0
+    ? `[[\\p{L}\\p{M}\\p{N}_]--[${CJK_EXTENSIONS}]]`
+    : `[${scripts.map(cjkExtension).join('')}\\p{M}\\p{N}_]`;
+}
+
+/** @param {string} phrase @param {boolean} [wildcards] */
+function phrasePattern(phrase, wildcards = false) {
+  const chars = [...phrase];
+  const body = wildcards
+    ? phrase.split(/\*+/).map(escapeRegExp).join('.*?')
+    : escapeRegExp(phrase);
+  const start = WORD_CHAR.test(chars[0] ?? '')
+    ? `(?<!${wordContinuation(chars, 0, 1)})`
     : '';
-  return new RegExp(`${start}${body}${end}`, 'iu');
+  const end = WORD_CHAR.test(chars.at(-1) ?? '')
+    ? `(?!${wordContinuation(chars, chars.length - 1, -1)})`
+    : '';
+  return new RegExp(`${start}${body}${end}`, 'iv');
 }
 
 /**
@@ -363,7 +470,12 @@ export function matchTriggers(notes, command) {
     (note) =>
       note.status === 'active' &&
       !note.pinned &&
-      note.triggers.some((trigger) => triggerPattern(trigger).test(command))
+      note.triggers.some(
+        (trigger) =>
+          (note.triggerMode !== 'block' ||
+            isSpecificBlockingTrigger(trigger)) &&
+          phrasePattern(trigger, true).test(command)
+      )
   );
 }
 

@@ -480,12 +480,22 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   Antigravity (`.agents/hooks.json`; core block, prompt recall on turn 0, failure recall on
   `PostInvocation`). It fails open and stays silent for the reviewer and verifier roles where the
   harness reports `agent_type`.
+  Use repeatable `--cue` flags on a note for short prompt phrases that should get priority.
+  `--trigger-mode block` gives Claude Code and Codex the note as the denial reason on the first
+  matching command per session; a reason shows at most 4 notes, so with more matching notes the
+  retry is denied again until each has been shown, then it proceeds. Other harnesses retain their
+  recall behavior. A blocking trigger needs a run of at least 4 characters besides spaces between
+  `*`s. Older notes with shorter blocking patterns stay available in recall and backups. The
+  command hook ignores those patterns. Use `pnpm memory edit <id>` to change the trigger mode
+  or blocking patterns of an existing note.
 - **Extraction (B)** (Claude Code, Codex, and Antigravity; DSH has no SessionEnd or transcript):
   SessionEnd (or `SessionStart` idle catch-up in Antigravity, using `condenseAgy`) queues the
   session; a detached worker reads what the transcript gained, condenses it (prompts, final
   replies, failed commands; secrets left out), and makes one read-only call without tools, on the
   session's own agent CLI (claude, codex, dsh, or agy; `pnpm memory set --extract-agent <agent>`
-  overrides, `default` restores), for ADD/UPDATE/DELETE ops on the related notes. `--extract-model`
+  overrides, `default` restores), for ADD/UPDATE/DELETE ops on the related notes. If a proposed
+  addition resembles a note outside the prompt, a follow-up call checks for a duplicate.
+  `--extract-model`
   pairs with the configured agent (claude by default; cleared when switching `--extract-agent`
   alone, and not accepted for DSH, which chooses its model in its profile); otherwise the session's
   own model is used.
@@ -512,6 +522,10 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   `pnpm memory consolidate` then refuses with a Fix line unless `--force` (a `--dry-run` is always
   allowed). Consolidation reuses the last run's model only when that run used the same agent and
   side as the worker. `pnpm memory status` names the sides that need `--allow-cross-side`.
+  Consolidation rotates batches of similar notes and can archive old task digests and stale,
+  unused facts after taking a snapshot. Use `pnpm memory recall <query> --archived` to search
+  those notes and `pnpm memory restore <id>` to return one to active recall. Export and import
+  preserve the archive tier. Suggested scope changes are listed in `pnpm memory inbox` for review.
   Memory jobs build their isolation arguments without a double quote, so they start through
   Windows `.cmd` shims (which refuse `"`): Codex gets bare or single-quoted TOML values, and Claude
   and Antigravity each get a relative path to their settings file in the job's temporary folder.
@@ -701,9 +715,9 @@ commands, the last verify to have passed.
   a `.git` or secrets.
 - **Tasks in another repository** (`--repo`) work interactively; `pnpm loop` and `pnpm swarm`
   refuse them, because their worktrees are of this workspace.
-- **Memory recall is by words, not meaning.** A note without the words a later prompt uses is
-  not recalled; specific tags (with synonyms and other languages) are the fix. In a small store, one
-  generic tag word can recall a note; that fades as the store grows.
+- **Memory recall is lexical.** Specific tags with synonyms and other languages increase matches.
+  For notes that must surface on a common phrase, add a cue. Once a store reaches the reference
+  size, the evidence normalization stops growing with the collection.
 - **Hooks differ per harness.** See the matrix in "Four harnesses". Where a harness lacks a hook
   event, it gets the same state through `pnpm task status`, and the same enforcement through git
   hooks and the `done` gate. Codex needs a one-time trust (`/hooks`); Antigravity needs the

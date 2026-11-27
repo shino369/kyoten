@@ -190,7 +190,7 @@ export function collectExport(rootDir, { parts, tasks }) {
   if (parts.includes('memory')) {
     take(path.join(dir, LOG_FILE), LOG_PATH);
     counts.notes = loadNotes(dir).notes.filter(
-      (note) => note.status === 'active'
+      (note) => note.status !== 'deleted'
     ).length;
   }
   if (parts.includes('personalization')) {
@@ -491,7 +491,7 @@ function planNotes(rootDir, archive, replace) {
   let duplicates = 0;
   let refused = 0;
   for (const note of replayed.notes) {
-    if (note.status !== 'active') continue;
+    if (note.status === 'deleted') continue;
     /** @type {NoteInput} */
     const input = {
       text: note.text,
@@ -499,7 +499,10 @@ function planNotes(rootDir, archive, replace) {
       repo: note.repo,
       type: note.type,
       tags: note.tags,
+      cues: note.cues,
       triggers: note.triggers,
+      triggerMode: note.triggerMode,
+      ...(note.status === 'archived' ? { archived: note.archived } : {}),
       pinned: note.pinned,
       source: {
         via: 'import',
@@ -517,7 +520,7 @@ function planNotes(rootDir, archive, replace) {
       refused += 1;
       continue;
     }
-    if (findNearDuplicate([...existing, ...planned], note)) {
+    if (findNearDuplicate([...existing, ...planned], note, note.status)) {
       duplicates += 1;
       continue;
     }
@@ -889,12 +892,16 @@ export function formatImport({ file, manifest, plan, result }) {
   const { notes, personalization, tasks, resources } = plan;
   if (notes) {
     const added = result ? result.added : notes.add.length;
+    const archived = notes.add.filter(
+      (note) => note.archived !== undefined
+    ).length;
     const verb = dry ? 'would be added' : 'added';
     lines.push(
       `  Notes: ${[
         added > 0
           ? `${added} ${verb} (machine and repo notes start unchecked)`
           : `none ${verb}`,
+        ...(archived > 0 ? [`${archived} archived`] : []),
         ...(notes.duplicates > 0 ? [`${notes.duplicates} already here`] : []),
         ...(notes.refused > 0
           ? [
