@@ -789,6 +789,7 @@ describe('formatReviewBrief', () => {
     expect(text).toContain(SEVERITY_RUBRIC);
     expect(text).toContain(`tasks/${NAME}/reviews/REVIEW_${NAME}-r1.md`);
     expect(text).toContain('3. Record: pnpm task review record');
+    expect(text).toContain('Cross-model option');
     expect(text).not.toContain('## Earlier rounds');
     expect(text).not.toContain('pnpm task check does not');
     expect(text).not.toContain('## Also in the task folder');

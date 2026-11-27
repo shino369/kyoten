@@ -152,7 +152,9 @@ steps into `swarm/<task>`. Review and merge those branches yourself (`docs/harne
    `pnpm task review` to generate `reviews/BRIEF_<task>-r<N>.md` and `reviews/REVIEW_<task>-r<N>.md`.
    A **different, fresh** agent reviews from the brief only (role: `.claude/agents/reviewer.md`;
    subagent in Claude Code / Codex / Antigravity, else `pnpm agent ask --agent <other>`). Never
-   review your own code.
+   review your own code. To keep the primary model's quota free, delegate cross-model with
+   `pnpm agent ask --agent dscc - < <brief>` (DeepSeek via `dscc`) or `--agent dsh`; a lighter
+   model (an Antigravity flash subagent) is fine for the triage.
 5. **Triage.** Another fresh agent tries to refute each finding ("Triage mode" in
    `.claude/agents/verifier.md`) and marks CONFIRMED or REFUTED (unsure = REFUTED; triage may lower
    severity, never raise it).

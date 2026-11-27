@@ -621,7 +621,11 @@ plan ─▶ build test-first ─▶ e2e (if required) ─▶ review round N ─�
   into the findings file, so a reviewer never edits anything. Then the fixer `<a>` runs until verify
   is green and every `fix:` step is marked done.
 - **Manual / other harnesses.** The same commands by hand, with
-  `pnpm agent ask --agent <other> "…"` as the clean-context reviewer.
+  `pnpm agent ask --agent <other> "…"` as the clean-context reviewer. The reviewer and the triage
+  need not run on the session's model: `pnpm agent ask --agent dscc - < <brief>` runs the reviewer
+  on DeepSeek through the `claude` CLI, `--agent dsh` runs DeepSeek Harness, and a lighter model
+  (an Antigravity flash subagent) is fine for the triage. This keeps the primary model's quota for
+  fixing; the findings table and the triage rules stay the same.
 
 **The `done` gate.** `pnpm task done` refuses any task with a step not done (drop out-of-scope
 steps with `pnpm task step <id> done -m "dropped: …"`), and a code task until:

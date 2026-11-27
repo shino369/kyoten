@@ -982,7 +982,9 @@ export function formatReviewBrief({
     '2. Triage (a different clean-context agent): for each row, try to refute it by reading',
     '   the code. CONFIRMED only when the failure scenario really happens; REFUTED when it does',
     '   not or you are not sure. Write the verdict and a one-line reason.',
-    '3. Record: pnpm task review record'
+    '3. Record: pnpm task review record',
+    '',
+    "Cross-model option (keeps the primary model's quota free): `pnpm agent ask --agent dscc - < <this brief>` runs the review on DeepSeek, or `--agent dsh`; a lighter model (an Antigravity flash subagent, or a flash-configured reviewer) is fine for the triage."
   );
   return `${lines.join('\n')}\n`;
 }
