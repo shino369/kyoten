@@ -57,6 +57,8 @@ export const ID_RE = /^[mt](?:[1-9]\d*|-[0-9a-f]{4,8}-[1-9]\d*)$/;
 const LEGACY_ID_RE = /^([mt])([1-9]\d*)$/;
 const V2_ID_RE = /^([mt])-([0-9a-f]{4,8})-([1-9]\d*)$/;
 const DEVICE_HEX_RE = /^[0-9a-f]{4,16}$/;
+const HLC_RE = /^(\d{15})-([0-9a-f]{4})-([0-9a-z_-]+)$/;
+const HLC_MAX_COUNTER = 0xffff;
 const OPS = ['add', 'update', 'delete', 'pin', 'check'];
 const EDITABLE = ['text', 'tags', 'triggers', 'type', 'scope', 'repo'];
 const SOURCE_FIELDS = /** @type {const} */ (['harness', 'session', 'task']);
@@ -103,6 +105,7 @@ const SOURCE_FIELDS = /** @type {const} */ (['harness', 'session', 'task']);
  * @property {string} [id]
  * @property {string} [opId] globally unique operation id (sync v2)
  * @property {string} [device] authoring device id (sync v2)
+ * @property {string} [hlc] hybrid logical clock timestamp (sync v2)
  * @property {string} [syncedAt] local sync pull timestamp (sync v2)
  * @property {Record<string, unknown>} [note] add
  * @property {Record<string, unknown>} [set] update
@@ -329,6 +332,9 @@ export function compareNoteIds(a, b) {
   return pa.prefix.localeCompare(pb.prefix);
 }
 
+/** @param {string} a @param {string} b */
+const asciiCompare = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
 /**
  * Validate a device hex identifier for v2 IDs / ops.
  *
@@ -347,8 +353,127 @@ function normalizeDeviceId(deviceId) {
 }
 
 /**
+ * Format a Hybrid Logical Clock timestamp: `<15-digit-ms>-<4-hex-counter>-<node>`.
+ * Lexicographic ASCII order matches causal order.
+ *
+ * @param {number} ms
+ * @param {number} counter
+ * @param {string} [node]
+ * @returns {string}
+ */
+export function formatHlc(ms, counter, node = 'local') {
+  const safeMs = Number.isFinite(ms) ? Math.max(0, Math.floor(ms)) : 0;
+  const safeCounter = Number.isFinite(counter)
+    ? Math.max(0, Math.min(HLC_MAX_COUNTER, Math.floor(counter)))
+    : 0;
+  const safeNode =
+    typeof node === 'string'
+      ? node
+          .trim()
+          .toLowerCase()
+          .replace(/[^0-9a-z_-]/g, '') || 'local'
+      : 'local';
+  return `${String(safeMs).padStart(15, '0')}-${safeCounter.toString(16).padStart(4, '0')}-${safeNode}`;
+}
+
+/**
+ * Parse a formatted HLC string, or return null if invalid.
+ *
+ * @param {unknown} value
+ * @returns {{ ms: number, counter: number, node: string } | null}
+ */
+export function parseHlc(value) {
+  if (typeof value !== 'string') return null;
+  const m = HLC_RE.exec(value);
+  if (!m) return null;
+  return {
+    ms: Number(m[1]),
+    counter: parseInt(m[2], 16),
+    node: m[3],
+  };
+}
+
+/**
+ * Compare two HLC strings deterministically.
+ *
+ * @param {string} a
+ * @param {string} b
+ * @returns {number}
+ */
+export function compareHlc(a, b) {
+  const pa = parseHlc(a);
+  const pb = parseHlc(b);
+  if (pa && pb) {
+    if (pa.ms !== pb.ms) return pa.ms - pb.ms;
+    if (pa.counter !== pb.counter) return pa.counter - pb.counter;
+    return asciiCompare(pa.node, pb.node);
+  }
+  return asciiCompare(a, b);
+}
+
+/**
+ * Advance a Hybrid Logical Clock relative to `lastSeenHlc` and local wall clock `nowMs`.
+ *
+ * @param {string | null | undefined} lastSeenHlc
+ * @param {number} nowMs
+ * @param {string} [node]
+ * @returns {string}
+ */
+export function nextHlc(lastSeenHlc, nowMs, node = 'local') {
+  const prev = parseHlc(lastSeenHlc);
+  if (!prev || nowMs > prev.ms) {
+    return formatHlc(nowMs, 0, node);
+  }
+  if (prev.counter >= HLC_MAX_COUNTER) {
+    return formatHlc(prev.ms + 1, 0, node);
+  }
+  return formatHlc(prev.ms, prev.counter + 1, node);
+}
+
+/**
+ * Find the maximum valid `op.hlc` across an op list, or null when none carry HLC.
+ *
+ * @param {Op[]} ops
+ * @returns {string | null}
+ */
+export function maxHlcFromOps(ops) {
+  /** @type {string | null} */
+  let best = null;
+  for (const op of ops) {
+    if (!isObject(op) || !parseHlc(op.hlc)) continue;
+    const hlc = /** @type {string} */ (op.hlc);
+    if (best === null || compareHlc(hlc, best) > 0) {
+      best = hlc;
+    }
+  }
+  return best;
+}
+
+/**
+ * Canonical ordering key for an op: prefers `op.hlc` when valid, otherwise derives
+ * an HLC-shaped key from `op.at` and `op.device`/`op.opId` for backward compatibility.
+ *
+ * @param {Op} op
+ * @returns {string}
+ */
+function opOrderKey(op) {
+  if (typeof op?.hlc === 'string' && parseHlc(op.hlc)) {
+    return op.hlc;
+  }
+  const parsedMs = typeof op?.at === 'string' ? Date.parse(op.at) : 0;
+  const ms = Number.isFinite(parsedMs) ? parsedMs : 0;
+  const node =
+    typeof op?.device === 'string' && op.device
+      ? op.device
+      : typeof op?.opId === 'string' && op.opId
+        ? op.opId
+        : 'local';
+  return formatHlc(ms, 0, node);
+}
+
+/**
  * Apply one op to the notes. Returns a problem, or null when applied.
- * When `lww` is provided (v2 opId replay), per-field LWW prevents older remote
+ * When `lww` is provided (v2 opId/hlc replay), per-field LWW prevents older remote
  * edits from overwriting newer field values.
  *
  * @param {Map<string, Note>} notes
@@ -361,7 +486,7 @@ function applyOp(notes, op, lww) {
   const label = `${op.op} ${op.id ?? op.note?.id ?? '?'} at ${op.at}`;
   if (!OPS.includes(op.op)) return `${label}: unknown op`;
   const day = op.at.slice(0, 10);
-  const stamp = `${op.at}\0${typeof op.opId === 'string' ? op.opId : ''}`;
+  const stamp = `${opOrderKey(op)}\0${typeof op.opId === 'string' ? op.opId : ''}`;
   try {
     if (op.op === 'add') {
       const id = op.note?.id;
@@ -399,7 +524,9 @@ function applyOp(notes, op, lww) {
     if (note.status === 'deleted') return `${label}: the note is deleted`;
     const noteStamps = lww?.get(note.id);
     const newer = (/** @type {string} */ field) =>
-      !noteStamps || !noteStamps[field] || stamp >= noteStamps[field];
+      !noteStamps ||
+      !noteStamps[field] ||
+      asciiCompare(stamp, noteStamps[field]) >= 0;
     if (op.op === 'update') {
       const candidateChanges = normalizeChanges(op.set);
       /** @type {Record<string, unknown>} */
@@ -446,9 +573,10 @@ function applyOp(notes, op, lww) {
 }
 
 /**
- * Replay ops into notes. When any op carries a v2 `opId`, ops are deduplicated
- * by `opId`, causally ordered (`add` before mutations, then `(at, opId)`), and
- * replayed with per-field LWW. Legacy logs without `opId` replay in log order.
+ * Replay ops into notes. When any op carries a v2 `opId` or `hlc`, ops are
+ * deduplicated by `opId`, causally ordered (`add` before mutations, then
+ * `(hlc, opId)`), and replayed with per-field LWW. Legacy logs without `opId`
+ * or `hlc` replay in log order.
  *
  * @param {Op[]} ops
  * @returns {{ notes: Note[], problems: string[] }}
@@ -459,7 +587,10 @@ export function replay(ops) {
   /** @type {string[]} */
   const problems = [];
   const hasV2 = ops.some(
-    (op) => isObject(op) && typeof op.opId === 'string' && op.opId.length > 0
+    (op) =>
+      isObject(op) &&
+      ((typeof op.opId === 'string' && op.opId.length > 0) ||
+        Boolean(parseHlc(op.hlc)))
   );
   if (!hasV2) {
     for (const op of ops) {
@@ -490,11 +621,11 @@ export function replay(ops) {
     const aAdd = a.op.op === 'add' ? 0 : 1;
     const bAdd = b.op.op === 'add' ? 0 : 1;
     if (aAdd !== bAdd) return aAdd - bAdd;
-    const atCmp = a.op.at.localeCompare(b.op.at);
-    if (atCmp !== 0) return atCmp;
+    const hlcCmp = compareHlc(opOrderKey(a.op), opOrderKey(b.op));
+    if (hlcCmp !== 0) return hlcCmp;
     const aId = typeof a.op.opId === 'string' ? a.op.opId : '';
     const bId = typeof b.op.opId === 'string' ? b.op.opId : '';
-    if (aId !== bId) return aId.localeCompare(bId);
+    if (aId !== bId) return asciiCompare(aId, bId);
     return a.index - b.index;
   });
   /** @type {Map<string, Record<string, string>>} */
@@ -722,21 +853,44 @@ function joinLists(a, b, max) {
 }
 
 /**
+ * Resolve optional `hlc` for a write op. To stay backward-compatible with local
+ * legacy logs, `hlc` is emitted only when `deviceId` is given, `hlc` is passed
+ * explicitly, or the existing log already contains v2 `hlc` ops.
+ *
+ * @param {string} dir
+ * @param {Date} now
+ * @param {{ deviceId?: string, hlc?: string }} [options]
+ * @returns {string | undefined}
+ */
+function resolveWriteHlc(dir, now, { deviceId, hlc } = {}) {
+  if (hlc !== undefined) {
+    if (!parseHlc(hlc)) {
+      invalid(`Invalid HLC timestamp "${String(hlc)}".`);
+    }
+    return hlc;
+  }
+  const existingOps = readLog(dir).ops;
+  const lastHlc = maxHlcFromOps(existingOps);
+  if (deviceId === undefined && lastHlc === null) return undefined;
+  return nextHlc(lastHlc, now.getTime(), deviceId ?? 'local');
+}
+
+/**
  * Save a note. A near-duplicate of an active note in the same scope and repo
  * updates that note instead (new text and type, tags and triggers joined),
  * unless `merge` is false (task digests: two similar tasks are two notes).
  * When `deviceId` is provided, allocates a device-scoped v2 note id and stamps
- * `opId` + `device` on the committed ops.
+ * `opId` + `device` + `hlc` on the committed ops.
  *
  * @param {string} dir the memory directory
  * @param {NoteInput} input
- * @param {{ now?: Date, merge?: boolean, deviceId?: string, opId?: string }} [options]
+ * @param {{ now?: Date, merge?: boolean, deviceId?: string, opId?: string, hlc?: string }} [options]
  * @returns {{ action: 'added' | 'merged' | 'unchanged', note: Note }}
  */
 export function addNote(
   dir,
   input,
-  { now = new Date(), merge = true, deviceId, opId } = {}
+  { now = new Date(), merge = true, deviceId, opId, hlc } = {}
 ) {
   const fields = normalizeInput(input);
   assertNoSecrets(fields);
@@ -750,11 +904,14 @@ export function addNote(
       ? `${device}-${now.getTime()}-${crypto.randomUUID().slice(0, 8)}`
       : undefined);
   return mutate(dir, (notes) => {
+    const resolvedHlc = resolveWriteHlc(dir, now, { deviceId: device, hlc });
     const existing = merge ? findNearDuplicate(notes.values(), fields) : null;
     if (existing) {
       return mergeInto(dir, notes, existing, fields, at, {
         device,
         opId: resolvedOpId,
+        hlc: resolvedHlc,
+        nowMs: now.getTime(),
       });
     }
     const { unchecked, ...rest } = fields;
@@ -764,6 +921,7 @@ export function addNote(
       at,
       ...(resolvedOpId ? { opId: resolvedOpId } : {}),
       ...(device ? { device } : {}),
+      ...(resolvedHlc ? { hlc: resolvedHlc } : {}),
       note: { id, ...rest, ...(unchecked ? { checked: null } : {}) },
     });
     return { action: /** @type {const} */ ('added'), note };
@@ -776,7 +934,7 @@ export function addNote(
  * @param {Note} existing
  * @param {NoteFields} fields
  * @param {string} at
- * @param {{ device?: string, opId?: string }} [meta]
+ * @param {{ device?: string, opId?: string, hlc?: string, nowMs?: number }} [meta]
  * @returns {{ action: 'merged' | 'unchanged', note: Note }}
  */
 function mergeInto(dir, notes, existing, fields, at, meta = {}) {
@@ -803,17 +961,28 @@ function mergeInto(dir, notes, existing, fields, at, meta = {}) {
       at,
       ...(meta.opId ? { opId: meta.opId } : {}),
       ...(meta.device ? { device: meta.device } : {}),
+      ...(meta.hlc ? { hlc: meta.hlc } : {}),
       set,
       source: fields.source,
     });
   }
   if (pin) {
+    const pinHlc = meta.hlc
+      ? update
+        ? nextHlc(
+            meta.hlc,
+            meta.nowMs ?? Date.parse(at),
+            meta.device ?? 'local'
+          )
+        : meta.hlc
+      : undefined;
     commit(dir, notes, {
       op: 'pin',
       id,
       at,
       ...(meta.opId ? { opId: `${meta.opId}-pin` } : {}),
       ...(meta.device ? { device: meta.device } : {}),
+      ...(pinHlc ? { hlc: pinHlc } : {}),
       pinned: true,
     });
   }
@@ -845,11 +1014,9 @@ export function mergeSyncedOps(dir, incomingOps, { now = new Date() } = {}) {
       const aAdd = a?.op === 'add' ? 0 : 1;
       const bAdd = b?.op === 'add' ? 0 : 1;
       if (aAdd !== bAdd) return aAdd - bAdd;
-      const aAt = typeof a?.at === 'string' ? a.at : '';
-      const bAt = typeof b?.at === 'string' ? b.at : '';
-      const atCmp = aAt.localeCompare(bAt);
-      if (atCmp !== 0) return atCmp;
-      return String(a?.opId ?? '').localeCompare(String(b?.opId ?? ''));
+      const hlcCmp = compareHlc(opOrderKey(a), opOrderKey(b));
+      if (hlcCmp !== 0) return hlcCmp;
+      return asciiCompare(String(a?.opId ?? ''), String(b?.opId ?? ''));
     });
 
     let applied = 0;
@@ -938,17 +1105,19 @@ export function mergeSyncedOps(dir, incomingOps, { now = new Date() } = {}) {
  * @param {string} dir
  * @param {string} id
  * @param {Partial<Pick<NoteFields, 'text' | 'tags' | 'triggers' | 'type' | 'scope' | 'repo'>>} changes
- * @param {{ now?: Date, source?: Source }} [options]
+ * @param {{ now?: Date, source?: Source, deviceId?: string, hlc?: string }} [options]
  * @returns {Note}
  */
 export function updateNote(
   dir,
   id,
   changes,
-  { now = new Date(), source } = {}
+  { now = new Date(), source, deviceId, hlc } = {}
 ) {
   const set = normalizeChanges(changes);
   const by = normalizeSource(source);
+  const device =
+    deviceId === undefined ? undefined : normalizeDeviceId(deviceId);
   return mutate(dir, (notes) => {
     const note = activeNote(notes, id);
     const next = normalizeInput({ ...note, ...set });
@@ -965,10 +1134,13 @@ export function updateNote(
       }
     }
     if (Object.keys(diff).length === 0) return note;
+    const resolvedHlc = resolveWriteHlc(dir, now, { deviceId: device, hlc });
     return commit(dir, notes, {
       op: 'update',
       id,
       at: now.toISOString(),
+      ...(device ? { device } : {}),
+      ...(resolvedHlc ? { hlc: resolvedHlc } : {}),
       set: diff,
       source: by,
     });
@@ -982,19 +1154,29 @@ export function updateNote(
  * @param {string} dir
  * @param {string} id
  * @param {string} why
- * @param {{ now?: Date, source?: Source }} [options]
+ * @param {{ now?: Date, source?: Source, deviceId?: string, hlc?: string }} [options]
  * @returns {Note}
  */
-export function deleteNote(dir, id, why, { now = new Date(), source } = {}) {
+export function deleteNote(
+  dir,
+  id,
+  why,
+  { now = new Date(), source, deviceId, hlc } = {}
+) {
   const reason = why.trim();
   if (!reason) invalid(`Give a reason for deleting ${id} (-m "why").`);
   const by = normalizeSource(source);
+  const device =
+    deviceId === undefined ? undefined : normalizeDeviceId(deviceId);
   return mutate(dir, (notes) => {
     activeNote(notes, id);
+    const resolvedHlc = resolveWriteHlc(dir, now, { deviceId: device, hlc });
     return commit(dir, notes, {
       op: 'delete',
       id,
       at: now.toISOString(),
+      ...(device ? { device } : {}),
+      ...(resolvedHlc ? { hlc: resolvedHlc } : {}),
       why: reason,
       source: by,
     });
@@ -1005,14 +1187,29 @@ export function deleteNote(dir, id, why, { now = new Date(), source } = {}) {
  * @param {string} dir
  * @param {string} id
  * @param {boolean} pinned
- * @param {{ now?: Date }} [options]
+ * @param {{ now?: Date, deviceId?: string, hlc?: string }} [options]
  * @returns {Note}
  */
-export function setPinned(dir, id, pinned, { now = new Date() } = {}) {
+export function setPinned(
+  dir,
+  id,
+  pinned,
+  { now = new Date(), deviceId, hlc } = {}
+) {
+  const device =
+    deviceId === undefined ? undefined : normalizeDeviceId(deviceId);
   return mutate(dir, (notes) => {
     const note = activeNote(notes, id);
     if (note.pinned === pinned) return note;
-    return commit(dir, notes, { op: 'pin', id, at: now.toISOString(), pinned });
+    const resolvedHlc = resolveWriteHlc(dir, now, { deviceId: device, hlc });
+    return commit(dir, notes, {
+      op: 'pin',
+      id,
+      at: now.toISOString(),
+      ...(device ? { device } : {}),
+      ...(resolvedHlc ? { hlc: resolvedHlc } : {}),
+      pinned,
+    });
   });
 }
 
@@ -1021,13 +1218,22 @@ export function setPinned(dir, id, pinned, { now = new Date() } = {}) {
  *
  * @param {string} dir
  * @param {string} id
- * @param {{ now?: Date }} [options]
+ * @param {{ now?: Date, deviceId?: string, hlc?: string }} [options]
  * @returns {Note}
  */
-export function checkNote(dir, id, { now = new Date() } = {}) {
+export function checkNote(dir, id, { now = new Date(), deviceId, hlc } = {}) {
+  const device =
+    deviceId === undefined ? undefined : normalizeDeviceId(deviceId);
   return mutate(dir, (notes) => {
     activeNote(notes, id);
-    return commit(dir, notes, { op: 'check', id, at: now.toISOString() });
+    const resolvedHlc = resolveWriteHlc(dir, now, { deviceId: device, hlc });
+    return commit(dir, notes, {
+      op: 'check',
+      id,
+      at: now.toISOString(),
+      ...(device ? { device } : {}),
+      ...(resolvedHlc ? { hlc: resolvedHlc } : {}),
+    });
   });
 }
 

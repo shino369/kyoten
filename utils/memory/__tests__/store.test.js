@@ -16,14 +16,19 @@ import {
   USAGE_FILE,
   addNote,
   checkNote,
+  compareHlc,
   compareNoteIds,
   deleteNote,
+  formatHlc,
   isStale,
   isValidNoteId,
   loadNotes,
+  maxHlcFromOps,
   memoryDir,
   mergeSyncedOps,
+  nextHlc,
   noteHistory,
+  parseHlc,
   readLog,
   readUsage,
   recordHits,
@@ -1222,6 +1227,92 @@ describe('memory store', () => {
       const loaded = loadNotes(dir).notes;
       expect(loaded.map((n) => n.id)).toEqual(['m-b001-1']);
       expect(logOps()[0].syncedAt).toBe(LATER.toISOString());
+    });
+
+    test('should format, parse, compare, and advance Hybrid Logical Clocks across clock skew', () => {
+      const t1 = Date.parse('2026-11-27T10:00:00.000Z');
+      const tSkewed = Date.parse('2026-11-27T09:50:00.000Z');
+      const h1 = formatHlc(t1, 2, 'dev1');
+      expect(parseHlc(h1)).toEqual({ ms: t1, counter: 2, node: 'dev1' });
+      expect(parseHlc('bad-hlc')).toBeNull();
+
+      // Skewed local clock advances counter on top of last seen HLC instead of going backwards
+      const h2 = nextHlc(h1, tSkewed, 'dev2');
+      expect(parseHlc(h2)).toEqual({ ms: t1, counter: 3, node: 'dev2' });
+      expect(compareHlc(h2, h1)).toBeGreaterThan(0);
+
+      // Counter rollover at 0xffff increments logical ms
+      const hRoll = nextHlc(formatHlc(t1, 0xffff, 'dev1'), tSkewed, 'dev2');
+      expect(parseHlc(hRoll)).toEqual({ ms: t1 + 1, counter: 0, node: 'dev2' });
+
+      // Newer wall clock resets counter to 0
+      const hAhead = nextHlc(h1, t1 + 5000, 'dev1');
+      expect(parseHlc(hAhead)).toEqual({
+        ms: t1 + 5000,
+        counter: 0,
+        node: 'dev1',
+      });
+
+      expect(
+        maxHlcFromOps([{ op: 'add', at: '2026-11-27T00:00:00.000Z' }])
+      ).toBeNull();
+      expect(
+        maxHlcFromOps([
+          { op: 'add', at: '2026-11-27T00:00:00.000Z', hlc: h1 },
+          { op: 'update', at: '2026-11-27T00:00:00.000Z', hlc: h2 },
+        ])
+      ).toBe(h2);
+    });
+
+    test('should resolve causal edits over wall-clock skew using HLC in replay and mergeSyncedOps', () => {
+      const wallA = new Date('2026-11-27T10:00:00.000Z');
+      const wallBSkewed = new Date('2026-11-27T09:50:00.000Z');
+      const hlcA = nextHlc(null, wallA.getTime(), 'aaaa');
+
+      // Machine B pulls Machine A's note whose wall clock is 10 minutes ahead of B
+      mergeSyncedOps(
+        dir,
+        [
+          {
+            op: 'add',
+            opId: 'aaaa-1',
+            device: 'aaaa',
+            hlc: hlcA,
+            at: wallA.toISOString(),
+            note: {
+              id: 'm-aaaa-1',
+              text: 'Original fact from A.',
+              scope: 'user',
+              repo: null,
+              type: 'fact',
+              tags: [],
+              triggers: [],
+              source: { via: 'sync' },
+              pinned: false,
+              supersedes: null,
+            },
+          },
+        ],
+        { now: wallBSkewed }
+      );
+
+      // Machine B edits the note even though B's wall clock is 10 minutes behind A
+      const updated = updateNote(
+        dir,
+        'm-aaaa-1',
+        { text: 'Causally newer edit from skewed B.' },
+        { now: wallBSkewed, deviceId: 'bbbb' }
+      );
+      expect(updated.text).toBe('Causally newer edit from skewed B.');
+
+      const ops = logOps();
+      expect(
+        compareHlc(/** @type {string} */ (ops[1].hlc), hlcA)
+      ).toBeGreaterThan(0);
+
+      // Replaying in reverse order still lets B's causally newer edit win despite older wall-clock `at`
+      const replayed = replay([ops[1], ops[0]]);
+      expect(replayed.notes[0].text).toBe('Causally newer edit from skewed B.');
     });
   });
 });
