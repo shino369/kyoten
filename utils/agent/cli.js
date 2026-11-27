@@ -10,9 +10,11 @@
  */
 import { spawnSync } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { buildCommand, runAgent } from '../loop/adapters.js';
 import { isLinkedWorktree } from '../loop/worktree.js';
+import { dsccEnv, profilePath } from '../kyoten/dscc.js';
 import { runIfMain } from '../module-runner.js';
 import { INNER_LOOP_ENV } from '../task/loop.js';
 import { formatLocal } from '../task/markdown.js';
@@ -25,9 +27,16 @@ export const DEFAULT_TIMEOUT_MIN = 10;
 /**
  * Agents callable via `pnpm agent ask`. `agy` is excluded: Google Antigravity
  * Terms of Service prohibit invoking `agy` from other agentic CLIs
- * (`agy -> others` is allowed; `others -> agy` is blocked).
+ * (`agy -> others` is allowed; `others -> agy` is blocked). `dscc` runs the
+ * `claude` CLI against the DeepSeek profile, so an Antigravity session can ask
+ * it for a cross-model review without an Anthropic login.
  */
-export const ASK_AGENTS = /** @type {const} */ (['claude', 'codex', 'dsh']);
+export const ASK_AGENTS = /** @type {const} */ ([
+  'claude',
+  'codex',
+  'dsh',
+  'dscc',
+]);
 
 export const HELP = `Usage: pnpm agent ask --agent ${ASK_AGENTS.join('|')} [options] "<prompt>" | -
 
@@ -36,6 +45,8 @@ its answer: a second opinion, a review, or a delegated question. Which agents
 are installed here: pnpm tools list
 Note: agy is intentionally excluded (Google Antigravity ToS forbids calling agy
 from other agent harnesses; agy may call other agents, never the reverse).
+dscc runs the claude CLI against the DeepSeek profile (Fix if missing:
+kyoten dscc --set-key), so no Anthropic login is needed.
 
 Options
   --agent <name>       ${ASK_AGENTS.join(' | ')} (required)
@@ -196,16 +207,24 @@ export function answerOf(result) {
 }
 
 /**
- * @param {{ command: import('../loop/adapters.js').AgentCommand, mode: string, cwd: string, at: Date, prompt: string, result: import('../loop/adapters.js').AgentResult }} input
+ * @param {{ command: import('../loop/adapters.js').AgentCommand, agent?: string, mode: string, cwd: string, at: Date, prompt: string, result: import('../loop/adapters.js').AgentResult }} input
  * @returns {string}
  */
-export function formatRecord({ command, mode, cwd, at, prompt, result }) {
+export function formatRecord({
+  command,
+  agent = command.agent,
+  mode,
+  cwd,
+  at,
+  prompt,
+  result,
+}) {
   const answer = answerOf(result);
   const exit = result.signal
     ? `stopped by ${result.signal}`
     : `exit ${result.code}`;
   return [
-    `# Agent call — ${command.agent} (${mode})`,
+    `# Agent call — ${agent} (${mode})`,
     '',
     `- When: ${formatLocal(at, { withTime: true })}`,
     `- Command: \`${[command.bin, ...command.args].join(' ')}\` (prompt on stdin)`,
@@ -234,9 +253,48 @@ export function formatRecord({ command, mode, cwd, at, prompt, result }) {
 }
 
 /**
+ * `base` without the names `drop` removes (`NAME*` drops by prefix; Windows
+ * env names are case-insensitive), then `set` applied.
+ *
+ * @param {NodeJS.ProcessEnv} base
+ * @param {{ drop: string[], set: Record<string, string> }} profile
+ * @param {NodeJS.Platform} [platform]
+ * @returns {Record<string, string>}
+ */
+export function profileEnv(base, profile, platform = process.platform) {
+  const folded = (/** @type {string} */ name) =>
+    platform === 'win32' ? name.toUpperCase() : name;
+  const names = new Set(
+    profile.drop.filter((name) => !name.endsWith('*')).map(folded)
+  );
+  const prefixes = profile.drop
+    .filter((name) => name.endsWith('*'))
+    .map((name) => folded(name.slice(0, -1)));
+  /** @type {Record<string, string>} */
+  const out = {};
+  for (const [name, value] of Object.entries(base)) {
+    if (value === undefined) continue;
+    const key = folded(name);
+    if (names.has(key) || prefixes.some((prefix) => key.startsWith(prefix))) {
+      continue;
+    }
+    out[name] = value;
+  }
+  for (const [name, value] of Object.entries(profile.set)) {
+    for (const existing of Object.keys(out)) {
+      if (folded(existing) === folded(name)) delete out[existing];
+    }
+    out[name] = value;
+  }
+  return out;
+}
+
+/**
  * @typedef {{
  *   rootDir: string,
  *   env: NodeJS.ProcessEnv,
+ *   homedir: () => string,
+ *   platform: NodeJS.Platform,
  *   log: (message: string) => void,
  *   warn: (message: string) => void,
  *   now: () => Date,
@@ -254,6 +312,8 @@ export function defaultAgentDeps(overrides = {}) {
   return {
     rootDir: ROOT_DIR,
     env: process.env,
+    homedir: () => os.homedir(),
+    platform: process.platform,
     log: console.log,
     warn: console.error,
     now: () => new Date(),
@@ -295,12 +355,31 @@ function ask(options, d) {
   }
 
   const mode = options.write ? 'write' : 'read';
+  const label = /** @type {string} */ (options.agent);
+  // dscc runs the claude CLI with the DeepSeek profile, so the adapter flags
+  // (plan mode read-only) are claude's; the record and output keep the dscc
+  // label.
+  const adapterAgent = label === 'dscc' ? 'claude' : label;
   const command = buildCommand({
-    agent: options.agent,
+    agent: adapterAgent,
     bin: options.bin,
-    argv: options.bin ? null : commandFor(d.rootDir, options.agent),
+    argv: options.bin ? null : commandFor(d.rootDir, adapterAgent),
     mode,
   });
+  /** @type {NodeJS.ProcessEnv} */
+  let env = { ...d.env, [INNER_LOOP_ENV]: 'off', TASK_AGENT: label };
+  if (label === 'dscc') {
+    const profile = dsccEnv(
+      profilePath({ env: d.env, homedir: d.homedir(), platform: d.platform })
+    );
+    for (const warning of profile.warnings) {
+      d.warn(`! dscc profile ${warning}`);
+    }
+    env = profileEnv(env, profile, d.platform);
+    env.KYOTEN_AGENT = 'dscc';
+    env[INNER_LOOP_ENV] = 'off';
+    env.TASK_AGENT = label;
+  }
   if (options.write) {
     let linked = false;
     try {
@@ -310,7 +389,7 @@ function ask(options, d) {
     }
     if (!linked) {
       d.warn(
-        `! --write in the main checkout: ${command.agent} may edit your working tree`
+        `! --write in the main checkout: ${label} may edit your working tree`
       );
     }
   }
@@ -318,7 +397,7 @@ function ask(options, d) {
   const at = d.now();
   const file = recordPath({
     rootDir: d.rootDir,
-    agent: command.agent,
+    agent: label,
     out: options.out,
     task: options.task,
     now: at,
@@ -328,12 +407,20 @@ function ask(options, d) {
     cwd: d.rootDir,
     prompt,
     timeoutMs: options.timeoutMin * 60 * 1000,
-    env: { ...d.env, [INNER_LOOP_ENV]: 'off', TASK_AGENT: command.agent },
+    env,
   });
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(
     file,
-    formatRecord({ command, mode, cwd: d.rootDir, at, prompt, result }),
+    formatRecord({
+      command,
+      agent: label,
+      mode,
+      cwd: d.rootDir,
+      at,
+      prompt,
+      result,
+    }),
     'utf-8'
   );
 
@@ -344,7 +431,7 @@ function ask(options, d) {
       JSON.stringify(
         {
           ok: code === 0,
-          agent: command.agent,
+          agent: label,
           mode,
           code: result.code,
           signal: result.signal,
@@ -360,7 +447,7 @@ function ask(options, d) {
   } else {
     d.log(answerOf(result).trimEnd());
     d.warn(
-      `(${command.agent}, ${mode}: ${result.signal ? `stopped by ${result.signal}` : `exit ${result.code}`}; record: ${record})`
+      `(${label}, ${mode}: ${result.signal ? `stopped by ${result.signal}` : `exit ${result.code}`}; record: ${record})`
     );
   }
   return code;

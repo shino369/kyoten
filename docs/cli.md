@@ -23,16 +23,18 @@ Run `pnpm docs:cli` to refresh this reference from the workspace CLI help. Run `
 ## `pnpm agent`
 
 ```text
-Usage: pnpm agent ask --agent claude|codex|dsh [options] "<prompt>" | -
+Usage: pnpm agent ask --agent claude|codex|dsh|dscc [options] "<prompt>" | -
 
 Runs one headless turn of another coding agent in this repository and prints
 its answer: a second opinion, a review, or a delegated question. Which agents
 are installed here: pnpm tools list
 Note: agy is intentionally excluded (Google Antigravity ToS forbids calling agy
 from other agent harnesses; agy may call other agents, never the reverse).
+dscc runs the claude CLI against the DeepSeek profile (Fix if missing:
+kyoten dscc --set-key), so no Anthropic login is needed.
 
 Options
-  --agent <name>       claude | codex | dsh (required)
+  --agent <name>       claude | codex | dsh | dscc (required)
   --write              Let the agent edit files (default: read-only). Prefer a
                        git worktree; in the main checkout it edits your tree
   --timeout-min <n>    Stop the agent after n minutes (default 10)

@@ -61,7 +61,7 @@ outputs.
 | Task brief / log / help       | `pnpm task status` · `pnpm task note …` · `pnpm task help`                           |
 | Delete stale files (undoable) | `pnpm task rm <path>…` (to `tasks/.trash/`, kept 7 days)                             |
 | Tools on this machine         | `pnpm tools list` · `pnpm tools show <name>` · `pnpm tools scan`                     |
-| Ask another agent (read-only) | `pnpm agent ask --agent claude\|codex\|dsh "…"`                                      |
+| Ask another agent (read-only) | `pnpm agent ask --agent claude\|codex\|dsh\|dscc "…"`                                |
 | Fix until verify passes       | `pnpm loop <task> --agent claude\|codex\|dsh\|agy` (`--help`)                        |
 | Review round (code task)      | `pnpm task review` · `pnpm task review record` (§4.5)                                |
 | Run a plan with N workers     | `pnpm swarm <task> --agent claude\|codex\|dsh\|agy --workers 2`                      |
@@ -261,7 +261,7 @@ Use `trilingual-translator` with `translation-expertise`. Write drafts and passe
 `tools/catalog.json` (committed).
 
 - **Look first:** `pnpm tools list` (`--all` adds install hints); details: `pnpm tools show <name>`.
-- **Call another agent:** `pnpm agent ask --agent claude|codex|dsh "…"` (or `-` for stdin).
+- **Call another agent:** `pnpm agent ask --agent claude|codex|dsh|dscc "…"` (or `-` for stdin).
   Read-only by default, memory hooks off, saved in the active task's `tmp/`. `--write` allows edits
   (use only in a worktree). `agy` is excluded here (`agy -> others` is allowed; `others -> agy` is
   blocked by Google Antigravity ToS).

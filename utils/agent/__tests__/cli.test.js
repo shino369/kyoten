@@ -12,6 +12,7 @@ import {
   formatRecord,
   main,
   parseArgs,
+  profileEnv,
   recordPath,
 } from '../cli.js';
 
@@ -487,5 +488,144 @@ describe('main', () => {
 
     const text = run(['ask', '--agent', 'codex', 'hi'], { runAgent: stopped });
     expect(text.err).toContain('(codex, read: stopped by SIGTERM; record:');
+  });
+});
+
+describe('profileEnv', () => {
+  test('should drop inherited provider names (case-insensitive prefixes on Windows) and apply the profile', () => {
+    expect(
+      profileEnv(
+        {
+          PATH: '/bin',
+          ANTHROPIC_API_KEY: 'inherited',
+          anthropic_base_url: 'https://a',
+          CLAUDE_CODE_USE_BEDROCK: '1',
+        },
+        {
+          drop: ['ANTHROPIC_*', 'CLAUDE_CODE_USE_BEDROCK'],
+          set: { ANTHROPIC_BASE_URL: 'https://b' },
+        },
+        'win32'
+      )
+    ).toEqual({ PATH: '/bin', ANTHROPIC_BASE_URL: 'https://b' });
+  });
+
+  test('should match names case-sensitively off Windows', () => {
+    expect(
+      profileEnv(
+        { anthropic_api_key: 'lower', ANTHROPIC_API_KEY: 'upper' },
+        { drop: ['ANTHROPIC_*'], set: {} },
+        'linux'
+      )
+    ).toEqual({ anthropic_api_key: 'lower' });
+  });
+});
+
+describe('dscc', () => {
+  const profile = (/** @type {string} */ text) => {
+    const file = path.join(root, 'dscc.env');
+    fs.writeFileSync(file, text);
+    return file;
+  };
+  const PROFILED =
+    'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic\nANTHROPIC_AUTH_TOKEN=sk-test-secret\n';
+
+  test('should run the claude adapter with the dscc profile environment', () => {
+    const file = profile(PROFILED);
+
+    const { code, out, err, runAgent } = run(
+      ['ask', '--agent', 'dscc', '--json', 'review it'],
+      {
+        env: {
+          HOME: '/home/t',
+          DSCC_PROFILE: file,
+          ANTHROPIC_API_KEY: 'inherited',
+          CLAUDE_CODE_USE_BEDROCK: '1',
+          KYOTEN_AGENT: 'agy',
+        },
+      }
+    );
+
+    expect(code).toBe(0);
+    const call = runAgent.mock.calls[0][0];
+    expect(call.command).toEqual({
+      agent: 'claude',
+      bin: 'claude',
+      args: [
+        '-p',
+        '--permission-mode',
+        'plan',
+        '--output-format',
+        'text',
+        '--no-session-persistence',
+      ],
+    });
+    expect(call.env).toMatchObject({
+      ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic',
+      ANTHROPIC_AUTH_TOKEN: 'sk-test-secret',
+      KYOTEN_AGENT: 'dscc',
+      TASK_AGENT: 'dscc',
+      TASK_INNER_LOOP: 'off',
+    });
+    expect(call.env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(call.env.CLAUDE_CODE_USE_BEDROCK).toBeUndefined();
+    const parsed = JSON.parse(out);
+    expect(parsed).toMatchObject({ agent: 'dscc', mode: 'read' });
+    expect(parsed.record).toMatch(/agent-dscc-/);
+    expect(read(parsed.record)).toContain('# Agent call — dscc (read)');
+    expect(err).toBe('');
+  });
+
+  test('should use acceptEdits for --write and warn in the main checkout', () => {
+    const file = profile(PROFILED);
+
+    const { err, runAgent } = run(['ask', '--agent', 'dscc', '--write', 'hi'], {
+      env: { DSCC_PROFILE: file },
+    });
+
+    expect(runAgent.mock.calls[0][0].command.args).toContain('acceptEdits');
+    expect(err).toContain(
+      '! --write in the main checkout: dscc may edit your working tree'
+    );
+  });
+
+  test('should fail cleanly without touching secrets when the profile is missing or invalid', () => {
+    expect(() =>
+      run(['ask', '--agent', 'dscc', 'hi'], {
+        env: { DSCC_PROFILE: path.join(root, 'nope.env') },
+      })
+    ).toThrow(/no dscc profile at .*nope\.env[^]*Fix: kyoten dscc --set-key/);
+
+    const file = profile(
+      'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic\n'
+    );
+    expect(() =>
+      run(['ask', '--agent', 'dscc', 'hi'], { env: { DSCC_PROFILE: file } })
+    ).toThrow(/ANTHROPIC_AUTH_TOKEN is not set[^]*Fix: kyoten dscc --set-key/);
+  });
+
+  test('should forward profile warnings without printing values', () => {
+    const file = profile(
+      'ANTHROPIC_BASE_URL=https://api.example.com/anthropic\nANTHROPIC_AUTH_TOKEN=sk-test-secret\n'
+    );
+
+    const { err } = run(['ask', '--agent', 'dscc', 'hi'], {
+      env: { DSCC_PROFILE: file },
+    });
+
+    expect(err).toContain(
+      '! dscc profile ANTHROPIC_BASE_URL points at api.example.com'
+    );
+    expect(err).not.toContain('sk-test-secret');
+  });
+
+  test('should print the dscc label in the stderr summary', () => {
+    const file = profile(PROFILED);
+
+    const { err } = run(['ask', '--agent', 'dscc', 'hi'], {
+      env: { DSCC_PROFILE: file },
+    });
+
+    expect(err).toContain('(dscc, read: exit 0; record:');
   });
 });
