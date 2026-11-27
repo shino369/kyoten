@@ -106,6 +106,33 @@ const agentReminder = (/** @type {string} */ agent) =>
   `[Persona] Every message to the user, progress notes between tool calls included, follows this session's ${agent} persona from the session start context.`;
 const agentOverride = (/** @type {string} */ agent) =>
   `[Persona] This ${agent} session has its own persona: apply the personalization below instead of the Personalization section.`;
+/** The harness each KYOTEN_AGENT value runs in. */
+const AGENT_HARNESS = /** @type {Record<string, Harness>} */ ({
+  claude: 'claude',
+  dscc: 'claude',
+  codex: 'codex',
+  dsh: 'dsh',
+  agy: 'agy',
+});
+
+/**
+ * The agent whose persona file this session uses: KYOTEN_AGENT when it names
+ * an agent of this harness, else the harness itself. Codex hooks run in the
+ * shared app-server daemon's environment, so KYOTEN_AGENT can be missing, and
+ * a child agent can inherit its parent's value.
+ *
+ * @param {string | undefined} agent the KYOTEN_AGENT value
+ * @param {Harness} harness
+ * @returns {string}
+ */
+export function sessionAgent(agent, harness) {
+  const name = agent?.trim();
+  return name &&
+    Object.hasOwn(AGENT_HARNESS, name) &&
+    AGENT_HARNESS[name] === harness
+    ? name
+    : harness;
+}
 /** Characters of the language setting quoted in the reminder. */
 export const REMINDER_LANGUAGE_CHARS = 200;
 
@@ -234,7 +261,7 @@ export function failureText(input) {
  * a broken settings file: the reminder is optional, recall must still run).
  *
  * @param {string} dir the memory directory
- * @param {string | undefined} [agent] the KYOTEN_AGENT value
+ * @param {string} agent the session's agent (sessionAgent)
  */
 function personaReminder(dir, agent) {
   let settings;
@@ -242,7 +269,7 @@ function personaReminder(dir, agent) {
   try {
     if (!readConfig(dir).personalizationEnabled) return PERSONALIZATION_OFF;
     const own = agentPersonalization(dir, personaKeyFor(agent));
-    if (own) reminder = agentReminder(/** @type {string} */ (agent));
+    if (own) reminder = agentReminder(agent);
     settings = own ?? readPersonalization(dir);
   } catch {
     return '';
@@ -265,7 +292,7 @@ function personaReminder(dir, agent) {
  * @param {string} home
  * @param {Harness} harness
  * @param {import('./config.js').MemoryConfig} config
- * @param {string | undefined} [agent] the KYOTEN_AGENT value, when kyoten started the session
+ * @param {string} agent the session's agent (sessionAgent)
  */
 function startupMemory(rootDir, home, harness, config, agent) {
   const localFile = harness === 'dsh' ? AGENTS_LOCAL_FILE : CLAUDE_LOCAL_FILE;
@@ -287,7 +314,7 @@ function startupMemory(rootDir, home, harness, config, agent) {
     if (rootDir !== home && start < 0) {
       return renderStored(home, config, own).block;
     }
-    return `${agentOverride(/** @type {string} */ (agent))}\n\n${renderPersonalization(own)}`;
+    return `${agentOverride(agent)}\n\n${renderPersonalization(own)}`;
   }
   if (rootDir === home) return '';
 
@@ -407,7 +434,13 @@ export function handleHook(
     const config = readConfig(dir);
     const off = savingOff(config, session);
     const parts = [
-      startupMemory(rootDir, home, harness, config, env[AGENT_ENV]),
+      startupMemory(
+        rootDir,
+        home,
+        harness,
+        config,
+        sessionAgent(env[AGENT_ENV], harness)
+      ),
       config.personalizationEnabled ? '' : PERSONALIZATION_OFF,
       ...(off
         ? [
@@ -460,7 +493,7 @@ export function handleHook(
     return /** @type {any} */ (
       contextOutput(
         event,
-        [personaReminder(dir, env[AGENT_ENV]), recalled]
+        [personaReminder(dir, sessionAgent(env[AGENT_ENV], harness)), recalled]
           .filter(Boolean)
           .join('\n\n'),
         harness
