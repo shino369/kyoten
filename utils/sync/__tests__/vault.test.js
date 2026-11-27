@@ -20,10 +20,13 @@ import {
   SyncError,
   detectMdmHint,
   enrollDevice,
+  exportRootKey,
+  importRootKey,
   initSync,
   pullSync,
   pushSync,
   revokeDevice,
+  rotateRootKey,
   setSyncMode,
   syncDir,
   syncStatus,
@@ -124,15 +127,19 @@ describe('sync vault (Track 1 E2EE Git Vault)', () => {
     expect(workInit.config.mode).toBe('receive');
     expect(workInit.mdmSuggestedReceive).toBe(true);
 
-    // 3. Phone initializes with personal + home-private compartments
+    // 3. Phone initializes with personal + home-private compartments using rootFingerprint
     const phoneInit = initSync(phone, {
       vault,
       name: 'phone',
       zone: 'personal',
       compartments: ['personal', 'home-private'],
+      rootFingerprint: homeInit.rootFingerprint,
       now: NOW,
       mdmHint: false,
     });
+    expect(homeInit.config.rootPublicKey).not.toBe(
+      homeInit.publicDevice.ed25519PublicKey
+    );
 
     // 4. Owner enrolls work-mac and phone
     enrollDevice(homePc, { pubkey: workInit.publicDevice, now: NOW });
@@ -371,12 +378,18 @@ describe('sync vault (Track 1 E2EE Git Vault)', () => {
     const vault = initBareVault();
     const owner = makeWorkspace('owner-bind');
     const peer = makeWorkspace('peer-bind');
-    initSync(owner, { vault, name: 'owner', now: NOW, mdmHint: false });
+    const ownerInit = initSync(owner, {
+      vault,
+      name: 'owner',
+      now: NOW,
+      mdmHint: false,
+    });
     const peerInit = initSync(peer, {
       vault,
       name: 'peer',
       mode: 'full',
       compartments: ['personal'],
+      rootPublicKey: ownerInit.config.rootPublicKey,
       now: NOW,
       mdmHint: false,
     });
@@ -433,6 +446,7 @@ describe('sync vault (Track 1 E2EE Git Vault)', () => {
       name: 'peer',
       mode: 'full',
       compartments: ['personal'],
+      rootPublicKey: ownerInit.config.rootPublicKey,
       now: NOW,
       mdmHint: false,
     });
@@ -498,12 +512,18 @@ describe('sync vault (Track 1 E2EE Git Vault)', () => {
     const vault = initBareVault();
     const owner = makeWorkspace('owner-promote');
     const peer = makeWorkspace('peer-promote');
-    initSync(owner, { vault, name: 'owner', now: NOW, mdmHint: false });
+    const ownerInit = initSync(owner, {
+      vault,
+      name: 'owner',
+      now: NOW,
+      mdmHint: false,
+    });
     const peerInit = initSync(peer, {
       vault,
       name: 'peer',
       mode: 'receive',
       compartments: ['personal'],
+      rootFingerprint: ownerInit.rootFingerprint,
       now: NOW,
       mdmHint: false,
     });
@@ -531,5 +551,198 @@ describe('sync vault (Track 1 E2EE Git Vault)', () => {
       scope: 'user',
       text: 'Promoted to user fact.',
     });
+  });
+
+  test('non-owner initSync refuses silent TOFU, validates fingerprint/key, and allows explicit --trust-vault-root', () => {
+    const vault = initBareVault();
+    const owner = makeWorkspace('owner-tofu');
+    const peer = makeWorkspace('peer-tofu');
+    const ownerInit = initSync(owner, {
+      vault,
+      name: 'owner',
+      now: NOW,
+      mdmHint: false,
+    });
+
+    // Refuses implicit TOFU when joining existing vault without root key or fingerprint
+    expect(() =>
+      initSync(peer, { vault, name: 'peer', now: NOW, mdmHint: false })
+    ).toThrow(/--root-key or --root-fingerprint/);
+    expect(fs.existsSync(path.join(syncDir(peer), 'vault'))).toBe(false);
+
+    // Rejects mismatched fingerprint and invalid fingerprint format
+    expect(() =>
+      initSync(peer, {
+        vault,
+        name: 'peer',
+        rootFingerprint: '0000000000000000',
+        now: NOW,
+        mdmHint: false,
+      })
+    ).toThrow(/fingerprint mismatch/);
+    expect(() =>
+      initSync(peer, {
+        vault,
+        name: 'peer',
+        rootFingerprint: 'not-hex',
+        now: NOW,
+        mdmHint: false,
+      })
+    ).toThrow(/expected 16 hex/);
+
+    // Rejects wrong rootPublicKey
+    expect(() =>
+      initSync(peer, {
+        vault,
+        name: 'peer',
+        rootPublicKey: ownerInit.publicDevice.ed25519PublicKey,
+        now: NOW,
+        mdmHint: false,
+      })
+    ).toThrow(/failed signature verification/);
+
+    // Explicit trustVaultRoot succeeds and flags trustedOnFirstUse
+    const tofuInit = initSync(peer, {
+      vault,
+      name: 'peer',
+      trustVaultRoot: true,
+      now: NOW,
+      mdmHint: false,
+    });
+    expect(tofuInit.trustedOnFirstUse).toBe(true);
+    expect(tofuInit.rootFingerprint).toBe(ownerInit.rootFingerprint);
+  });
+
+  test('root key backup export/import recovers admin authority and root rotation propagates to peers', () => {
+    const vault = initBareVault();
+    const owner = makeWorkspace('owner-root');
+    const backupPeer = makeWorkspace('backup-peer');
+    const third = makeWorkspace('third-peer');
+    const ownerInit = initSync(owner, {
+      vault,
+      name: 'owner',
+      now: NOW,
+      mdmHint: false,
+    });
+    const peerInit = initSync(backupPeer, {
+      vault,
+      name: 'backup-peer',
+      mode: 'full',
+      compartments: ['personal'],
+      rootPublicKey: ownerInit.rootPublicKey,
+      now: NOW,
+      mdmHint: false,
+    });
+    enrollDevice(owner, { pubkey: peerInit.publicDevice, now: NOW });
+
+    // Non-owner peer cannot export or rotate before importing root backup
+    expect(() =>
+      exportRootKey(backupPeer, { passphrase: 'long-password-123' })
+    ).toThrow(/does not hold the vault root/);
+    expect(() => rotateRootKey(backupPeer)).toThrow(
+      /does not hold the vault root/
+    );
+
+    const backupFile = path.join(tmp, 'vault-root.enc.json');
+    const exported = exportRootKey(owner, {
+      passphrase: 'long-password-123',
+      outFile: backupFile,
+      now: NOW,
+    });
+    expect(exported.rootFingerprint).toBe(ownerInit.rootFingerprint);
+
+    // Import onto backupPeer, rotate root key, and enroll a third device from backupPeer
+    const imported = importRootKey(backupPeer, {
+      backup: JSON.parse(fs.readFileSync(backupFile, 'utf-8')),
+      passphrase: 'long-password-123',
+    });
+    expect(imported.rootFingerprint).toBe(ownerInit.rootFingerprint);
+
+    const rotated = rotateRootKey(backupPeer, { now: LATER });
+    expect(rotated.previousFingerprint).toBe(ownerInit.rootFingerprint);
+    expect(rotated.rootFingerprint).not.toBe(ownerInit.rootFingerprint);
+
+    // Original owner pulls and follows the dual-signed rootHistory rotation automatically
+    pullSync(owner, { now: LATER });
+    const ownerStatus = syncStatus(owner);
+    expect(ownerStatus.rootFingerprint).toBe(rotated.rootFingerprint);
+    expect(ownerStatus.rootRotations).toBe(1);
+    expect(ownerStatus.isOwner).toBe(false);
+
+    // A new device joining with the original root key still verifies through rootHistory
+    const thirdInit = initSync(third, {
+      vault,
+      name: 'third',
+      mode: 'receive',
+      compartments: ['personal'],
+      rootPublicKey: ownerInit.rootPublicKey,
+      now: LATER,
+      mdmHint: false,
+    });
+    expect(thirdInit.rootFingerprint).toBe(rotated.rootFingerprint);
+
+    enrollDevice(backupPeer, { pubkey: thirdInit.publicDevice, now: LATER });
+    addNote(
+      memoryDir(backupPeer),
+      { scope: 'user', type: 'fact', text: 'Note after root key rotation.' },
+      { now: LATER }
+    );
+    pushSync(backupPeer, { now: LATER });
+    expect(pullSync(third, { now: LATER }).applied).toBe(1);
+
+    // Importing a backup for the old root key after rotation fails cleanly
+    expect(() =>
+      importRootKey(owner, {
+        backup: JSON.parse(fs.readFileSync(backupFile, 'utf-8')),
+        passphrase: 'long-password-123',
+      })
+    ).toThrow(/does not match this vault's current root key/);
+  });
+
+  test('HLC ordering resolves skewed peer edits across pushSync and pullSync', () => {
+    const vault = initBareVault();
+    const owner = makeWorkspace('owner-hlc');
+    const skewedPeer = makeWorkspace('skewed-hlc');
+    const ownerInit = initSync(owner, {
+      vault,
+      name: 'owner',
+      now: NOW,
+      mdmHint: false,
+    });
+    const peerInit = initSync(skewedPeer, {
+      vault,
+      name: 'skewed-peer',
+      mode: 'full',
+      compartments: ['personal'],
+      rootFingerprint: ownerInit.rootFingerprint,
+      now: NOW,
+      mdmHint: false,
+    });
+    enrollDevice(owner, { pubkey: peerInit.publicDevice, now: NOW });
+
+    // Owner writes a note at t = 04:00Z
+    const added = addNote(
+      memoryDir(owner),
+      { scope: 'user', type: 'fact', text: 'Initial value from owner.' },
+      { now: LATER, deviceId: ownerInit.config.deviceId }
+    );
+    pushSync(owner, { now: LATER });
+
+    // Skewed peer (clock stuck 1 hour behind at 03:00Z) pulls owner's note and updates it
+    pullSync(skewedPeer, { now: NOW });
+    updateNote(
+      memoryDir(skewedPeer),
+      added.note.id,
+      { text: 'Updated value from skewed peer.' },
+      { now: NOW, deviceId: peerInit.config.deviceId }
+    );
+    pushSync(skewedPeer, { now: NOW });
+
+    // Owner pulls skewed peer's edit; HLC beats owner's earlier 04:00Z wall clock
+    const res = pullSync(owner, { now: LATER });
+    expect(res.applied).toBe(1);
+    expect(loadNotes(memoryDir(owner)).notes[0].text).toBe(
+      'Updated value from skewed peer.'
+    );
   });
 });

@@ -30,10 +30,15 @@ import { takeSnapshot } from '../memory/snapshot.js';
 import {
   MemoryError,
   assertNoSecrets,
+  compareHlc,
+  formatHlc,
   loadNotes,
+  maxHlcFromOps,
   memoryDir,
   mergeSyncedOps,
+  nextHlc,
   normalizeInput,
+  parseHlc,
   readJsonOrNull,
   readLog,
 } from '../memory/store.js';
@@ -43,12 +48,19 @@ import { readIfExists, writeFileAtomic } from '../task/store.js';
 import {
   GENESIS_HASH,
   SyncCryptoError,
+  createRootRotation,
   decryptBatch,
+  decryptRootKeyBackup,
+  deriveEd25519PublicKey,
   encryptBatch,
+  encryptRootKeyBackup,
   generateDeviceIdentity,
+  generateRootKeyPair,
+  keyFingerprint,
   sha256Hex,
   signRegistry,
   verifyRegistry,
+  verifyRegistryChain,
 } from './crypto.js';
 
 export const SYNC_SUBDIR = 'sync';
@@ -96,11 +108,12 @@ const LEGACY_ID_RE = /^([mt])([1-9]\d*)$/;
  *
  * @typedef {object} SyncCursors
  * @property {number} pushedLogOps
+ * @property {string | null} lastHlc
  * @property {Record<string, string>} pushedArtifacts
  * @property {Record<string, StreamCursor>} pushed
  * @property {Record<string, StreamCursor>} pulled
  *
- * @typedef {{ version: number, epoch: number, updatedAt: string, devices: PublicDevice[] }} DeviceRegistry
+ * @typedef {{ version: number, epoch: number, updatedAt: string, rootHistory?: import('./crypto.js').RootRotation[], devices: PublicDevice[] }} DeviceRegistry
  */
 
 export class SyncError extends Error {
@@ -321,20 +334,34 @@ function readCursors(rootDir) {
   if (data && typeof data === 'object') {
     return {
       pushedLogOps: Number.isInteger(data.pushedLogOps) ? data.pushedLogOps : 0,
+      lastHlc:
+        typeof data.lastHlc === 'string' && parseHlc(data.lastHlc)
+          ? data.lastHlc
+          : null,
       pushedArtifacts: data.pushedArtifacts ?? {},
       pushed: data.pushed ?? {},
       pulled: data.pulled ?? {},
     };
   }
-  return { pushedLogOps: 0, pushedArtifacts: {}, pushed: {}, pulled: {} };
+  return {
+    pushedLogOps: 0,
+    lastHlc: null,
+    pushedArtifacts: {},
+    pushed: {},
+    pulled: {},
+  };
 }
 
 /**
+ * Load and verify `devices.json` + `devices.json.sig`, following any dual-signed
+ * `rootHistory` key rotations and persisting the rotated root public key locally.
+ *
+ * @param {string} rootDir
  * @param {string} vDir
- * @param {string} pinnedRootPublicKey
- * @returns {DeviceRegistry}
+ * @param {SyncConfig} config
+ * @returns {{ registry: DeviceRegistry, rootPublicKey: string, rotated: boolean }}
  */
-function loadVerifiedRegistry(vDir, pinnedRootPublicKey) {
+function loadVerifiedRegistry(rootDir, vDir, config) {
   const registry = /** @type {DeviceRegistry | null} */ (
     readJsonOrNull(path.join(vDir, DEVICES_FILE))
   );
@@ -342,12 +369,37 @@ function loadVerifiedRegistry(vDir, pinnedRootPublicKey) {
   if (!registry || !Array.isArray(registry.devices)) {
     throw new SyncError('Vault registry devices.json is missing or invalid.');
   }
-  if (!verifyRegistry(registry, sig, pinnedRootPublicKey)) {
+  const verified = verifyRegistryChain(registry, sig, config.rootPublicKey);
+  if (!verified.valid || !verified.currentRootPublicKey) {
     throw new SyncError(
-      'Vault registry signature check failed (devices.json.sig does not match pinned root key).'
+      'Vault registry signature check failed (devices.json.sig does not match pinned root key or valid rotation chain).'
     );
   }
-  return registry;
+  if (verified.rotated) {
+    config.rootPublicKey = verified.currentRootPublicKey;
+    writeJson(configFile(rootDir), config);
+    const id = /** @type {SyncIdentity | null} */ (
+      readJsonOrNull(identityFile(rootDir))
+    );
+    if (id && id.rootPrivateKey) {
+      let matches = false;
+      try {
+        matches =
+          deriveEd25519PublicKey(id.rootPrivateKey) ===
+          verified.currentRootPublicKey;
+      } catch {
+        matches = false;
+      }
+      if (!matches) {
+        writeJson(identityFile(rootDir), { ...id, rootPrivateKey: null }, true);
+      }
+    }
+  }
+  return {
+    registry,
+    rootPublicKey: verified.currentRootPublicKey,
+    rotated: verified.rotated,
+  };
 }
 
 /**
@@ -365,8 +417,10 @@ function writeJson(file, data, restrictMode = false) {
 
 /**
  * Initialize `pnpm sync` for this workspace: generates Ed25519/X25519 device
- * keys, clones/opens the E2EE Git vault, and either creates a root-signed
- * `devices.json` (first owner machine) or verifies an existing vault.
+ * keys, clones/opens the E2EE Git vault, and either creates a dedicated
+ * root-signed `devices.json` (first owner machine) or verifies an existing
+ * vault against `--root-key` / `--root-fingerprint` (TOFU only with explicit
+ * `--trust-vault-root`).
  *
  * @param {string} rootDir
  * @param {{
@@ -377,6 +431,8 @@ function writeJson(file, data, restrictMode = false) {
  *   compartments?: string[],
  *   repoAllowlist?: string[],
  *   rootPublicKey?: string,
+ *   rootFingerprint?: string,
+ *   trustVaultRoot?: boolean,
  *   now?: Date,
  *   run?: Spawn,
  *   mdmHint?: boolean,
@@ -392,6 +448,8 @@ export function initSync(
     compartments,
     repoAllowlist = [],
     rootPublicKey,
+    rootFingerprint,
+    trustVaultRoot = false,
     now = new Date(),
     run = crossSpawn(),
     mdmHint = detectMdmHint(),
@@ -444,47 +502,108 @@ export function initSync(
   const existingRegPath = path.join(vDir, DEVICES_FILE);
   const existingSigPath = path.join(vDir, DEVICES_SIG_FILE);
   let isOwner = false;
-  let pinnedRootKey = rootPublicKey ?? '';
+  let trustedOnFirstUse = false;
+  let pinnedRootKey = '';
+  /** @type {string | null} */
+  let rootPrivateKey = null;
 
-  if (fs.existsSync(existingRegPath)) {
-    const existingReg = /** @type {DeviceRegistry} */ (
-      readJsonOrNull(existingRegPath)
-    );
-    const existingSig = /** @type {any} */ (readJsonOrNull(existingSigPath));
-    if (!existingReg || !existingSig?.rootPublicKey) {
-      throw new SyncError('Existing vault has an invalid devices registry.');
-    }
-    if (!pinnedRootKey) {
-      pinnedRootKey = String(existingSig.rootPublicKey);
-    }
-    if (!verifyRegistry(existingReg, existingSig, pinnedRootKey)) {
-      throw new SyncError(
-        'Existing vault devices.json.sig failed signature verification against rootPublicKey.'
+  try {
+    if (fs.existsSync(existingRegPath)) {
+      const existingReg = /** @type {DeviceRegistry} */ (
+        readJsonOrNull(existingRegPath)
+      );
+      const existingSig = /** @type {any} */ (readJsonOrNull(existingSigPath));
+      if (!existingReg || !existingSig?.rootPublicKey) {
+        throw new SyncError('Existing vault has an invalid devices registry.');
+      }
+      const trimmedKey =
+        typeof rootPublicKey === 'string' ? rootPublicKey.trim() : '';
+      const trimmedFp =
+        typeof rootFingerprint === 'string'
+          ? rootFingerprint.trim().toLowerCase()
+          : '';
+
+      if (trimmedKey) {
+        const verified = verifyRegistryChain(
+          existingReg,
+          existingSig,
+          trimmedKey
+        );
+        if (!verified.valid || !verified.currentRootPublicKey) {
+          throw new SyncError(
+            'Existing vault devices.json.sig failed signature verification against --root-key.'
+          );
+        }
+        pinnedRootKey = verified.currentRootPublicKey;
+      } else if (trimmedFp) {
+        if (!/^[0-9a-f]{16}$/.test(trimmedFp)) {
+          throw new SyncError(
+            `Invalid --root-fingerprint "${rootFingerprint}": expected 16 hex characters.`
+          );
+        }
+        const actualFp = keyFingerprint(String(existingSig.rootPublicKey));
+        if (actualFp !== trimmedFp) {
+          throw new SyncError(
+            `Vault root fingerprint mismatch: expected ${trimmedFp}, found ${actualFp}.`
+          );
+        }
+        if (
+          !verifyRegistry(
+            existingReg,
+            existingSig,
+            String(existingSig.rootPublicKey)
+          )
+        ) {
+          throw new SyncError(
+            'Existing vault devices.json.sig failed signature verification.'
+          );
+        }
+        pinnedRootKey = String(existingSig.rootPublicKey);
+      } else if (trustVaultRoot === true) {
+        if (
+          !verifyRegistry(
+            existingReg,
+            existingSig,
+            String(existingSig.rootPublicKey)
+          )
+        ) {
+          throw new SyncError(
+            'Existing vault devices.json.sig failed self-signed verification.'
+          );
+        }
+        pinnedRootKey = String(existingSig.rootPublicKey);
+        trustedOnFirstUse = true;
+      } else {
+        throw new SyncError(
+          'Joining an existing vault requires --root-key or --root-fingerprint to prevent TOFU attacks.',
+          'Run pnpm sync root show on the owner machine, then pass --root-key <b64> or --root-fingerprint <16-hex> (or pass --trust-vault-root to explicitly accept TOFU).'
+        );
+      }
+    } else {
+      isOwner = true;
+      const rootKeys = generateRootKeyPair();
+      pinnedRootKey = rootKeys.publicKey;
+      rootPrivateKey = rootKeys.privateKey;
+      /** @type {DeviceRegistry} */
+      const registry = {
+        version: 1,
+        epoch: 1,
+        updatedAt: now.toISOString(),
+        rootHistory: [],
+        devices: [publicDevice],
+      };
+      const sig = signRegistry(registry, rootPrivateKey, pinnedRootKey, now);
+      writeJson(existingRegPath, registry);
+      writeJson(existingSigPath, sig);
+      gitCommitAndPush(
+        run,
+        vDir,
+        `chore(sync): initialize vault (${publicDevice.deviceId})`
       );
     }
-  } else {
-    isOwner = true;
-    pinnedRootKey = publicDevice.ed25519PublicKey;
-    /** @type {DeviceRegistry} */
-    const registry = {
-      version: 1,
-      epoch: 1,
-      updatedAt: now.toISOString(),
-      devices: [publicDevice],
-    };
-    const sig = signRegistry(
-      registry,
-      privateKeys.ed25519PrivateKey,
-      pinnedRootKey,
-      now
-    );
-    writeJson(existingRegPath, registry);
-    writeJson(existingSigPath, sig);
-    gitCommitAndPush(
-      run,
-      vDir,
-      `chore(sync): initialize vault (${publicDevice.deviceId})`
-    );
+  } catch (error) {
+    fs.rmSync(vDir, { recursive: true, force: true });
+    throw error;
   }
 
   /** @type {SyncConfig} */
@@ -504,11 +623,12 @@ export function initSync(
     deviceId: publicDevice.deviceId,
     ed25519PrivateKey: privateKeys.ed25519PrivateKey,
     x25519PrivateKey: privateKeys.x25519PrivateKey,
-    rootPrivateKey: isOwner ? privateKeys.ed25519PrivateKey : null,
+    rootPrivateKey,
   };
   /** @type {SyncCursors} */
   const cursors = {
     pushedLogOps: 0,
+    lastHlc: null,
     pushedArtifacts: {},
     pushed: {},
     pulled: {},
@@ -523,11 +643,10 @@ export function initSync(
     config,
     publicDevice,
     isOwner,
+    trustedOnFirstUse,
     mdmSuggestedReceive: mdmHint && mode === undefined,
-    rootFingerprint: sha256Hex(Buffer.from(pinnedRootKey, 'base64url')).slice(
-      0,
-      16
-    ),
+    rootPublicKey: pinnedRootKey,
+    rootFingerprint: keyFingerprint(pinnedRootKey),
   };
 }
 
@@ -560,19 +679,171 @@ export function syncStatus(rootDir) {
   const vDir = vaultDir(rootDir);
   let devices = /** @type {PublicDevice[]} */ ([]);
   let epoch = 0;
+  let rootRotations = 0;
   if (fs.existsSync(path.join(vDir, DEVICES_FILE))) {
-    const reg = loadVerifiedRegistry(vDir, config.rootPublicKey);
-    devices = reg.devices;
-    epoch = reg.epoch;
+    const loaded = loadVerifiedRegistry(rootDir, vDir, config);
+    devices = loaded.registry.devices;
+    epoch = loaded.registry.epoch;
+    rootRotations = (loaded.registry.rootHistory ?? []).length;
   }
   return {
     initialized: true,
     isOwner: Boolean(identity.rootPrivateKey),
     mdmHint: detectMdmHint(),
+    rootPublicKey: config.rootPublicKey,
+    rootFingerprint: keyFingerprint(config.rootPublicKey),
+    rootRotations,
     config,
     cursors,
     epoch,
     devices,
+  };
+}
+
+/**
+ * Export an encrypted offline backup of the vault root Ed25519 private key.
+ *
+ * @param {string} rootDir
+ * @param {{ passphrase: string, outFile?: string, now?: Date }} options
+ */
+export function exportRootKey(
+  rootDir,
+  { passphrase, outFile, now = new Date() }
+) {
+  const config = readSyncConfig(rootDir);
+  const identity = readIdentity(rootDir);
+  if (!identity.rootPrivateKey) {
+    throw new SyncError(
+      'This machine does not hold the vault root signing key.',
+      'Run pnpm sync root export on a machine holding the root key.'
+    );
+  }
+  const backup = encryptRootKeyBackup({
+    rootPrivateKey: identity.rootPrivateKey,
+    rootPublicKey: config.rootPublicKey,
+    passphrase,
+    now,
+  });
+  if (outFile) {
+    writeJson(outFile, backup, true);
+  }
+  return {
+    backup,
+    outFile: outFile ?? null,
+    rootPublicKey: backup.rootPublicKey,
+    rootFingerprint: backup.rootFingerprint,
+  };
+}
+
+/**
+ * Restore the vault root Ed25519 private key from an encrypted offline backup
+ * onto an initialized machine whose pinned root key matches the backup.
+ *
+ * @param {string} rootDir
+ * @param {{ backup: unknown, passphrase: string, run?: Spawn }} options
+ */
+export function importRootKey(
+  rootDir,
+  { backup, passphrase, run = crossSpawn() }
+) {
+  const config = readSyncConfig(rootDir);
+  const identity = readIdentity(rootDir);
+  const vDir = vaultDir(rootDir);
+  gitPullIfReady(run, vDir);
+  const loaded = loadVerifiedRegistry(rootDir, vDir, config);
+  const decrypted = decryptRootKeyBackup({ backup, passphrase });
+  if (decrypted.rootPublicKey !== loaded.rootPublicKey) {
+    throw new SyncError(
+      `Backup root key (${decrypted.rootFingerprint}) does not match this vault's current root key (${keyFingerprint(loaded.rootPublicKey)}).`
+    );
+  }
+  writeJson(
+    identityFile(rootDir),
+    { ...identity, rootPrivateKey: decrypted.rootPrivateKey },
+    true
+  );
+  return {
+    rootPublicKey: decrypted.rootPublicKey,
+    rootFingerprint: decrypted.rootFingerprint,
+  };
+}
+
+/**
+ * Rotate the vault root Ed25519 keypair, publishing a dual-signed `rootHistory`
+ * entry in `devices.json` so all enrolled peers verify and follow automatically.
+ *
+ * @param {string} rootDir
+ * @param {{ now?: Date, run?: Spawn }} [options]
+ */
+export function rotateRootKey(
+  rootDir,
+  { now = new Date(), run = crossSpawn() } = {}
+) {
+  const config = readSyncConfig(rootDir);
+  const identity = readIdentity(rootDir);
+  if (!identity.rootPrivateKey) {
+    throw new SyncError(
+      'This machine does not hold the vault root signing key.',
+      'Run pnpm sync root import --in <backup.json> first.'
+    );
+  }
+  const vDir = vaultDir(rootDir);
+  gitPullIfReady(run, vDir);
+  const loaded = loadVerifiedRegistry(rootDir, vDir, config);
+  const oldPub = loaded.rootPublicKey;
+  if (deriveEd25519PublicKey(identity.rootPrivateKey) !== oldPub) {
+    throw new SyncError(
+      'Local rootPrivateKey does not match the current vault root key.'
+    );
+  }
+
+  const nextRoot = generateRootKeyPair();
+  const nextEpoch = loaded.registry.epoch + 1;
+  const rotation = createRootRotation({
+    oldRootPrivateKey: identity.rootPrivateKey,
+    oldRootPublicKey: oldPub,
+    newRootPrivateKey: nextRoot.privateKey,
+    newRootPublicKey: nextRoot.publicKey,
+    epoch: nextEpoch,
+    now,
+  });
+  /** @type {DeviceRegistry} */
+  const nextReg = {
+    version: 1,
+    epoch: nextEpoch,
+    updatedAt: now.toISOString(),
+    rootHistory: [...(loaded.registry.rootHistory ?? []), rotation],
+    devices: loaded.registry.devices,
+  };
+  const sig = signRegistry(
+    nextReg,
+    nextRoot.privateKey,
+    nextRoot.publicKey,
+    now
+  );
+  writeJson(path.join(vDir, DEVICES_FILE), nextReg);
+  writeJson(path.join(vDir, DEVICES_SIG_FILE), sig);
+  gitCommitAndPush(
+    run,
+    vDir,
+    `chore(sync): rotate root key (${nextRoot.fingerprint})`
+  );
+
+  writeJson(configFile(rootDir), {
+    ...config,
+    rootPublicKey: nextRoot.publicKey,
+  });
+  writeJson(
+    identityFile(rootDir),
+    { ...identity, rootPrivateKey: nextRoot.privateKey },
+    true
+  );
+
+  return {
+    previousFingerprint: keyFingerprint(oldPub),
+    rootPublicKey: nextRoot.publicKey,
+    rootFingerprint: nextRoot.fingerprint,
+    epoch: nextEpoch,
   };
 }
 
@@ -598,8 +869,8 @@ export function enrollDevice(
   const identity = readIdentity(rootDir);
   if (!identity.rootPrivateKey) {
     throw new SyncError(
-      'Only the vault owner device holds the root signing key to enroll devices.',
-      'Run pnpm sync device add on the owner machine.'
+      'Only a machine holding the vault root signing key can enroll devices.',
+      'Run pnpm sync device add on an owner machine (or import a root backup).'
     );
   }
   const rawPub =
@@ -624,7 +895,8 @@ export function enrollDevice(
   }
   const vDir = vaultDir(rootDir);
   gitPullIfReady(run, vDir);
-  const reg = loadVerifiedRegistry(vDir, config.rootPublicKey);
+  const loaded = loadVerifiedRegistry(rootDir, vDir, config);
+  const reg = loaded.registry;
   /** @type {PublicDevice} */
   const device = {
     ...rawPub,
@@ -642,12 +914,13 @@ export function enrollDevice(
     version: 1,
     epoch: reg.epoch + 1,
     updatedAt: now.toISOString(),
+    rootHistory: reg.rootHistory ?? [],
     devices: nextDevices,
   };
   const sig = signRegistry(
     nextReg,
     identity.rootPrivateKey,
-    config.rootPublicKey,
+    loaded.rootPublicKey,
     now
   );
   writeJson(path.join(vDir, DEVICES_FILE), nextReg);
@@ -673,13 +946,14 @@ export function revokeDevice(
   const identity = readIdentity(rootDir);
   if (!identity.rootPrivateKey) {
     throw new SyncError(
-      'Only the vault owner device holds the root signing key to revoke devices.',
-      'Run pnpm sync device revoke on the owner machine.'
+      'Only a machine holding the vault root signing key can revoke devices.',
+      'Run pnpm sync device revoke on an owner machine (or import a root backup).'
     );
   }
   const vDir = vaultDir(rootDir);
   gitPullIfReady(run, vDir);
-  const reg = loadVerifiedRegistry(vDir, config.rootPublicKey);
+  const loaded = loadVerifiedRegistry(rootDir, vDir, config);
+  const reg = loaded.registry;
   const target = reg.devices.find((d) => d.deviceId === targetDeviceId);
   if (!target) {
     throw new SyncError(
@@ -696,12 +970,13 @@ export function revokeDevice(
     version: 1,
     epoch: reg.epoch + 1,
     updatedAt: revokedAt,
+    rootHistory: reg.rootHistory ?? [],
     devices: nextDevices,
   };
   const sig = signRegistry(
     nextReg,
     identity.rootPrivateKey,
-    config.rootPublicKey,
+    loaded.rootPublicKey,
     now
   );
   writeJson(path.join(vDir, DEVICES_FILE), nextReg);
@@ -727,12 +1002,19 @@ function exportNoteId(id, dev4) {
  * @param {string} rootDir
  * @param {SyncConfig} config
  * @param {SyncCursors} cursors
+ * @param {Date} [now]
  */
-function collectOutgoing(rootDir, config, cursors) {
+function collectOutgoing(rootDir, config, cursors, now = new Date()) {
   const memDir = memoryDir(rootDir);
   const { ops } = readLog(memDir);
   const dev4 = config.deviceId.slice(0, 4);
   const repoId = repoIdentity(rootDir);
+
+  let currentHlc = cursors.lastHlc;
+  const logMaxHlc = maxHlcFromOps(ops);
+  if (logMaxHlc && (!currentHlc || compareHlc(logMaxHlc, currentHlc) > 0)) {
+    currentHlc = logMaxHlc;
+  }
 
   /** @type {Map<string, string>} */
   const scopeById = new Map();
@@ -749,7 +1031,10 @@ function collectOutgoing(rootDir, config, cursors) {
         op.note.id,
         typeof op.note.repo === 'string' ? op.note.repo : null
       );
-      if (i < cursors.pushedLogOps && s !== 'machine' && !op.syncedAt) {
+      if (
+        s !== 'machine' &&
+        (i < cursors.pushedLogOps || typeof op.syncedAt === 'string')
+      ) {
         exportedIds.add(op.note.id);
       }
     } else if (op.op === 'update' && typeof op.id === 'string' && op.set) {
@@ -811,6 +1096,26 @@ function collectOutgoing(rootDir, config, cursors) {
       typeof op.opId === 'string' && op.opId
         ? op.opId
         : `${config.deviceId}-l${lineIdx}`;
+    const parsedOpHlc = parseHlc(op.hlc);
+    /** @type {string} */
+    let opHlc;
+    if (parsedOpHlc) {
+      opHlc =
+        parsedOpHlc.node === 'local'
+          ? formatHlc(parsedOpHlc.ms, parsedOpHlc.counter, config.deviceId)
+          : /** @type {string} */ (op.hlc);
+      if (!currentHlc || compareHlc(opHlc, currentHlc) > 0) {
+        currentHlc = opHlc;
+      }
+    } else {
+      const opMs = Date.parse(op.at);
+      currentHlc = nextHlc(
+        currentHlc,
+        Number.isFinite(opMs) ? opMs : now.getTime(),
+        config.deviceId
+      );
+      opHlc = currentHlc;
+    }
 
     if (op.op === 'add' && op.note) {
       if (op.note.scope === 'machine') return;
@@ -819,6 +1124,7 @@ function collectOutgoing(rootDir, config, cursors) {
         ...op,
         opId,
         device: op.device ?? config.deviceId,
+        hlc: opHlc,
         note: {
           ...op.note,
           id: mappedId,
@@ -841,6 +1147,7 @@ function collectOutgoing(rootDir, config, cursors) {
         at: op.at,
         opId,
         device: config.deviceId,
+        hlc: opHlc,
         note: {
           id: mappedId,
           text: current.text,
@@ -865,6 +1172,7 @@ function collectOutgoing(rootDir, config, cursors) {
       ...op,
       opId,
       device: op.device ?? config.deviceId,
+      hlc: opHlc,
       id: mappedId,
     });
   });
@@ -915,6 +1223,7 @@ function collectOutgoing(rootDir, config, cursors) {
     byComp,
     nextLogOps: ops.length,
     nextArtifacts,
+    nextLastHlc: currentHlc,
   };
 }
 
@@ -946,7 +1255,7 @@ export function pushSync(
   const cursors = readCursors(rootDir);
   const vDir = vaultDir(rootDir);
   gitPullIfReady(run, vDir);
-  const registry = loadVerifiedRegistry(vDir, config.rootPublicKey);
+  const { registry } = loadVerifiedRegistry(rootDir, vDir, config);
   const me = registry.devices.find((d) => d.deviceId === config.deviceId);
   if (!me || me.revokedAt) {
     throw new SyncError(
@@ -954,10 +1263,11 @@ export function pushSync(
     );
   }
 
-  const { byComp, nextLogOps, nextArtifacts } = collectOutgoing(
+  const { byComp, nextLogOps, nextArtifacts, nextLastHlc } = collectOutgoing(
     rootDir,
     config,
-    cursors
+    cursors,
+    now
   );
 
   /** @type {{ compartment: Compartment, seq: number, ops: number, hasPersonalization: boolean, personas: string[], recipients: string[] }[]} */
@@ -1027,6 +1337,7 @@ export function pushSync(
     writeJson(cursorsFile(rootDir), {
       ...cursors,
       pushedLogOps: nextLogOps,
+      lastHlc: nextLastHlc,
       pushedArtifacts: nextArtifacts,
       pushed: nextPushed,
     });
@@ -1061,7 +1372,7 @@ export function pullSync(
   const cursors = readCursors(rootDir);
   const vDir = vaultDir(rootDir);
   gitPullIfReady(run, vDir);
-  const registry = loadVerifiedRegistry(vDir, config.rootPublicKey);
+  const { registry } = loadVerifiedRegistry(rootDir, vDir, config);
   const deviceMap = new Map(registry.devices.map((d) => [d.deviceId, d]));
 
   const opsRoot = path.join(vDir, OPS_DIR);
@@ -1375,7 +1686,19 @@ export function pullSync(
     ...preWarnings,
     ...(storeWillChange ? refreshAfterWrite(rootDir) : []),
   ];
-  writeJson(cursorsFile(rootDir), { ...cursors, pulled: nextPulled });
+  let nextLastHlc = cursors.lastHlc;
+  const pulledMaxHlc = maxHlcFromOps(safeOps);
+  if (
+    pulledMaxHlc &&
+    (!nextLastHlc || compareHlc(pulledMaxHlc, nextLastHlc) > 0)
+  ) {
+    nextLastHlc = pulledMaxHlc;
+  }
+  writeJson(cursorsFile(rootDir), {
+    ...cursors,
+    lastHlc: nextLastHlc,
+    pulled: nextPulled,
+  });
 
   return {
     dryRun: false,

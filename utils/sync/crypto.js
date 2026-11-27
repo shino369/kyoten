@@ -8,10 +8,16 @@ import crypto from 'node:crypto';
 
 export const VAULT_CRYPTO_VERSION = 1;
 export const GENESIS_HASH = '0'.repeat(64);
+export const ROOT_BACKUP_TYPE = 'kyoten-vault-root-backup';
 const CEK_BYTES = 32;
 const NONCE_BYTES = 12;
 const TAG_BYTES = 16;
+const SALT_BYTES = 16;
 const HEX64_RE = /^[0-9a-f]{64}$/;
+const SCRYPT_N = 32768;
+const SCRYPT_R = 8;
+const SCRYPT_P = 1;
+const SCRYPT_MAXMEM = 67_108_864;
 
 /**
  * @typedef {'invalid' | 'signature' | 'chain' | 'no-access' | 'decrypt'} SyncCryptoCode
@@ -48,6 +54,29 @@ const HEX64_RE = /^[0-9a-f]{64}$/;
  * @property {string} nonce
  * @property {string} wrappedKey
  * @property {string} tag
+ *
+ * @typedef {{
+ *   version: number,
+ *   type: string,
+ *   kdf: 'scrypt',
+ *   kdfParams: { N: number, r: number, p: number },
+ *   salt: string,
+ *   nonce: string,
+ *   rootPublicKey: string,
+ *   rootFingerprint: string,
+ *   createdAt: string,
+ *   ciphertext: string,
+ *   tag: string,
+ * }} EncryptedRootBackup
+ *
+ * @typedef {{
+ *   fromRootPublicKey: string,
+ *   toRootPublicKey: string,
+ *   epoch: number,
+ *   rotatedAt: string,
+ *   signedByOld: string,
+ *   signedByNew: string,
+ * }} RootRotation
  *
  * @typedef {object} EncryptedBatch
  * @property {number} version
@@ -526,6 +555,268 @@ export function decryptBatch({
 }
 
 /**
+ * Compute the 16-hex SHA-256 fingerprint of a base64url SPKI Ed25519 public key.
+ *
+ * @param {string} ed25519PublicKeyB64
+ * @returns {string}
+ */
+export function keyFingerprint(ed25519PublicKeyB64) {
+  return sha256Hex(decodeBase64Url(ed25519PublicKeyB64)).slice(0, 16);
+}
+
+/**
+ * Derive the base64url SPKI Ed25519 public key from a PKCS8 private key.
+ *
+ * @param {string} ed25519PrivateKeyB64
+ * @returns {string}
+ */
+export function deriveEd25519PublicKey(ed25519PrivateKeyB64) {
+  const privKey = crypto.createPrivateKey({
+    key: decodeBase64Url(ed25519PrivateKeyB64),
+    format: 'der',
+    type: 'pkcs8',
+  });
+  return crypto
+    .createPublicKey(privKey)
+    .export({ type: 'spki', format: 'der' })
+    .toString('base64url');
+}
+
+/**
+ * Generate a dedicated vault root Ed25519 keypair, separate from device keys.
+ *
+ * @returns {{ publicKey: string, privateKey: string, fingerprint: string }}
+ */
+export function generateRootKeyPair() {
+  const ed = crypto.generateKeyPairSync('ed25519', {
+    publicKeyEncoding: { type: 'spki', format: 'der' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'der' },
+  });
+  const publicKey = ed.publicKey.toString('base64url');
+  return {
+    publicKey,
+    privateKey: ed.privateKey.toString('base64url'),
+    fingerprint: sha256Hex(ed.publicKey).slice(0, 16),
+  };
+}
+
+/**
+ * Encrypt the vault root Ed25519 private key for offline disaster-recovery backup
+ * using Node 24 `scrypt` + `chacha20-poly1305`.
+ *
+ * @param {{
+ *   rootPrivateKey: string,
+ *   rootPublicKey: string,
+ *   passphrase: string,
+ *   now?: Date,
+ * }} input
+ * @returns {EncryptedRootBackup}
+ */
+export function encryptRootKeyBackup({
+  rootPrivateKey,
+  rootPublicKey,
+  passphrase,
+  now = new Date(),
+}) {
+  if (typeof passphrase !== 'string' || passphrase.length < 8) {
+    throw new SyncCryptoError(
+      'invalid',
+      'Backup passphrase must be at least 8 characters.'
+    );
+  }
+  let derivedPub;
+  try {
+    derivedPub = deriveEd25519PublicKey(rootPrivateKey);
+  } catch {
+    throw new SyncCryptoError('invalid', 'Root private key is malformed.');
+  }
+  if (derivedPub !== rootPublicKey) {
+    throw new SyncCryptoError(
+      'invalid',
+      'Root private key does not match rootPublicKey.'
+    );
+  }
+
+  const salt = crypto.randomBytes(SALT_BYTES);
+  const nonce = crypto.randomBytes(NONCE_BYTES);
+  const rootFingerprint = keyFingerprint(rootPublicKey);
+  const kdfParams = { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P };
+  const key = crypto.scryptSync(passphrase, salt, CEK_BYTES, {
+    ...kdfParams,
+    maxmem: SCRYPT_MAXMEM,
+  });
+
+  const aad = {
+    version: VAULT_CRYPTO_VERSION,
+    type: ROOT_BACKUP_TYPE,
+    kdf: /** @type {const} */ ('scrypt'),
+    kdfParams,
+    salt: salt.toString('base64url'),
+    rootPublicKey,
+    rootFingerprint,
+  };
+  const cipher = /** @type {crypto.CipherGCM} */ (
+    crypto.createCipheriv('chacha20-poly1305', key, nonce, {
+      authTagLength: TAG_BYTES,
+    })
+  );
+  cipher.setAAD(Buffer.from(canonicalJson(aad), 'utf-8'));
+  const plaintext = Buffer.from(
+    JSON.stringify({ rootPrivateKey, rootPublicKey }),
+    'utf-8'
+  );
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const tag = cipher.getAuthTag();
+
+  return {
+    ...aad,
+    nonce: nonce.toString('base64url'),
+    createdAt: now.toISOString(),
+    ciphertext: ciphertext.toString('base64url'),
+    tag: tag.toString('base64url'),
+  };
+}
+
+/**
+ * Decrypt an offline vault root key backup and verify key consistency.
+ *
+ * @param {{ backup: unknown, passphrase: string }} input
+ * @returns {{ rootPrivateKey: string, rootPublicKey: string, rootFingerprint: string }}
+ */
+export function decryptRootKeyBackup({ backup, passphrase }) {
+  if (!isObject(backup)) {
+    throw new SyncCryptoError('invalid', 'Root key backup must be an object.');
+  }
+  if (typeof passphrase !== 'string' || !passphrase) {
+    throw new SyncCryptoError('invalid', 'Backup passphrase is required.');
+  }
+  const b = /** @type {Record<string, any>} */ (backup);
+  if (
+    b.version !== VAULT_CRYPTO_VERSION ||
+    b.type !== ROOT_BACKUP_TYPE ||
+    b.kdf !== 'scrypt' ||
+    !isObject(b.kdfParams) ||
+    typeof b.salt !== 'string' ||
+    typeof b.nonce !== 'string' ||
+    typeof b.rootPublicKey !== 'string' ||
+    typeof b.ciphertext !== 'string' ||
+    typeof b.tag !== 'string'
+  ) {
+    throw new SyncCryptoError('invalid', 'Root key backup format is invalid.');
+  }
+  const { N, r, p } = b.kdfParams;
+  if (
+    !Number.isInteger(N) ||
+    N < 1024 ||
+    N > 131072 ||
+    (N & (N - 1)) !== 0 ||
+    !Number.isInteger(r) ||
+    r < 1 ||
+    r > 16 ||
+    !Number.isInteger(p) ||
+    p < 1 ||
+    p > 4
+  ) {
+    throw new SyncCryptoError('invalid', 'Unsupported backup KDF parameters.');
+  }
+  const salt = decodeBase64Url(b.salt);
+  const nonce = decodeBase64Url(b.nonce);
+  const ciphertext = decodeBase64Url(b.ciphertext);
+  const tag = decodeBase64Url(b.tag);
+  if (nonce.length !== NONCE_BYTES || tag.length !== TAG_BYTES) {
+    throw new SyncCryptoError('invalid', 'Invalid backup nonce or auth tag.');
+  }
+  const expectedFingerprint = keyFingerprint(b.rootPublicKey);
+  const key = crypto.scryptSync(passphrase, salt, CEK_BYTES, {
+    N,
+    r,
+    p,
+    maxmem: Math.max(SCRYPT_MAXMEM, 256 * N * r),
+  });
+  const aad = {
+    version: VAULT_CRYPTO_VERSION,
+    type: ROOT_BACKUP_TYPE,
+    kdf: 'scrypt',
+    kdfParams: { N, r, p },
+    salt: b.salt,
+    rootPublicKey: b.rootPublicKey,
+    rootFingerprint:
+      typeof b.rootFingerprint === 'string'
+        ? b.rootFingerprint
+        : expectedFingerprint,
+  };
+
+  try {
+    const decipher = /** @type {crypto.DecipherGCM} */ (
+      crypto.createDecipheriv('chacha20-poly1305', key, nonce, {
+        authTagLength: TAG_BYTES,
+      })
+    );
+    decipher.setAAD(Buffer.from(canonicalJson(aad), 'utf-8'));
+    decipher.setAuthTag(tag);
+    const plain = Buffer.concat([
+      decipher.update(ciphertext),
+      decipher.final(),
+    ]).toString('utf-8');
+    const parsed = JSON.parse(plain);
+    if (
+      typeof parsed?.rootPrivateKey !== 'string' ||
+      parsed.rootPublicKey !== b.rootPublicKey ||
+      deriveEd25519PublicKey(parsed.rootPrivateKey) !== b.rootPublicKey
+    ) {
+      throw new Error('Key mismatch');
+    }
+    return {
+      rootPrivateKey: parsed.rootPrivateKey,
+      rootPublicKey: b.rootPublicKey,
+      rootFingerprint: expectedFingerprint,
+    };
+  } catch {
+    throw new SyncCryptoError(
+      'decrypt',
+      'Failed to decrypt root key backup (wrong passphrase or corrupted file).'
+    );
+  }
+}
+
+/**
+ * Create a dual-signed root key rotation record (`signedByOld` + `signedByNew`).
+ *
+ * @param {{
+ *   oldRootPrivateKey: string,
+ *   oldRootPublicKey: string,
+ *   newRootPrivateKey: string,
+ *   newRootPublicKey: string,
+ *   epoch: number,
+ *   now?: Date,
+ * }} input
+ * @returns {RootRotation}
+ */
+export function createRootRotation({
+  oldRootPrivateKey,
+  oldRootPublicKey,
+  newRootPrivateKey,
+  newRootPublicKey,
+  epoch,
+  now = new Date(),
+}) {
+  if (!Number.isInteger(epoch) || epoch < 1) {
+    throw new SyncCryptoError('invalid', 'Rotation epoch must be positive.');
+  }
+  const body = {
+    fromRootPublicKey: oldRootPublicKey,
+    toRootPublicKey: newRootPublicKey,
+    epoch,
+    rotatedAt: now.toISOString(),
+  };
+  return {
+    ...body,
+    signedByOld: signObject(body, oldRootPrivateKey),
+    signedByNew: signObject(body, newRootPrivateKey),
+  };
+}
+
+/**
  * Sign a vault `devices.json` registry with the root Ed25519 key.
  *
  * @param {unknown} registry
@@ -549,7 +840,96 @@ export function signRegistry(
 }
 
 /**
- * Verify a vault `devices.json` + `devices.json.sig` pair against the pinned root public key.
+ * Verify `devices.json` + `devices.json.sig` against `pinnedRootPublicKey`,
+ * following any valid dual-signed `rootHistory` rotation chain.
+ *
+ * @param {unknown} registry
+ * @param {unknown} sigObj
+ * @param {string} pinnedRootPublicKey
+ * @returns {{ valid: boolean, currentRootPublicKey: string | null, rotated: boolean }}
+ */
+export function verifyRegistryChain(registry, sigObj, pinnedRootPublicKey) {
+  if (!isObject(registry) || !isObject(sigObj)) {
+    return { valid: false, currentRootPublicKey: null, rotated: false };
+  }
+  const sig = /** @type {Record<string, unknown>} */ (sigObj);
+  if (
+    sig.version !== VAULT_CRYPTO_VERSION ||
+    typeof sig.rootPublicKey !== 'string' ||
+    !sig.rootPublicKey ||
+    typeof sig.signature !== 'string'
+  ) {
+    return { valid: false, currentRootPublicKey: null, rotated: false };
+  }
+  if (sig.rootPublicKey === pinnedRootPublicKey) {
+    const valid = verifyObject(registry, sig.signature, pinnedRootPublicKey);
+    return {
+      valid,
+      currentRootPublicKey: valid ? pinnedRootPublicKey : null,
+      rotated: false,
+    };
+  }
+
+  const history = /** @type {Record<string, unknown>} */ (registry).rootHistory;
+  if (!Array.isArray(history) || history.length === 0) {
+    return { valid: false, currentRootPublicKey: null, rotated: false };
+  }
+
+  const seenKeys = new Set([pinnedRootPublicKey]);
+  let currentKey = pinnedRootPublicKey;
+  let lastEpoch = 0;
+
+  while (currentKey !== sig.rootPublicKey) {
+    const link = history.find(
+      (item) =>
+        isObject(item) &&
+        /** @type {Record<string, unknown>} */ (item).fromRootPublicKey ===
+          currentKey
+    );
+    if (!link) {
+      return { valid: false, currentRootPublicKey: null, rotated: false };
+    }
+    const r = /** @type {Record<string, unknown>} */ (link);
+    if (
+      typeof r.toRootPublicKey !== 'string' ||
+      !r.toRootPublicKey ||
+      seenKeys.has(r.toRootPublicKey) ||
+      !Number.isInteger(r.epoch) ||
+      /** @type {number} */ (r.epoch) <= lastEpoch ||
+      typeof r.rotatedAt !== 'string' ||
+      typeof r.signedByOld !== 'string' ||
+      typeof r.signedByNew !== 'string'
+    ) {
+      return { valid: false, currentRootPublicKey: null, rotated: false };
+    }
+    const body = {
+      fromRootPublicKey: r.fromRootPublicKey,
+      toRootPublicKey: r.toRootPublicKey,
+      epoch: r.epoch,
+      rotatedAt: r.rotatedAt,
+    };
+    if (
+      !verifyObject(body, r.signedByOld, currentKey) ||
+      !verifyObject(body, r.signedByNew, r.toRootPublicKey)
+    ) {
+      return { valid: false, currentRootPublicKey: null, rotated: false };
+    }
+    seenKeys.add(r.toRootPublicKey);
+    currentKey = r.toRootPublicKey;
+    lastEpoch = /** @type {number} */ (r.epoch);
+  }
+
+  const valid = verifyObject(registry, sig.signature, currentKey);
+  return {
+    valid,
+    currentRootPublicKey: valid ? currentKey : null,
+    rotated: valid,
+  };
+}
+
+/**
+ * Verify a vault `devices.json` + `devices.json.sig` pair against the pinned root public key
+ * (including any valid dual-signed rotation chain).
  *
  * @param {unknown} registry
  * @param {unknown} sigObj
@@ -557,14 +937,5 @@ export function signRegistry(
  * @returns {boolean}
  */
 export function verifyRegistry(registry, sigObj, pinnedRootPublicKey) {
-  if (!isObject(sigObj)) return false;
-  const sig = /** @type {Record<string, unknown>} */ (sigObj);
-  if (
-    sig.version !== VAULT_CRYPTO_VERSION ||
-    sig.rootPublicKey !== pinnedRootPublicKey ||
-    typeof sig.signature !== 'string'
-  ) {
-    return false;
-  }
-  return verifyObject(registry, sig.signature, pinnedRootPublicKey);
+  return verifyRegistryChain(registry, sigObj, pinnedRootPublicKey).valid;
 }

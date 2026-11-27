@@ -10,10 +10,13 @@ import { ROOT_DIR } from '../workspace-config.js';
 import {
   SyncError,
   enrollDevice,
+  exportRootKey,
+  importRootKey,
   initSync,
   pullSync,
   pushSync,
   revokeDevice,
+  rotateRootKey,
   setSyncMode,
   syncStatus,
 } from './vault.js';
@@ -24,11 +27,16 @@ Zero-trust E2EE Git Vault sync for personal memory and personas.
 
 Commands
   init --vault <url-or-path> [--name <name>] [--zone personal|work]
-       [--mode full|receive|off] [--compartments <list>] [--root-key <b64>]
+       [--mode full|receive|off] [--compartments <list>]
+       [--root-key <b64> | --root-fingerprint <16-hex> | --trust-vault-root]
   status [--json]
   mode <full|receive|off>
   push [--dry-run] [--json]
   pull [--dry-run] [--json]
+  root show [--json]
+  root export --out <file> [--passphrase <str> | --passphrase-env <var>] [--json]
+  root import --in <file> [--passphrase <str> | --passphrase-env <var>] [--json]
+  root rotate [--json]
   device list [--json]
   device add --pubkey <file-or-json> [--name <name>] [--zone personal|work]
              [--compartments <list>]
@@ -40,7 +48,7 @@ Options
   --json       Machine-readable JSON output`;
 
 /**
- * @typedef {{ rootDir?: string, cwd?: string, out?: (line: string) => void, run?: import('../spawn.js').Spawn }} CliDeps
+ * @typedef {{ rootDir?: string, cwd?: string, out?: (line: string) => void, run?: import('../spawn.js').Spawn, env?: NodeJS.ProcessEnv }} CliDeps
  */
 
 /**
@@ -90,6 +98,7 @@ export function runCli(argv, deps = {}) {
     cwd = process.cwd(),
     out = console.log,
     run,
+    env = process.env,
   } = deps;
   const [command, ...rest] = argv;
   if (
@@ -112,9 +121,10 @@ export function runCli(argv, deps = {}) {
         '--mode': 'mode',
         '--compartments': 'compartments',
         '--root-key': 'rootPublicKey',
+        '--root-fingerprint': 'rootFingerprint',
         '--repo-allowlist': 'repoAllowlist',
       },
-      ['--json']
+      ['--trust-vault-root', '--json']
     );
     const result = initSync(rootDir, {
       vault: values.vault,
@@ -131,6 +141,8 @@ export function runCli(argv, deps = {}) {
             .filter(Boolean)
         : undefined,
       rootPublicKey: values.rootPublicKey,
+      rootFingerprint: values.rootFingerprint,
+      trustVaultRoot: flags.has('--trust-vault-root'),
       run,
     });
     if (flags.has('--json')) {
@@ -140,6 +152,14 @@ export function runCli(argv, deps = {}) {
         `Initialized sync device ${result.config.deviceId} (${result.config.name}, mode=${result.config.mode}, zone=${result.config.zone}).`
       );
       out(`Root key fingerprint: ${result.rootFingerprint}`);
+      if (result.isOwner) {
+        out(`Root key: ${result.rootPublicKey}`);
+      }
+      if (result.trustedOnFirstUse) {
+        out(
+          'Warning: trusted vault root on first use (--trust-vault-root); verify fingerprint with owner.'
+        );
+      }
       if (result.mdmSuggestedReceive) {
         out('MDM/endpoint agent detected: defaulted sync mode to "receive".');
       }
@@ -157,17 +177,133 @@ export function runCli(argv, deps = {}) {
         'Sync is not initialized. Run: pnpm sync init --vault <git-url-or-path>'
       );
     } else {
-      const { config, devices, epoch, isOwner } = status;
+      const { config, devices, epoch, isOwner, rootFingerprint } = status;
       if (!config) return 0;
       out(
         `Device: ${config.deviceId} (${config.name}) | zone=${config.zone} | mode=${config.mode} | owner=${isOwner}`
       );
+      out(`Root fingerprint: ${rootFingerprint}`);
       out(`Compartments: ${config.compartments.join(', ')}`);
       out(
         `Vault: ${config.vault} (epoch ${epoch}, ${devices.length} device(s))`
       );
     }
     return 0;
+  }
+
+  if (command === 'root') {
+    const [sub, ...subRest] = rest;
+    if (sub === 'show') {
+      const { flags } = parseOptions(subRest, {}, ['--json']);
+      const status = syncStatus(rootDir);
+      if (!status.initialized || !status.rootPublicKey) {
+        throw new SyncError(
+          'Sync is not initialized.',
+          'Run pnpm sync init --vault <url>'
+        );
+      }
+      const view = {
+        rootPublicKey: status.rootPublicKey,
+        rootFingerprint: status.rootFingerprint,
+        holdsRootKey: status.isOwner,
+        epoch: status.epoch,
+        rotations: status.rootRotations,
+      };
+      if (flags.has('--json')) out(JSON.stringify(view, null, 2));
+      else {
+        out(`Root key: ${view.rootPublicKey}`);
+        out(`Root fingerprint: ${view.rootFingerprint}`);
+        out(`Holds root private key: ${view.holdsRootKey}`);
+      }
+      return 0;
+    }
+    if (sub === 'export') {
+      const { values, flags } = parseOptions(
+        subRest,
+        {
+          '--out': 'outFile',
+          '--passphrase': 'passphrase',
+          '--passphrase-env': 'passphraseEnv',
+        },
+        ['--json']
+      );
+      if (!values.outFile) {
+        throw new SyncError(
+          'Output file (--out <file>) is required.',
+          'Run pnpm sync root export --out <file> --passphrase-env KYOTEN_SYNC_PASSPHRASE'
+        );
+      }
+      const passphrase =
+        values.passphrase ??
+        env[values.passphraseEnv ?? 'KYOTEN_SYNC_PASSPHRASE'];
+      if (!passphrase) {
+        throw new SyncError(
+          'Backup passphrase is required.',
+          'Pass --passphrase <str> or set KYOTEN_SYNC_PASSPHRASE (or --passphrase-env <VAR>).'
+        );
+      }
+      const res = exportRootKey(rootDir, {
+        passphrase,
+        outFile: path.resolve(cwd, values.outFile),
+      });
+      if (flags.has('--json')) out(JSON.stringify(res, null, 2));
+      else {
+        out(
+          `Exported encrypted root key backup (${res.rootFingerprint}) to ${res.outFile}.`
+        );
+      }
+      return 0;
+    }
+    if (sub === 'import') {
+      const { values, flags } = parseOptions(
+        subRest,
+        {
+          '--in': 'inFile',
+          '--passphrase': 'passphrase',
+          '--passphrase-env': 'passphraseEnv',
+        },
+        ['--json']
+      );
+      if (!values.inFile) {
+        throw new SyncError(
+          'Backup file (--in <file>) is required.',
+          'Run pnpm sync root import --in <file> --passphrase-env KYOTEN_SYNC_PASSPHRASE'
+        );
+      }
+      const passphrase =
+        values.passphrase ??
+        env[values.passphraseEnv ?? 'KYOTEN_SYNC_PASSPHRASE'];
+      if (!passphrase) {
+        throw new SyncError(
+          'Backup passphrase is required.',
+          'Pass --passphrase <str> or set KYOTEN_SYNC_PASSPHRASE (or --passphrase-env <VAR>).'
+        );
+      }
+      const backup = JSON.parse(
+        fs.readFileSync(path.resolve(cwd, values.inFile), 'utf-8')
+      );
+      const res = importRootKey(rootDir, { backup, passphrase, run });
+      if (flags.has('--json')) out(JSON.stringify(res, null, 2));
+      else {
+        out(`Imported root signing key (${res.rootFingerprint}).`);
+      }
+      return 0;
+    }
+    if (sub === 'rotate') {
+      const { flags } = parseOptions(subRest, {}, ['--json']);
+      const res = rotateRootKey(rootDir, { run });
+      if (flags.has('--json')) out(JSON.stringify(res, null, 2));
+      else {
+        out(
+          `Rotated root key ${res.previousFingerprint} -> ${res.rootFingerprint} at epoch ${res.epoch}.`
+        );
+      }
+      return 0;
+    }
+    throw new SyncError(
+      `Unknown root subcommand "${sub ?? ''}".`,
+      'Use: pnpm sync root show | export | import | rotate'
+    );
   }
 
   if (command === 'mode') {

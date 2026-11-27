@@ -15,6 +15,7 @@ Run `pnpm docs:cli` to refresh this reference from the workspace CLI help. Run `
 - [`pnpm skills:install`](#pnpm-skillsinstall)
 - [`pnpm skills:link`](#pnpm-skillslink)
 - [`pnpm swarm`](#pnpm-swarm)
+- [`pnpm sync`](#pnpm-sync)
 - [`pnpm task`](#pnpm-task)
 - [`pnpm tools`](#pnpm-tools)
 - [`pnpm workspace:setup` and `pnpm workspace:check`](#pnpm-workspacesetup-and-pnpm-workspacecheck)
@@ -350,6 +351,36 @@ Options
 
 Exit code: 0 when every step is done and the final verify passes, else 1.
 Logs: tasks/<task>/swarm/run-*/ (<step>.log, <step>.result.json)
+```
+
+## `pnpm sync`
+
+```text
+Usage: pnpm sync <command> [options]
+
+Zero-trust E2EE Git Vault sync for personal memory and personas.
+
+Commands
+  init --vault <url-or-path> [--name <name>] [--zone personal|work]
+       [--mode full|receive|off] [--compartments <list>]
+       [--root-key <b64> | --root-fingerprint <16-hex> | --trust-vault-root]
+  status [--json]
+  mode <full|receive|off>
+  push [--dry-run] [--json]
+  pull [--dry-run] [--json]
+  root show [--json]
+  root export --out <file> [--passphrase <str> | --passphrase-env <var>] [--json]
+  root import --in <file> [--passphrase <str> | --passphrase-env <var>] [--json]
+  root rotate [--json]
+  device list [--json]
+  device add --pubkey <file-or-json> [--name <name>] [--zone personal|work]
+             [--compartments <list>]
+  device revoke <device-id>
+  help
+
+Options
+  --help, -h   Show this help
+  --json       Machine-readable JSON output
 ```
 
 ## `pnpm task`

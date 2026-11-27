@@ -75,6 +75,13 @@ describe('sync cli', () => {
     ]);
     expect(initHomeRes.code).toBe(0);
     expect(initHomeRes.text).toContain('Initialized sync device');
+    expect(initHomeRes.text).toContain('Root key:');
+
+    const rootShow = JSON.parse(cli(home, ['root', 'show', '--json']).text);
+    expect(rootShow.holdsRootKey).toBe(true);
+    expect(cli(home, ['root', 'show']).text).toContain(
+      rootShow.rootFingerprint
+    );
 
     const statusJson = cli(home, ['status', '--json']);
     expect(JSON.parse(statusJson.text).config.name).toBe('home');
@@ -90,6 +97,8 @@ describe('sync cli', () => {
       'peer',
       '--zone',
       'work',
+      '--root-fingerprint',
+      rootShow.rootFingerprint,
       '--json',
     ]);
     const peerData = JSON.parse(initPeerRes.text);
@@ -103,6 +112,30 @@ describe('sync cli', () => {
     ]);
     expect(addRes.text).toContain(`Enrolled device ${peerId}`);
     expect(cli(home, ['device', 'list']).text).toContain(peerId);
+
+    // Export root key backup, import on peer after enrolling, and rotate root key
+    const backupFile = path.join(tmp, 'root-backup.json');
+    const exportRes = cli(home, [
+      'root',
+      'export',
+      '--out',
+      backupFile,
+      '--passphrase',
+      'recovery-pass-123',
+    ]);
+    expect(exportRes.text).toContain('Exported encrypted root key backup');
+    const importRes = cli(peer, [
+      'root',
+      'import',
+      '--in',
+      backupFile,
+      '--passphrase',
+      'recovery-pass-123',
+    ]);
+    expect(importRes.text).toContain('Imported root signing key');
+    const rotateRes = cli(home, ['root', 'rotate']);
+    expect(rotateRes.text).toContain('Rotated root key');
+    expect(cli(peer, ['status']).text).toContain('Root fingerprint:');
 
     expect(cli(home, ['push']).text).toBe('Nothing new to push.');
     addNote(memoryDir(home), {
@@ -142,5 +175,15 @@ describe('sync cli', () => {
     expect(() => cli(ws, ['device', 'bogus'])).toThrow(
       /Unknown device subcommand/
     );
+    expect(() => cli(ws, ['root', 'show'])).toThrow(/not initialized/);
+    expect(() => cli(ws, ['root', 'export'])).toThrow(/--out/);
+    expect(() => cli(ws, ['root', 'export', '--out', 'b.json'])).toThrow(
+      /passphrase is required/
+    );
+    expect(() => cli(ws, ['root', 'import'])).toThrow(/--in/);
+    expect(() => cli(ws, ['root', 'import', '--in', 'b.json'])).toThrow(
+      /passphrase is required/
+    );
+    expect(() => cli(ws, ['root', 'bogus'])).toThrow(/Unknown root subcommand/);
   });
 });
