@@ -173,9 +173,17 @@ describe('measureReply', () => {
     );
   });
 
+  test('should keep a code span whose middle line starts with a pipe', () => {
+    const text = [
+      'ですわ `const someEnglishIdentifier =',
+      '| computeTheValue(input) || fallbackValue` ですわ',
+    ].join('\n');
+
+    expect(measureReply(text, 'ja')).toEqual({ letters: 6, inScript: 6 });
+  });
+
   test.each([
     ['a heading', '## 見出し `a', EN],
-    ['a table row', '| 表 `a |', EN],
     ['a thematic break', '`', `---\n${EN}`],
     ['a list item', '- 項目 `a', `- ${EN}`],
   ])(

@@ -161,9 +161,8 @@ export function normalizePersonalization(input) {
     }
     if (key === 'guard') {
       if (!GUARD_LANGUAGES.includes(/** @type {any} */ (value))) {
-        invalid(
-          `The guard takes ${GUARD_LANGUAGES.join(' or ')} (got ${JSON.stringify(value)}).`
-        );
+        // The value is not echoed: a pasted secret would land in the output.
+        invalid(`The guard takes ${GUARD_LANGUAGES.join(' or ')}.`);
       }
       result.guard = /** @type {string} */ (value);
       continue;

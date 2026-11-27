@@ -103,7 +103,11 @@ describe('normalizePersonalization', () => {
       /traits must be a list/,
     ],
     ['a trait that is not text', { traits: [1] }, /every trait must be text/],
-    ['an unknown guard language', { guard: 'ko' }, /guard takes ja or zh/],
+    [
+      'an unknown guard language',
+      { guard: 'ko' },
+      /^The guard takes ja or zh\.$/,
+    ],
     [
       'too many traits',
       { traits: Array.from({ length: 11 }, (_, i) => `t${i}`) },

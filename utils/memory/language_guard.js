@@ -145,16 +145,19 @@ function stripCode(text) {
   return kept.join('\n');
 }
 
-/** A line that is a block of its own: a heading, a table row, a thematic break. */
-const LINE_BLOCK =
-  /^(?: {0,3}#{1,6}(?:[ \t]|$)|[ \t]*\||[ \t]*(?:[-*_][ \t]*){3,}$)/u;
+/**
+ * A line that is a block of its own: a heading or a thematic break. A line
+ * starting with `|` is not one: inside a paragraph it is text (a table needs
+ * a delimiter row), and a code span may continue onto it.
+ */
+const LINE_BLOCK = /^(?: {0,3}#{1,6}(?:[ \t]|$)|[ \t]*(?:[-*_][ \t]*){3,}$)/u;
 /** A line that starts a new block: a list item or a quote. */
 const BLOCK_START = /^[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]|>)/u;
 
 /**
  * Split text into the blocks a code span cannot cross: paragraphs end at a
- * blank line, a list item, or a quote, and a heading, table row, or thematic
- * break is a block alone.
+ * blank line, a list item, or a quote, and a heading or thematic break is a
+ * block alone.
  *
  * @param {string} text
  * @returns {string[]} blocks whose `\n`-join is the text

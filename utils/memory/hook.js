@@ -272,7 +272,9 @@ function personaReminder(dir, agent) {
   } catch {
     return '';
   }
-  if (Object.keys(settings).length === 0) return '';
+  // Only rendered settings have a Personalization section to point at (the
+  // language guard alone renders none).
+  if (!renderPersonalization(settings)) return '';
   if (!settings.language) return reminder;
   const language = settings.language.replace(/\s+/g, ' ');
   return `${reminder} Language: ${
