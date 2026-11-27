@@ -953,6 +953,163 @@ describe('extraction hooks', () => {
     expect(kick).toHaveBeenCalledTimes(1);
   });
 
+  test('should notice on SessionStart when consolidation is due but off for dscc (and skip spawning worker)', () => {
+    for (let i = 0; i < 20; i++) {
+      addNote(
+        dir,
+        {
+          scope: 'machine',
+          type: 'fact',
+          text: `Filler fact ${i} about builds.`,
+          tags: [`f${i}`],
+        },
+        { now: NOW }
+      );
+    }
+
+    const output = /** @type {any} */ (
+      lifecycle('SessionStart', {}, { env: { KYOTEN_AGENT: 'dscc' } })
+    );
+
+    expect(kick).not.toHaveBeenCalled();
+    expect(context(output)).toContain(
+      '[Memory] Consolidation is due (weekly), but auto-consolidation is off for dscc.'
+    );
+    expect(context(output)).toContain(
+      'pnpm memory set --auto-consolidate dscc=on'
+    );
+    expect(output.systemMessage).toContain(
+      'auto-consolidation is off for dscc'
+    );
+  });
+
+  test('should notice on SessionStart for agy when consolidation is due but disabled for agy', () => {
+    for (let i = 0; i < 20; i++) {
+      addNote(
+        dir,
+        {
+          scope: 'machine',
+          type: 'fact',
+          text: `Filler fact ${i} about builds.`,
+          tags: [`f${i}`],
+        },
+        { now: NOW }
+      );
+    }
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, agy: false },
+    });
+
+    const output = /** @type {any} */ (
+      handleHook(
+        {
+          hookEventName: 'SessionStart',
+          conversationId: 'agy-due-1',
+          cwd: root,
+        },
+        { harness: 'agy', rootDir: root, now: NOW, env: {}, kick }
+      )
+    );
+
+    expect(kick).not.toHaveBeenCalled();
+    expect(context(output)).toContain(
+      '[Memory] Consolidation is due (weekly), but auto-consolidation is off for agy.'
+    );
+    expect(context(output)).toContain('Mention this to the user in one line.');
+  });
+
+  test('should notice on SessionStart when consolidation is due but configured for agy from another harness', () => {
+    for (let i = 0; i < 20; i++) {
+      addNote(
+        dir,
+        {
+          scope: 'machine',
+          type: 'fact',
+          text: `Filler fact ${i} about builds.`,
+          tags: [`f${i}`],
+        },
+        { now: NOW }
+      );
+    }
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });
+
+    const output = /** @type {any} */ (lifecycle('SessionStart'));
+
+    expect(kick).not.toHaveBeenCalled();
+    expect(context(output)).toContain(
+      '[Memory] Consolidation is due (weekly), but it is configured for agy and cannot run from claude'
+    );
+  });
+
+  test('should suggest a valid --extract-agent Fix when OPENCODE=1 blocks agy consolidation', () => {
+    for (let i = 0; i < 20; i++) {
+      addNote(
+        dir,
+        {
+          scope: 'machine',
+          type: 'fact',
+          text: `Filler fact ${i} about builds.`,
+          tags: [`f${i}`],
+        },
+        { now: NOW }
+      );
+    }
+
+    const output = /** @type {any} */ (
+      handleHook(
+        {
+          hookEventName: 'SessionStart',
+          conversationId: 'agy-opencode-1',
+          cwd: root,
+        },
+        {
+          harness: 'agy',
+          rootDir: root,
+          now: NOW,
+          env: { OPENCODE: '1' },
+          kick,
+        }
+      )
+    );
+
+    expect(kick).not.toHaveBeenCalled();
+    expect(context(output)).toContain(
+      'Fix: pnpm memory set --extract-agent claude'
+    );
+  });
+
+  test('should not falsely block claude SessionStart when ANTIGRAVITY_CONVERSATION_ID is inherited', () => {
+    for (let i = 0; i < 20; i++) {
+      addNote(
+        dir,
+        {
+          scope: 'machine',
+          type: 'fact',
+          text: `Filler fact ${i} about builds.`,
+          tags: [`f${i}`],
+        },
+        { now: NOW }
+      );
+    }
+
+    const output = /** @type {any} */ (
+      lifecycle(
+        'SessionStart',
+        {},
+        {
+          env: {
+            ANTIGRAVITY_CONVERSATION_ID: 'outer-agy',
+            CLAUDE_CODE_SESSION_ID: 'inner-claude',
+          },
+        }
+      )
+    );
+
+    expect(kick).toHaveBeenCalledTimes(1);
+    expect(output).toBeNull();
+  });
+
   test('should announce what extraction saved, to the agent and the user', () => {
     appendJournal(dir, {
       at: '2026-11-20T11:00:00.000Z',

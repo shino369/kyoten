@@ -37,7 +37,7 @@ import {
   agyInjectOutput,
   normalizeHookInput,
 } from '../harness/input.js';
-import { CALLER_HARNESS_ENV } from '../loop/adapters.js';
+import { CALLER_HARNESS_ENV, foreignHarnessForAgy } from '../loop/adapters.js';
 import { runIfMain } from '../module-runner.js';
 import {
   SESSION_ID_RE,
@@ -46,8 +46,13 @@ import {
   writeFileAtomic,
 } from '../task/store.js';
 import { ROOT_DIR } from '../workspace-config.js';
+import { CALL_AGENTS } from './agent-call.js';
 import { readConfig, savingOff } from './config.js';
-import { consolidationDue } from './consolidate.js';
+import {
+  consolidationAgent,
+  consolidationDue,
+  consolidationPolicyKey,
+} from './consolidate.js';
 import { taskContext } from './context.js';
 import { announcement } from './extract.js';
 import { quietRun } from './extract-env.js';
@@ -455,6 +460,35 @@ function triggerOutput(store, harness, matches) {
 }
 
 /**
+ * One-line warning when consolidation is due but cannot run automatically from
+ * this session (either blocked by Antigravity ToS or turned off for this agent).
+ *
+ * @param {'weekly' | 'over budget' | null} due
+ * @param {import('./config.js').MemoryConfig} config
+ * @param {NodeJS.ProcessEnv} workerEnv
+ * @returns {string | null}
+ */
+function consolidationNotice(due, config, workerEnv) {
+  if (!due) return null;
+  const agent = consolidationAgent(config, workerEnv);
+  if (agent === 'agy') {
+    const caller = foreignHarnessForAgy(workerEnv);
+    if (caller) {
+      const alt =
+        CALL_AGENTS.includes(/** @type {any} */ (caller)) && caller !== 'agy'
+          ? caller
+          : 'claude';
+      return `[Memory] Consolidation is due (${due}), but it is configured for agy and cannot run from ${caller} (Antigravity ToS). Fix: pnpm memory set --extract-agent ${alt} — or run from an agy session or plain terminal.`;
+    }
+  }
+  const policyKey = consolidationPolicyKey(agent, workerEnv);
+  if (!config.autoConsolidate[policyKey]) {
+    return `[Memory] Consolidation is due (${due}), but auto-consolidation is off for ${policyKey}. Enable: pnpm memory set --auto-consolidate ${policyKey}=on — or run once: pnpm memory consolidate --allow-cross-side`;
+  }
+  return null;
+}
+
+/**
  * @template {Harness} [H='claude']
  * @param {HookInput} input
  * @param {{ harness?: H, rootDir?: string, now?: Date, env?: NodeJS.ProcessEnv, kick?: typeof kickWorker }} [options]
@@ -499,14 +533,13 @@ export function handleHook(
     at: now.toISOString(),
     kyotenAgent: env[AGENT_ENV] ?? null,
   };
-  const startWorker = (/** @type {boolean} */ orConsolidate) => {
-    const work =
-      readQueue(dir).length > 0 ||
-      (orConsolidate && consolidationDue(home, { now }) !== null);
+  const workerEnv = { ...env, [CALLER_HARNESS_ENV]: harness };
+  const startWorker = (/** @type {boolean} */ shouldConsolidate) => {
+    const work = readQueue(dir).length > 0 || shouldConsolidate;
     if (work && !workerRunning(dir)) {
       kick({
         rootDir: home,
-        env: { ...env, [CALLER_HARNESS_ENV]: harness },
+        env: workerEnv,
       });
     }
   };
@@ -528,9 +561,11 @@ export function handleHook(
     pruneSessions(dir, now);
     registerOpen(dir, entry);
     catchUp(dir, { current: session, now });
-    startWorker(true);
-    const news = announcement(dir);
+    const due = consolidationDue(home, { now });
     const config = readConfig(dir);
+    const notice = consolidationNotice(due, config, workerEnv);
+    startWorker(due !== null && notice === null);
+    const news = announcement(dir);
     const off = savingOff(config, session);
     const parts = [
       startupMemory(
@@ -555,11 +590,19 @@ export function handleHook(
               : `${news}\nMention these saves to the user in one line.`,
           ]
         : []),
+      ...(notice
+        ? [
+            harness === 'claude'
+              ? notice
+              : `${notice}\nMention this to the user in one line.`,
+          ]
+        : []),
     ].filter(Boolean);
     const output = contextOutput(event, parts.join('\n\n'), harness);
+    const claudeMessage = [news, notice].filter(Boolean).join('\n\n');
     return /** @type {any} */ (
-      output && news && harness === 'claude'
-        ? { ...output, systemMessage: news }
+      output && claudeMessage && harness === 'claude'
+        ? { ...output, systemMessage: claudeMessage }
         : output
     );
   }

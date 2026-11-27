@@ -133,6 +133,7 @@ const CHANGE_FIELDS = /** @type {const} */ ([
  * @property {boolean} [dryRun] build the prompt, call and change nothing
  * @property {boolean} [force] override the saving-off guard for manual runs
  * @property {boolean} [allowCrossSide] send notes from other provider sides
+ * @property {string} [agent] explicit agent CLI override for manual consolidation
  * @property {import('./queue.js').LockOptions} [lock]
  */
 
@@ -597,6 +598,13 @@ const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
  * @param {string} name
  */
 function deferredMessage(run, name) {
+  if (run.job === 'consolidation' && run.policy === 'disabled') {
+    const extra =
+      Array.isArray(run.foreign) && run.foreign.length > 0
+        ? ` (notes include ${run.foreign.join(', ')})`
+        : '';
+    return `Deferred the consolidation: auto-consolidation is off for ${run.side ?? 'this agent'}${extra}.`;
+  }
   if (
     run.job === 'consolidation' &&
     Array.isArray(run.foreign) &&
@@ -678,10 +686,11 @@ export function formatRun(run) {
         (/** @type {string} */ problem) => `Skipped ${problem}`
       ),
     ];
+    const crossSideFlag = run.crossSideVia ?? '--allow-cross-side';
     const crossSide =
       Array.isArray(run.crossSide) && run.crossSide.length > 0
         ? [
-            `Sent notes from ${run.crossSide.join(', ')} to this session's provider (${run.side}) because --allow-cross-side was given.`,
+            `Sent notes from ${run.crossSide.join(', ')} to this session's provider (${run.side}) because ${crossSideFlag} was given.`,
           ]
         : [];
     const title =
@@ -693,10 +702,11 @@ export function formatRun(run) {
       : [`${title}:`, ...[...details, ...crossSide].map((line) => `  ${line}`)];
   }
   if (run.status === 'dry-run') {
+    const crossSideFlag = run.crossSideVia ?? '--allow-cross-side';
     const crossSide =
       Array.isArray(run.crossSide) && run.crossSide.length > 0
         ? [
-            `--allow-cross-side: notes from ${run.crossSide.join(', ')} would go to this session's provider (${run.side}).`,
+            `${crossSideFlag}: notes from ${run.crossSide.join(', ')} would go to this session's provider (${run.side}).`,
           ]
         : [];
     return [
@@ -723,12 +733,15 @@ export function formatRun(run) {
     nothing: 'Nothing to consolidate yet.',
   };
   if (run.status === 'deferred') {
-    return [
-      deferredMessage(run, name),
-      ...(Array.isArray(run.foreign) && run.foreign.length > 0
-        ? ['Fix: pnpm memory consolidate --allow-cross-side']
-        : []),
-    ];
+    const fix =
+      run.job === 'consolidation' && run.policy === 'disabled'
+        ? [
+            `Fix: pnpm memory set --auto-consolidate ${run.side}=on (or one-shot: pnpm memory consolidate --allow-cross-side)`,
+          ]
+        : Array.isArray(run.foreign) && run.foreign.length > 0
+          ? ['Fix: pnpm memory consolidate --allow-cross-side']
+          : [];
+    return [deferredMessage(run, name), ...fix];
   }
   return [skipped[run.status]];
 }
@@ -1013,7 +1026,23 @@ export function announcement(dir) {
   const gaveUp = runs.filter(
     (run) => run.status === 'failed' && run.gaveUp
   ).length;
-  if (lines.length === 0 && held === 0 && gaveUp === 0) return null;
+  const consolidationFailed = runs.filter(
+    (run) => run.job === 'consolidation' && run.status === 'failed'
+  );
+  if (
+    lines.length === 0 &&
+    held === 0 &&
+    gaveUp === 0 &&
+    consolidationFailed.length === 0
+  ) {
+    return null;
+  }
+  const latestConsolidationError = shorten(
+    String(consolidationFailed.at(-1)?.error ?? 'unknown error')
+      .replace(/\s+/g, ' ')
+      .trim(),
+    120
+  );
   return [
     '[Memory] Saved by automatic extraction or consolidation after earlier sessions (pnpm memory show <id>; pnpm memory undo reverts the last job):',
     ...lines.map((line) => `- ${line}`),
@@ -1025,6 +1054,11 @@ export function announcement(dir) {
     ...(gaveUp > 0
       ? [
           `- Extraction gave up on ${count(gaveUp, 'session', 'sessions')} (errors: memory/extract/journal.jsonl)`,
+        ]
+      : []),
+    ...(consolidationFailed.length > 0
+      ? [
+          `- Consolidation failed (${latestConsolidationError}; retried after a day; details: memory/extract/journal.jsonl)`,
         ]
       : []),
   ].join('\n');

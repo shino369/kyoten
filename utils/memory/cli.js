@@ -8,7 +8,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { runAgent } from '../loop/adapters.js';
+import { foreignHarnessForAgy, runAgent } from '../loop/adapters.js';
 import { CALL_AGENTS } from './agent-call.js';
 import {
   applyImport,
@@ -30,7 +30,14 @@ import {
 } from '../task/store.js';
 import { trashPaths } from '../task/trash.js';
 import { ROOT_DIR } from '../workspace-config.js';
-import { readConfig, savingOff, setSaving, writeConfig } from './config.js';
+import {
+  CONSOLIDATE_AGENTS,
+  DEFAULT_AUTO_CONSOLIDATE,
+  readConfig,
+  savingOff,
+  setSaving,
+  writeConfig,
+} from './config.js';
 import {
   applyCompaction,
   auditPersona,
@@ -45,8 +52,10 @@ import {
   consolidateLocked,
   consolidationAgent,
   consolidationDue,
+  consolidationPolicyKey,
   foreignSides,
   readConsolidated,
+  validateConsolidateAgent,
 } from './consolidate.js';
 import {
   ANNOUNCE_CHARS,
@@ -165,12 +174,14 @@ Extraction and consolidation
                                 be sent to the model and changes nothing
   inbox [--reset]               Changes extraction held back for you to review (they read
                                 like instructions); --reset clears the list
-  consolidate [--dry-run] [--force] [--allow-cross-side]
+  consolidate [--agent ${CALL_AGENTS.join('|')}] [--dry-run] [--force] [--allow-cross-side]
                                 Tidy the notes and rewrite the profile now (normally weekly,
                                 in the background; never while saving is off, --force
-                                overrides for a manual run). Notes from another provider
-                                side defer; --allow-cross-side sends them to this
-                                session's provider anyway
+                                overrides for a manual run). Auto-consolidation defaults on
+                                for ${CALL_AGENTS.join('/')} and off for dscc (pnpm memory set
+                                --auto-consolidate <agent>=on|off); --allow-cross-side runs
+                                once when an agent is off. --agent selects the CLI for a
+                                manual run (other harnesses cannot pass --agent agy)
   undo [--dry-run]              Revert the last extraction, consolidation, import, or persona
                                 compaction (notes saved since are kept)
 
@@ -227,8 +238,10 @@ Settings
                                 A new session loads the full settings after --on
   set [--extract-agent ${CALL_AGENTS.join('|')}|default] [--extract-model <model>|default]
       [--budget <characters>|default]
+      [--auto-consolidate <${CONSOLIDATE_AGENTS.join('|')}>=on|off|default|default]…
                                 Agent CLI and model for memory jobs (default: the session's
-                                own CLI and model), and core block budget
+                                own CLI and model), core block budget, and per-agent automatic
+                                consolidation (default: on for ${CALL_AGENTS.join('/')}, off for dscc)
   off [--session] · on [--session]
                                 Pause automatic saving everywhere, or for this session
                                 (incognito); recall still works
@@ -265,11 +278,12 @@ const VALUE_FLAGS = {
   '--extract-model': 'extractModel',
   '--extract-agent': 'extractAgent',
   '--budget': 'budget',
+  '--auto-consolidate': 'autoConsolidate',
   '--include': 'include',
   '--tasks': 'tasks',
   '--out': 'out',
 };
-const REPEATABLE = new Set(['cues', 'triggers']);
+const REPEATABLE = new Set(['cues', 'triggers', 'autoConsolidate']);
 const PERSONALIZATION_TOGGLE_FLAG = /^--(?:on|off)(?:=|$)/;
 const BOOLEAN_FLAGS = {
   '--pin': 'pin',
@@ -325,6 +339,7 @@ const FIRST_NOTE =
  *   include?: string, tasks?: string, out?: string, personaFile?: string, agent?: string, for?: string,
  *   triggers: string[],
  *   cues: string[],
+ *   autoConsolidate: string[],
  *   triggerMode?: string,
  *   pin: boolean, force: boolean, failure: boolean, pinned: boolean,
  *   stale: boolean, all: boolean, archived: boolean, reset: boolean, show: boolean,
@@ -358,6 +373,7 @@ export function parseArgs(argv) {
     positionals: [],
     triggers: [],
     cues: [],
+    autoConsolidate: [],
     pin: false,
     force: false,
     failure: false,
@@ -519,6 +535,7 @@ function checkPersonaOptions(options) {
       positionals,
       triggers,
       cues,
+      autoConsolidate,
       ...other
     } = options;
     if (on && off) {
@@ -528,6 +545,7 @@ function checkPersonaOptions(options) {
       positionals.length !== 1 ||
       triggers.length > 0 ||
       cues.length > 0 ||
+      autoConsolidate.length > 0 ||
       Object.values(other).some((value) => value !== false)
     ) {
       throw new Error('Use --on or --off by itself, with optional --json.');
@@ -587,6 +605,45 @@ function checkPersonaOptions(options) {
 /** @param {string | null} agent */
 function agentLine(agent) {
   return `Memory agent: ${agent ?? "the session's own CLI"}`;
+}
+
+/** @param {import('./config.js').AutoConsolidateConfig} autoConsolidate */
+function autoConsolidateLine(autoConsolidate) {
+  return `Auto-consolidation: ${CONSOLIDATE_AGENTS.map(
+    (agent) => `${agent} ${autoConsolidate[agent] ? 'on' : 'off'}`
+  ).join(', ')}`;
+}
+
+/**
+ * Parse repeatable `--auto-consolidate` flags (`default` or `<agent>=on|off|default`).
+ *
+ * @param {string[]} values
+ * @param {import('./config.js').AutoConsolidateConfig} current
+ * @returns {import('./config.js').AutoConsolidateConfig}
+ */
+function parseAutoConsolidate(values, current) {
+  const next = { ...current };
+  for (const raw of values) {
+    if (raw === 'default') {
+      Object.assign(next, DEFAULT_AUTO_CONSOLIDATE);
+      continue;
+    }
+    const eq = raw.indexOf('=');
+    const agent = eq === -1 ? '' : raw.slice(0, eq);
+    const mode = eq === -1 ? '' : raw.slice(eq + 1);
+    if (
+      !CONSOLIDATE_AGENTS.includes(/** @type {any} */ (agent)) ||
+      (mode !== 'on' && mode !== 'off' && mode !== 'default')
+    ) {
+      throw new Error(
+        `Invalid --auto-consolidate value ${JSON.stringify(raw)}: use <${CONSOLIDATE_AGENTS.join('|')}>=on|off|default, or default.`
+      );
+    }
+    const key = /** @type {import('./config.js').ConsolidateAgent} */ (agent);
+    next[key] =
+      mode === 'default' ? DEFAULT_AUTO_CONSOLIDATE[key] : mode === 'on';
+  }
+  return next;
 }
 
 /**
@@ -1096,6 +1153,9 @@ export const COMMANDS = {
   },
 
   consolidate(options, deps) {
+    if (options.agent !== undefined) {
+      validateConsolidateAgent(options.agent, deps.env);
+    }
     if (!fs.existsSync(dirOf(deps))) {
       throw new Error('Memory is not set up. Fix: pnpm memory init');
     }
@@ -1113,6 +1173,7 @@ export const COMMANDS = {
       dryRun: options.dryRun,
       force: options.force,
       allowCrossSide: options.allowCrossSide,
+      ...(options.agent !== undefined ? { agent: options.agent } : {}),
     });
     const run = options.dryRun
       ? consolidate(extractDeps)
@@ -1223,16 +1284,22 @@ export const COMMANDS = {
       inbox: readInbox(dir).length,
     };
     const consolidated = readConsolidated(dir);
+    const consolidateCli = consolidationAgent(core.config, deps.env);
+    const policyKey = consolidationPolicyKey(consolidateCli, deps.env);
+    const autoEnabled = core.config.autoConsolidate[policyKey];
+    const tosBlockedBy =
+      consolidateCli === 'agy' ? foreignHarnessForAgy(deps.env) : null;
+    const callSide = agentSide(consolidateCli, deps.env);
     const consolidation = {
       last: consolidated?.at ?? null,
       due: consolidationDue(deps.rootDir, { now }),
-      foreign: (() => {
-        const agent = consolidationAgent(core.config, deps.env);
-        const callSide = agentSide(agent, deps.env);
-        return callSide && callSide !== 'normal'
+      agent: policyKey,
+      autoEnabled,
+      tosBlockedBy,
+      foreign:
+        !autoEnabled && callSide && callSide !== 'normal'
           ? foreignSides(dirOf(deps), callSide)
-          : [];
-      })(),
+          : [],
     };
     const lastRun = extraction.running
       ? 'running now'
@@ -1255,6 +1322,7 @@ export const COMMANDS = {
         saving,
         extractModel,
         extractAgent,
+        autoConsolidate: core.config.autoConsolidate,
         extraction,
         consolidation,
         missing,
@@ -1273,8 +1341,9 @@ export const COMMANDS = {
           `Saving: ${saving}${off ? ' (pnpm memory on)' : ''}`,
           agentLine(extractAgent),
           `Extraction model: ${extractModel ?? "the main session's model"}`,
+          autoConsolidateLine(core.config.autoConsolidate),
           `Extraction: ${plural(extraction.queued, 'session')} queued; ${lastRun}`,
-          `Consolidation: ${consolidation.last ? `last ${localTime(consolidation.last)}` : 'not yet'}${consolidation.due ? `; due (${consolidation.due})` : ''}${consolidation.foreign.length > 0 ? `; notes from ${consolidation.foreign.join(', ')} need --allow-cross-side` : ''}`,
+          `Consolidation: ${consolidation.last ? `last ${localTime(consolidation.last)}` : 'not yet'}${consolidation.due ? `; due (${consolidation.due})` : ''}${!consolidation.autoEnabled ? `; auto-consolidation off for ${consolidation.agent} (pnpm memory set --auto-consolidate ${consolidation.agent}=on or --allow-cross-side)` : ''}${consolidation.tosBlockedBy ? `; agy blocked from ${consolidation.tosBlockedBy} (ToS)` : ''}`,
           ...(extraction.inbox > 0
             ? [
                 `Inbox: ${plural(extraction.inbox, 'change')} held for review (pnpm memory inbox)`,
@@ -1762,12 +1831,23 @@ export const COMMANDS = {
       }
       updates.budget = budget === 'default' ? null : Number(budget);
     }
-    const { config, warnings } = Object.keys(updates).length
+    const autoConsolidateValues = options.autoConsolidate;
+    const hasUpdates =
+      Object.keys(updates).length > 0 || autoConsolidateValues.length > 0;
+    const { config, warnings } = hasUpdates
       ? changeConfig(
           deps,
           (current) => ({
             ...current,
             ...updates,
+            ...(autoConsolidateValues.length > 0
+              ? {
+                  autoConsolidate: parseAutoConsolidate(
+                    autoConsolidateValues,
+                    current.autoConsolidate
+                  ),
+                }
+              : {}),
             // Switching agents without naming a new model clears the old
             // agent's model so a model name is not sent to another CLI.
             ...(updates.extractAgent !== undefined &&
@@ -1788,6 +1868,7 @@ export const COMMANDS = {
           agentLine(config.extractAgent),
           `Extraction model: ${config.extractModel ?? "the main session's model"}`,
           `Core budget: ${config.budget ?? CORE_BUDGET} characters${config.budget === null ? ' (default)' : ''}`,
+          autoConsolidateLine(config.autoConsolidate),
         ].join('\n'),
         warnings
       )
@@ -1846,13 +1927,19 @@ export function main({ argv = process.argv.slice(2), deps = {} } = {}) {
   }
   if (
     command !== 'personalize' &&
-    (options.compact ||
-      options.audit ||
-      options.agent !== undefined ||
-      options.for !== undefined)
+    (options.compact || options.audit || options.for !== undefined)
   ) {
     throw new Error(
-      '--compact, --audit, --agent, and --for are only supported on personalize.'
+      '--compact, --audit, and --for are only supported on personalize.'
+    );
+  }
+  if (
+    command !== 'personalize' &&
+    command !== 'consolidate' &&
+    options.agent !== undefined
+  ) {
+    throw new Error(
+      '--agent is only supported on personalize and consolidate.'
     );
   }
   return COMMANDS[command](options, resolved);

@@ -15,7 +15,7 @@
 import fs from 'fs';
 import path from 'path';
 import { answerOf } from '../agent/cli.js';
-import { CALLER_HARNESS_ENV } from '../loop/adapters.js';
+import { CALLER_HARNESS_ENV, foreignHarnessForAgy } from '../loop/adapters.js';
 import { findSecrets, redactSecrets } from '../redact.js';
 import {
   sessionFromEnv,
@@ -34,6 +34,7 @@ import {
   validateOps,
 } from './extract.js';
 import {
+  DSCC_AGENT,
   EXTRACT_DIR,
   agentSide,
   appendInbox,
@@ -400,8 +401,9 @@ export function foreignSides(dir, side) {
 
 /**
  * The CLI that runs consolidation in this environment: `--extract-agent`,
- * else this session's harness (falling back to `KYOTEN_CALLER_HARNESS` passed
- * by memory hooks to detached workers), else `claude`.
+ * else `KYOTEN_CALLER_HARNESS` (set by hooks so an inner harness beats
+ * inherited outer session IDs), else `claude` when `KYOTEN_AGENT=dscc`,
+ * else this session's harness, else `claude`.
  *
  * @param {{ extractAgent?: string | null }} config
  * @param {NodeJS.ProcessEnv} env
@@ -409,13 +411,51 @@ export function foreignSides(dir, side) {
  */
 export function consolidationAgent(config, env) {
   if (config.extractAgent) return config.extractAgent;
-  const session = sessionHarness(env);
-  if (session) return session;
   const caller = env[CALLER_HARNESS_ENV]?.trim();
   if (caller && CALL_AGENTS.includes(/** @type {any} */ (caller))) {
     return caller;
   }
+  if (env.KYOTEN_AGENT === DSCC_AGENT) return 'claude';
+  const session = sessionHarness(env);
+  if (session) return session;
   return 'claude';
+}
+
+/**
+ * The auto-consolidation policy key for `agent` in `env`: `dscc` when the
+ * `claude` CLI runs under the dscc profile, otherwise the agent name itself.
+ *
+ * @param {string} agent
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {import('./config.js').ConsolidateAgent}
+ */
+export function consolidationPolicyKey(agent, env) {
+  return agent === 'claude' && env.KYOTEN_AGENT === DSCC_AGENT
+    ? 'dscc'
+    : /** @type {import('./config.js').ConsolidateAgent} */ (agent);
+}
+
+/**
+ * Validate an explicit `--agent` override for manual consolidation, refusing
+ * foreign agent harnesses targeting `agy` (Google Antigravity ToS).
+ *
+ * @param {string} agent
+ * @param {NodeJS.ProcessEnv} env
+ */
+export function validateConsolidateAgent(agent, env) {
+  if (!CALL_AGENTS.includes(/** @type {any} */ (agent))) {
+    throw new Error(
+      `Invalid --agent ${JSON.stringify(agent)}: use ${CALL_AGENTS.join(', ')}.`
+    );
+  }
+  if (agent === 'agy') {
+    const caller = foreignHarnessForAgy(env);
+    if (caller) {
+      throw new Error(
+        `Refusing to run consolidation on agy from another agent harness (${caller}): Google Antigravity Terms of Service prohibit invoking agy (headless or agy acp) from third-party agentic CLIs.\nFix: run pnpm memory consolidate --agent agy from your own terminal, or use --agent claude|codex|dsh`
+      );
+    }
+  }
 }
 
 /**
@@ -426,16 +466,20 @@ export function consolidationAgent(config, env) {
  * @returns {Run}
  */
 export function consolidate(deps) {
+  if (deps.agent !== undefined) {
+    validateConsolidateAgent(deps.agent, deps.env);
+  }
   const dir = memoryDir(deps.rootDir);
   const now = deps.now();
   const at = now.toISOString();
   const base = { at, job: 'consolidation', session: 'consolidation' };
   const config = readConfig(dir);
   const session = sessionFromEnv(deps.env);
-  // The session's own agent, unless --extract-agent assigns one: one CLI and
-  // one provider per session, so a prior run's agent never routes a session
-  // to another CLI. It still supplies the model when agent and side match.
-  const agent = consolidationAgent(config, deps.env);
+  // The session's own agent, unless --agent or --extract-agent assigns one:
+  // one CLI and one provider per session, so a prior run's agent never routes
+  // a session to another CLI. It still supplies the model when agent and side
+  // match.
+  const agent = deps.agent ?? consolidationAgent(config, deps.env);
   // The side this run records: the agent that actually runs it, falling back
   // to the session's side when the agent names its own provider (dsh, codex).
   const side = agentSide(agent, deps.env) ?? memorySide(deps.env.KYOTEN_AGENT);
@@ -467,24 +511,42 @@ export function consolidate(deps) {
     // A model name only fits the provider it ran on: never from the other side.
     ownModel: last?.agent === agent && last.side === side ? last.model : null,
   });
-  // Google Antigravity Terms of Service: only an agy session may call agy.
+  // Google Antigravity Terms of Service: only an agy session or a plain
+  // terminal may call agy.
   if (agent === 'agy') {
     const tos = deferredRun(agent, null, deps.env, base);
     if (tos) return tos;
   }
-  // The provider that receives the notes: the claude CLI sends them to the
-  // provider its environment names. dscc and agy workers consolidate only
-  // notes from their own side; a lingering run from another side (or a journal
-  // without a side) waits for --allow-cross-side. A normal claude worker keeps
-  // its legacy right to consolidate all sides, and dsh/codex name their own
-  // providers, so no side is inferred for them.
+  // Per-agent automatic consolidation policy: claude, codex, dsh, and agy
+  // default on (consolidating mixed notes automatically); dscc defaults off
+  // (opt-in via `pnpm memory set --auto-consolidate dscc=on` or one-shot
+  // `--allow-cross-side` / `--force`).
+  const policyKey = consolidationPolicyKey(agent, deps.env);
+  const autoAllowed = config.autoConsolidate[policyKey];
   const callSide = agentSide(agent, deps.env);
   const foreign =
-    callSide && callSide !== 'normal' ? foreignSides(dir, callSide) : [];
-  if (foreign.length > 0 && !deps.allowCrossSide) {
-    return { ...base, status: 'deferred', side: callSide, foreign };
+    !autoAllowed && callSide && callSide !== 'normal'
+      ? foreignSides(dir, callSide)
+      : [];
+  if (!autoAllowed && !deps.allowCrossSide && !deps.force) {
+    return {
+      ...base,
+      status: 'deferred',
+      side: policyKey,
+      policy: 'disabled',
+      ...(foreign.length > 0 ? { foreign } : {}),
+    };
   }
-  const crossSide = foreign.length > 0 && deps.allowCrossSide ? foreign : [];
+  const crossSide =
+    !autoAllowed && (deps.allowCrossSide || deps.force) && foreign.length > 0
+      ? foreign
+      : [];
+  const crossSideVia =
+    crossSide.length > 0
+      ? deps.allowCrossSide
+        ? '--allow-cross-side'
+        : '--force'
+      : null;
   if (deps.dryRun) {
     return {
       ...base,
@@ -493,7 +555,7 @@ export function consolidate(deps) {
       agent,
       model,
       prompt,
-      ...(crossSide.length > 0 ? { crossSide } : {}),
+      ...(crossSide.length > 0 ? { crossSide, crossSideVia } : {}),
     };
   }
 
@@ -571,7 +633,7 @@ export function consolidate(deps) {
     agent,
     model,
     side,
-    ...(crossSide.length > 0 ? { crossSide } : {}),
+    ...(crossSide.length > 0 ? { crossSide, crossSideVia } : {}),
     changes,
     profile: profile.lines.length,
     quarantined: checked.quarantined.length,
@@ -613,11 +675,13 @@ export function consolidateLocked(deps) {
     );
     const at = deps.now().toISOString();
     writeConsolidated(dir, { ...readConsolidated(dir), tried: at });
-    let failedAgent = consolidationAgent({}, deps.env);
-    try {
-      failedAgent = consolidationAgent(readConfig(dir), deps.env);
-    } catch {
-      // Keep the env-derived agent when config itself failed to load.
+    let failedAgent = deps.agent ?? consolidationAgent({}, deps.env);
+    if (deps.agent === undefined) {
+      try {
+        failedAgent = consolidationAgent(readConfig(dir), deps.env);
+      } catch {
+        // Keep the env-derived agent when config itself failed to load.
+      }
     }
     const run = {
       at,

@@ -857,8 +857,8 @@ describe('consolidate', () => {
   });
 });
 
-describe('consolidation on dscc', () => {
-  test('should defer the claude call from a dscc worker, leaving it due', () => {
+describe('consolidation policy and sides', () => {
+  test('should defer the claude call from a dscc worker by default, leaving it due', () => {
     seed();
     const runAgent = agentReturning({ profile: [], ops: [] });
 
@@ -868,6 +868,7 @@ describe('consolidation on dscc', () => {
       job: 'consolidation',
       status: 'deferred',
       side: 'dscc',
+      policy: 'disabled',
       foreign: ['unknown'],
     });
     expect(runAgent).not.toHaveBeenCalled();
@@ -875,65 +876,125 @@ describe('consolidation on dscc', () => {
     expect(readJournal(dir)).toEqual([]);
   });
 
-  test('should consolidate on a dscc worker when every run was dscc', () => {
+  test('should defer on dscc even when every run was dscc until opted in', () => {
     seed();
     appendJournal(dir, { status: 'applied', side: 'dscc' });
+    const runAgent = agentReturning({ profile: [], ops: [] });
+
+    const deferred = consolidate(
+      deps({ runAgent, env: { KYOTEN_AGENT: 'dscc' } })
+    );
+    expect(deferred).toMatchObject({
+      status: 'deferred',
+      side: 'dscc',
+      policy: 'disabled',
+    });
+    expect(runAgent).not.toHaveBeenCalled();
+
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, dscc: true },
+    });
+    const run = consolidate(deps({ runAgent, env: { KYOTEN_AGENT: 'dscc' } }));
+    expect(run.status).toBe('consolidated');
+    expect(runAgent).toHaveBeenCalledTimes(1);
+  });
+
+  test('should consolidate mixed notes on dscc once opted in', () => {
+    seed();
+    appendJournal(dir, { status: 'applied', side: 'normal' });
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, dscc: true },
+    });
     const runAgent = agentReturning({ profile: [], ops: [] });
 
     const run = consolidate(deps({ runAgent, env: { KYOTEN_AGENT: 'dscc' } }));
 
-    expect(run.status).toBe('consolidated');
+    expect(run).toMatchObject({ status: 'consolidated', side: 'dscc' });
     expect(runAgent).toHaveBeenCalled();
   });
 
-  test('should defer on a dscc worker when a run was not dscc', () => {
-    seed();
-    appendJournal(dir, { status: 'applied', side: 'dscc' });
-    appendJournal(dir, { status: 'applied' });
-
-    const run = consolidate(deps({ env: { KYOTEN_AGENT: 'dscc' } }));
-
-    expect(run).toMatchObject({
-      status: 'deferred',
-      side: 'dscc',
-      foreign: ['unknown'],
-    });
-  });
-
-  test('should defer an agy worker on a run from another side', () => {
+  test('should consolidate mixed notes on agy by default, and defer when agy is disabled', () => {
     seed();
     appendJournal(dir, { status: 'applied', side: 'normal' });
+    appendJournal(dir, { status: 'applied', side: 'dscc' });
     const runAgent = agentReturning({ profile: [], ops: [] });
+    const agyEnv = {
+      ANTIGRAVITY_CONVERSATION_ID: 'agy-1',
+      KYOTEN_AGENT: 'agy',
+    };
 
-    const run = consolidate(
-      deps({
-        runAgent,
-        env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1', KYOTEN_AGENT: 'agy' },
-      })
-    );
+    const run = consolidate(deps({ runAgent, env: agyEnv }));
+    expect(run).toMatchObject({ status: 'consolidated', side: 'agy' });
+    expect(runAgent).toHaveBeenCalledTimes(1);
 
-    expect(run).toMatchObject({
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, agy: false },
+    });
+    const deferred = consolidate(deps({ runAgent, env: agyEnv }));
+    expect(deferred).toMatchObject({
       status: 'deferred',
       side: 'agy',
-      foreign: ['normal'],
+      policy: 'disabled',
+    });
+    expect(runAgent).toHaveBeenCalledTimes(1);
+  });
+
+  test('should allow disabling auto-consolidation for claude, codex, or dsh', () => {
+    seed();
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, dsh: false },
+    });
+    const runAgent = agentReturning({ profile: [], ops: [] });
+
+    const deferred = consolidate(
+      deps({ runAgent, env: { KYOTEN_CALLER_HARNESS: 'dsh' } })
+    );
+    expect(deferred).toMatchObject({
+      status: 'deferred',
+      side: 'dsh',
+      policy: 'disabled',
     });
     expect(runAgent).not.toHaveBeenCalled();
   });
 
-  test('should consolidate an agy worker when every run was agy', () => {
+  test('should support explicit agent override and block foreign harnesses targeting agy', () => {
     seed();
-    appendJournal(dir, { status: 'applied', side: 'agy' });
     const runAgent = agentReturning({ profile: [], ops: [] });
 
-    const run = consolidate(
-      deps({
-        runAgent,
-        env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1', KYOTEN_AGENT: 'agy' },
-      })
-    );
+    const manualAgy = consolidate(deps({ runAgent, agent: 'agy', env: {} }));
+    expect(manualAgy).toMatchObject({
+      status: 'consolidated',
+      agent: 'agy',
+      side: 'agy',
+    });
 
-    expect(run.status).toBe('consolidated');
-    expect(runAgent).toHaveBeenCalled();
+    expect(() =>
+      consolidate(
+        deps({
+          runAgent,
+          agent: 'agy',
+          env: { CLAUDE_CODE_SESSION_ID: 'c1' },
+        })
+      )
+    ).toThrow(/Google Antigravity Terms of Service/);
+
+    expect(() =>
+      consolidate(
+        deps({
+          runAgent,
+          agent: 'agy',
+          env: { KYOTEN_AGENT: 'dscc' },
+        })
+      )
+    ).toThrow(/Google Antigravity Terms of Service/);
+
+    expect(() =>
+      consolidate(deps({ runAgent, agent: 'gemini', env: {} }))
+    ).toThrow(/Invalid --agent/);
   });
 
   test('should record the agy side for a directly opened Antigravity session', () => {
@@ -1006,8 +1067,12 @@ describe('consolidation on dscc', () => {
     expect(run).toMatchObject({ model: null, side: 'normal' });
   });
 
-  test('should reuse a dscc run model on a dscc worker', () => {
+  test('should reuse a dscc run model on a dscc worker when opted in', () => {
     seed();
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, dscc: true },
+    });
     appendJournal(dir, {
       status: 'applied',
       agent: 'claude',
@@ -1075,13 +1140,74 @@ describe('consolidation on dscc', () => {
     });
 
     appendJournal(dir, { status: 'applied', side: 'normal' });
-    const agyDeferred = consolidate(
-      deps({ env: { KYOTEN_CALLER_HARNESS: 'agy' } })
+    const agyRun = consolidate(
+      deps({
+        runAgent: agentReturning({ profile: [], ops: [] }),
+        env: { KYOTEN_CALLER_HARNESS: 'agy' },
+      })
     );
-    expect(agyDeferred).toMatchObject({
-      status: 'deferred',
+    expect(agyRun).toMatchObject({
+      status: 'consolidated',
+      agent: 'agy',
       side: 'agy',
-      foreign: ['normal'],
+    });
+  });
+
+  test('should prefer KYOTEN_CALLER_HARNESS and dscc over inherited outer session IDs', () => {
+    seed();
+    const runAgent = agentReturning({ profile: [], ops: [] });
+
+    // claude launched inside an agy shell: KYOTEN_CALLER_HARNESS='claude' must win over ANTIGRAVITY_CONVERSATION_ID
+    const nestedClaude = consolidate(
+      deps({
+        runAgent,
+        env: {
+          ANTIGRAVITY_CONVERSATION_ID: 'outer-agy',
+          CLAUDE_CODE_SESSION_ID: 'inner-claude',
+          KYOTEN_CALLER_HARNESS: 'claude',
+        },
+      })
+    );
+    expect(nestedClaude).toMatchObject({
+      status: 'consolidated',
+      agent: 'claude',
+      side: 'normal',
+    });
+
+    // dscc launched inside a codex shell must stay on dscc and respect autoConsolidate.dscc=false
+    const nestedDscc = consolidate(
+      deps({
+        runAgent,
+        env: {
+          CODEX_THREAD_ID: 'outer-codex',
+          KYOTEN_AGENT: 'dscc',
+        },
+      })
+    );
+    expect(nestedDscc).toMatchObject({
+      status: 'deferred',
+      side: 'dscc',
+      policy: 'disabled',
+    });
+  });
+
+  test('should record crossSideVia as --force when only --force overrides a disabled agent', () => {
+    seed();
+    appendJournal(dir, { status: 'applied', side: 'normal' });
+    const runAgent = agentReturning({ profile: [], ops: [] });
+
+    const forced = consolidate(
+      deps({
+        runAgent,
+        force: true,
+        env: { KYOTEN_AGENT: 'dscc' },
+      })
+    );
+    expect(forced).toMatchObject({
+      status: 'consolidated',
+      side: 'dscc',
+      crossSide: ['normal'],
+      crossSideVia: '--force',
     });
   });
 
@@ -1148,6 +1274,19 @@ describe('consolidateLocked', () => {
         env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1' },
       })
     );
+
+    expect(run).toMatchObject({ status: 'failed', side: 'agy' });
+    expect(readJournal(dir).at(-1)).toMatchObject({
+      status: 'failed',
+      side: 'agy',
+    });
+  });
+
+  test('should record the explicit --agent side when a manual consolidation fails', () => {
+    seed();
+    const runAgent = agentReturning('', { code: 1, output: 'boom' });
+
+    const run = consolidateLocked(deps({ runAgent, agent: 'agy', env: {} }));
 
     expect(run).toMatchObject({ status: 'failed', side: 'agy' });
     expect(readJournal(dir).at(-1)).toMatchObject({
