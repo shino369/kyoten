@@ -39,14 +39,19 @@ import {
 } from '../harness/input.js';
 import { CALLER_HARNESS_ENV } from '../loop/adapters.js';
 import { runIfMain } from '../module-runner.js';
-import { SESSION_ID_RE, readIfExists } from '../task/store.js';
+import {
+  SESSION_ID_RE,
+  readIfExists,
+  withLock,
+  writeFileAtomic,
+} from '../task/store.js';
 import { ROOT_DIR } from '../workspace-config.js';
 import { readConfig, savingOff } from './config.js';
 import { consolidationDue } from './consolidate.js';
 import { taskContext } from './context.js';
 import { announcement } from './extract.js';
+import { quietRun } from './extract-env.js';
 import {
-  EXTRACT_ENV,
   catchUp,
   enqueue,
   kickWorker,
@@ -78,6 +83,7 @@ import {
 import { mainCheckout } from './repo.js';
 import {
   CACHE_DIR,
+  loadNotes,
   memoryDir,
   readJsonOrNull,
   readUsage,
@@ -85,8 +91,6 @@ import {
 } from './store.js';
 import { recentAgyFailures } from './transcript.js';
 
-/** Roles that must review in a clean context. */
-export const SKIP_AGENTS = ['reviewer', 'verifier'];
 export const SESSIONS_DIR = 'sessions';
 /** Session records older than this are pruned at SessionStart. */
 export const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -94,6 +98,7 @@ export const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 export const ERROR_CHARS = 600;
 const EXIT_CODE_RE = /\bexit code:?\s*(-?\d+)/i;
 const NOTE_ID_RE = /^- ([mt][1-9]\d*) \(/;
+const BLOCKING_HARNESSES = new Set(['claude', 'codex']);
 /** Repeated at every typed prompt, so progress notes keep the persona. */
 export const PERSONA_REMINDER =
   '[Persona] Every message to the user, progress notes between tool calls included, follows the Personalization section.';
@@ -106,15 +111,44 @@ const agentReminder = (/** @type {string} */ agent) =>
   `[Persona] Every message to the user, progress notes between tool calls included, follows this session's ${agent} persona from the session start context.`;
 const agentOverride = (/** @type {string} */ agent) =>
   `[Persona] This ${agent} session has its own persona: apply the personalization below instead of the Personalization section.`;
+/** The harness each KYOTEN_AGENT value runs in. */
+const AGENT_HARNESS = /** @type {Record<string, Harness>} */ ({
+  claude: 'claude',
+  dscc: 'claude',
+  codex: 'codex',
+  dsh: 'dsh',
+  agy: 'agy',
+});
+
+/**
+ * The agent whose persona file this session uses: KYOTEN_AGENT when it names
+ * an agent of this harness, else the harness itself. Codex hooks run in the
+ * shared app-server daemon's environment, so KYOTEN_AGENT can be missing, and
+ * a child agent can inherit its parent's value.
+ *
+ * @param {string | undefined} agent the KYOTEN_AGENT value
+ * @param {Harness} harness
+ * @returns {string}
+ */
+export function sessionAgent(agent, harness) {
+  const name = agent?.trim();
+  return name &&
+    Object.hasOwn(AGENT_HARNESS, name) &&
+    AGENT_HARNESS[name] === harness
+    ? name
+    : harness;
+}
 /** Characters of the language setting quoted in the reminder. */
 export const REMINDER_LANGUAGE_CHARS = 200;
 
 /**
  * @typedef {import('../harness/input.js').Harness} Harness
  * @typedef {Record<string, any>} HookInput
- * @typedef {{ hookSpecificOutput: { hookEventName: string, additionalContext: string }, systemMessage?: string }} StandardHookOutput
+ * @typedef {{ hookSpecificOutput: { hookEventName: string, additionalContext?: string, permissionDecision?: 'deny', permissionDecisionReason?: string }, systemMessage?: string }} StandardHookOutput
  * @typedef {StandardHookOutput | import('../harness/input.js').AgyInjectOutput} HookOutput
  * @typedef {{ harness?: Harness, rootDir?: string, now?: Date, env?: NodeJS.ProcessEnv, kick?: typeof kickWorker }} HookOptions
+ * @typedef {{ dir: string, session: string | null, now: Date }} HookStore
+ * @typedef {{ injected: Set<string>, blocked: Set<string> }} SessionMemory
  */
 
 /**
@@ -141,21 +175,54 @@ export const sessionFile = (dir, session) =>
  * @returns {Set<string>}
  */
 export function readInjected(dir, session) {
-  if (!session) return new Set();
-  const data = /** @type {any} */ (readJsonOrNull(sessionFile(dir, session)));
-  return new Set(Array.isArray(data?.injected) ? data.injected : []);
+  return readSession(dir, session).injected;
 }
 
 /**
  * @param {string} dir
  * @param {string | null} session
- * @param {Set<string>} injected
+ * @returns {SessionMemory}
  */
-function writeInjected(dir, session, injected) {
-  if (!session) return;
+function readSession(dir, session) {
+  const data = /** @type {any} */ (
+    session && readJsonOrNull(sessionFile(dir, session))
+  );
+  return {
+    injected: new Set(Array.isArray(data?.injected) ? data.injected : []),
+    blocked: new Set(Array.isArray(data?.blocked) ? data.blocked : []),
+  };
+}
+
+/**
+ * @template T
+ * @param {HookStore} store
+ * @param {(state: SessionMemory) => T} change
+ * @returns {T}
+ */
+function updateSession({ dir, session }, change) {
+  if (!session) return change(readSession(dir, session));
   const file = sessionFile(dir, session);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({ injected: [...injected] }));
+  const folder = path.dirname(file);
+  fs.mkdirSync(folder, { recursive: true });
+  return withLock(
+    folder,
+    () => {
+      const state = readSession(dir, session);
+      const before = state.injected.size + state.blocked.size;
+      const result = change(state);
+      if (before !== state.injected.size + state.blocked.size) {
+        writeFileAtomic(
+          file,
+          JSON.stringify({
+            injected: [...state.injected],
+            blocked: [...state.blocked],
+          })
+        );
+      }
+      return result;
+    },
+    { timeoutMs: 1000, label: 'Memory session' }
+  );
 }
 
 /**
@@ -168,8 +235,10 @@ function pruneSessions(dir, now) {
   const sessions = path.join(dir, CACHE_DIR, SESSIONS_DIR);
   if (!fs.existsSync(sessions)) return;
   for (const name of fs.readdirSync(sessions)) {
+    if (!name.endsWith('.json')) continue;
     const file = path.join(sessions, name);
-    if (now.getTime() - fs.statSync(file).mtimeMs > SESSION_MAX_AGE_MS) {
+    const stat = fs.statSync(file, { throwIfNoEntry: false });
+    if (stat && now.getTime() - stat.mtimeMs > SESSION_MAX_AGE_MS) {
       fs.rmSync(file, { force: true });
     }
   }
@@ -234,7 +303,7 @@ export function failureText(input) {
  * a broken settings file: the reminder is optional, recall must still run).
  *
  * @param {string} dir the memory directory
- * @param {string | undefined} [agent] the KYOTEN_AGENT value
+ * @param {string} agent the session's agent (sessionAgent)
  */
 function personaReminder(dir, agent) {
   let settings;
@@ -242,12 +311,14 @@ function personaReminder(dir, agent) {
   try {
     if (!readConfig(dir).personalizationEnabled) return PERSONALIZATION_OFF;
     const own = agentPersonalization(dir, personaKeyFor(agent));
-    if (own) reminder = agentReminder(/** @type {string} */ (agent));
+    if (own) reminder = agentReminder(agent);
     settings = own ?? readPersonalization(dir);
   } catch {
     return '';
   }
-  if (Object.keys(settings).length === 0) return '';
+  // Only rendered settings have a Personalization section to point at (the
+  // language guard alone renders none).
+  if (!renderPersonalization(settings)) return '';
   if (!settings.language) return reminder;
   const language = settings.language.replace(/\s+/g, ' ');
   return `${reminder} Language: ${
@@ -265,7 +336,7 @@ function personaReminder(dir, agent) {
  * @param {string} home
  * @param {Harness} harness
  * @param {import('./config.js').MemoryConfig} config
- * @param {string | undefined} [agent] the KYOTEN_AGENT value, when kyoten started the session
+ * @param {string} agent the session's agent (sessionAgent)
  */
 function startupMemory(rootDir, home, harness, config, agent) {
   const localFile = harness === 'dsh' ? AGENTS_LOCAL_FILE : CLAUDE_LOCAL_FILE;
@@ -287,7 +358,7 @@ function startupMemory(rootDir, home, harness, config, agent) {
     if (rootDir !== home && start < 0) {
       return renderStored(home, config, own).block;
     }
-    return `${agentOverride(/** @type {string} */ (agent))}\n\n${renderPersonalization(own)}`;
+    return `${agentOverride(agent)}\n\n${renderPersonalization(own)}`;
   }
   if (rootDir === home) return '';
 
@@ -309,28 +380,78 @@ function startupMemory(rootDir, home, harness, config, agent) {
  * Recall for `query`, skipping what the session was shown; record the
  * injection (usage and the session's record).
  *
- * @param {{ dir: string, session: string | null, now: Date }} store
+ * @param {HookStore} store
  * @param {(notes: import('./store.js').Note[], index: import('./recall.js').Index) => import('./recall.js').RecallResult[] | { note: import('./store.js').Note }[]} pick
  * @returns {string | null}
  */
-function injectText({ dir, session, now }, pick) {
-  const { notes, index } = loadIndex(dir);
-  const injected = readInjected(dir, session);
-  const text = formatRecall(
-    pick(
-      notes.filter((note) => !injected.has(note.id)),
-      index
-    ),
-    { now }
-  );
-  if (!text) return null;
+function injectText(store, pick) {
+  const { notes, index } = loadIndex(store.dir);
+  return updateSession(store, ({ injected }) => {
+    const text = formatRecall(
+      pick(
+        notes.filter((note) => !injected.has(note.id)),
+        index
+      ),
+      { now: store.now }
+    );
+    if (!text) return null;
+    recordInjection(store, injected, text);
+    return text;
+  });
+}
+
+/** @param {HookStore} store @param {Set<string>} injected @param {string} text @returns {string[]} the ids shown */
+function recordInjection({ dir, now }, injected, text) {
   const ids = text
     .split('\n')
     .map((line) => NOTE_ID_RE.exec(line)?.[1])
     .filter((id) => id !== undefined);
   recordHits(dir, ids, now);
-  writeInjected(dir, session, new Set([...injected, ...ids]));
-  return text;
+  ids.forEach((id) => injected.add(id));
+  return ids;
+}
+
+/**
+ * @param {HookStore} store
+ * @param {Harness} harness
+ * @param {import('./store.js').Note[]} matches
+ * @returns {HookOutput | null}
+ */
+function triggerOutput(store, harness, matches) {
+  if (matches.length === 0) return null;
+  const canBlock = store.session !== null && BLOCKING_HARNESSES.has(harness);
+  return updateSession(store, ({ injected, blocked }) => {
+    const blockers = canBlock
+      ? matches.filter(
+          (note) =>
+            note.triggerMode === 'block' &&
+            note.checked !== null &&
+            !blocked.has(note.id)
+        )
+      : [];
+    const fresh = matches.filter(
+      (note) => !injected.has(note.id) && !blocked.has(note.id)
+    );
+    const text = formatRecall(
+      (blockers.length > 0 ? blockers : fresh)
+        .slice(0, RECALL_LIMIT)
+        .map((note) => ({ note })),
+      { now: store.now }
+    );
+    if (!text) return null;
+    const shown = recordInjection(store, injected, text);
+    if (blockers.length === 0)
+      return contextOutput('PreToolUse', text, harness);
+    // Only notes the reason shows count as delivered; the rest block next time.
+    shown.forEach((id) => blocked.add(id));
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: text,
+      },
+    };
+  });
 }
 
 /**
@@ -351,7 +472,7 @@ export function handleHook(
 ) {
   const normalized = normalizeHookInput(input, harness);
   const event = normalized.hook_event_name;
-  if (env[EXTRACT_ENV] === '1' || SKIP_AGENTS.includes(normalized.agent_type)) {
+  if (quietRun(env, normalized.agent_type)) {
     return null;
   }
   const home = mainCheckout(rootDir);
@@ -398,7 +519,12 @@ export function handleHook(
     return null;
   }
   if (event === 'SessionStart') {
-    if (normalized.source !== 'resume') writeInjected(dir, session, new Set());
+    if (normalized.source !== 'resume') {
+      updateSession(store, ({ injected, blocked }) => {
+        injected.clear();
+        if (normalized.source !== 'compact') blocked.clear();
+      });
+    }
     pruneSessions(dir, now);
     registerOpen(dir, entry);
     catchUp(dir, { current: session, now });
@@ -407,7 +533,13 @@ export function handleHook(
     const config = readConfig(dir);
     const off = savingOff(config, session);
     const parts = [
-      startupMemory(rootDir, home, harness, config, env[AGENT_ENV]),
+      startupMemory(
+        rootDir,
+        home,
+        harness,
+        config,
+        sessionAgent(env[AGENT_ENV], harness)
+      ),
       config.personalizationEnabled ? '' : PERSONALIZATION_OFF,
       ...(off
         ? [
@@ -460,7 +592,7 @@ export function handleHook(
     return /** @type {any} */ (
       contextOutput(
         event,
-        [personaReminder(dir, env[AGENT_ENV]), recalled]
+        [personaReminder(dir, sessionAgent(env[AGENT_ENV], harness)), recalled]
           .filter(Boolean)
           .join('\n\n'),
         harness
@@ -492,12 +624,17 @@ export function handleHook(
   if (event === 'PreToolUse') {
     const command = commandOf(normalized);
     if (!command) return null;
-    const recalled = injectText(store, (notes) =>
-      matchTriggers(notes, command)
-        .slice(0, RECALL_LIMIT)
-        .map((note) => ({ note }))
+    const matches = matchTriggers(loadNotes(dir).notes, command);
+    const repo = matches.some((note) => note.scope === 'repo')
+      ? context().repo
+      : null;
+    return /** @type {any} */ (
+      triggerOutput(
+        store,
+        harness,
+        matches.filter((note) => note.scope !== 'repo' || note.repo === repo)
+      )
     );
-    return /** @type {any} */ (contextOutput(event, recalled, harness));
   }
   if (event === 'PostToolUse' || event === 'PostToolUseFailure') {
     const error = failureText(normalized);

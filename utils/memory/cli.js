@@ -66,6 +66,7 @@ import {
 } from './extract.js';
 import {
   PERSONA_FILE,
+  guardLine,
   languageHint,
   listPresets,
   PERSONA_KEYS,
@@ -118,6 +119,7 @@ import {
   noteHistory,
   readLog,
   readUsage,
+  restoreNote,
   setPinned,
   updateNote,
 } from './store.js';
@@ -132,20 +134,23 @@ Status
 
 Save and change
   add "<text>" --scope user|machine|repo --type preference|fact|howto|episode
-      [--repo <name|path>] [--tags a,b] [--trigger "<pattern>"]… [--pin] [--force]
+      [--repo <name|path>] [--tags a,b] [--cue "<phrase>"]… [--trigger "<pattern>"]…
+      [--trigger-mode inject|block] [--pin] [--force]
                                 Save a note and print its id. Secrets are refused; a
                                 near-duplicate is merged into the old note. A repo note
                                 defaults to the current repository (the task's --repo, else
                                 this folder). --force saves while saving is off
-  edit <id> ["<text>"] [--tags a,b] [--trigger "…"]… [--type …] [--scope …] [--repo …]
-                                Change a note (--tags and --trigger replace the old lists)
+  edit <id> ["<text>"] [--tags a,b] [--cue "…"]… [--trigger "…"]…
+      [--trigger-mode inject|block] [--type …] [--scope …] [--repo …]
+                                Change a note (--tags, --cue, and --trigger replace the old lists)
   rm <id> -m "why"              Delete a note (it stays in the journal)
   pin <id> · unpin <id>         Pinned notes are in every session's core block
   check <id>                    Mark a note confirmed today (no longer stale)
+  restore <id>                  Bring an archived note back into active recall
 
 Find
-  recall "<query>" [--scope …] [--repo …] [--limit N] [--failure]
-                                Search like the hooks do (--failure: the query is an error)
+  recall "<query>" [--scope …] [--repo …] [--limit N] [--failure] [--archived]
+                                Search like the hooks do (--archived searches archived notes)
   list [--scope …] [--type …] [--repo …] [--pinned] [--stale] [--all]
                                 Browse notes (--all includes deleted ones)
   show <id>                     A note with its source and history
@@ -187,9 +192,12 @@ Settings
   personalize --presets         List the available presets
   personalize [--preset <name>] [--call-me …] [--about-me …] [--language …]
       [--persona … | --persona-file <file.md>] [--tone <text|preset>] [--traits a,b]
-      [--extra …] [--reset]
+      [--extra …] [--guard ja|zh|off] [--reset]
                                 Set how agents talk to you in conversations. An empty
-                                value clears a field. --persona-file reads the
+                                value clears a field. --guard turns on the Stop-time
+                                language guard for Japanese or Chinese (Claude Code and
+                                Codex): a reply mostly in another script is sent back
+                                once for a rewrite. --persona-file reads the
                                 persona from markdown (comments and heading marks
                                 dropped; the same 1,500-character limit). Keep the
                                 persona in memory/persona.md instead and pnpm memory init
@@ -207,9 +215,10 @@ Settings
                                 MCP servers
   personalize --for ${PERSONA_KEYS.join('|')} [--show | --reset]
       [--persona … | --persona-file <file.md>] [--compact [--dry-run] | --audit]
-                                One persona for the agents kyoten starts (ds: dsh and dscc;
-                                KYOTEN_AGENT), kept in memory/persona.<agent>.md, with the
-                                same limit, audit, and --agent as the default persona. The
+                                One persona per agent (ds: dsh and dscc; KYOTEN_AGENT,
+                                else the hook's harness), kept in
+                                memory/persona.<agent>.md, with the same limit, audit,
+                                and --agent as the default persona. The
                                 other settings stay the default ones; an agent without a
                                 file uses the default persona. --reset removes the file
                                 (a snapshot and tasks/.trash keep it; pnpm memory undo
@@ -234,7 +243,9 @@ const VALUE_FLAGS = {
   '--repo': 'repo',
   '--type': 'type',
   '--tags': 'tags',
+  '--cue': 'cues',
   '--trigger': 'triggers',
+  '--trigger-mode': 'triggerMode',
   '--limit': 'limit',
   '--grep': 'grep',
   '--message': 'message',
@@ -250,6 +261,7 @@ const VALUE_FLAGS = {
   '--tone': 'tone',
   '--traits': 'traits',
   '--extra': 'extra',
+  '--guard': 'guard',
   '--extract-model': 'extractModel',
   '--extract-agent': 'extractAgent',
   '--budget': 'budget',
@@ -257,7 +269,7 @@ const VALUE_FLAGS = {
   '--tasks': 'tasks',
   '--out': 'out',
 };
-const REPEATABLE = new Set(['triggers']);
+const REPEATABLE = new Set(['cues', 'triggers']);
 const PERSONALIZATION_TOGGLE_FLAG = /^--(?:on|off)(?:=|$)/;
 const BOOLEAN_FLAGS = {
   '--pin': 'pin',
@@ -266,6 +278,7 @@ const BOOLEAN_FLAGS = {
   '--pinned': 'pinned',
   '--stale': 'stale',
   '--all': 'all',
+  '--archived': 'archived',
   '--reset': 'reset',
   '--show': 'show',
   '--presets': 'presets',
@@ -291,6 +304,7 @@ const FIELD_FLAGS = /** @type {const} */ ([
   'tone',
   'traits',
   'extra',
+  'guard',
 ]);
 
 const LIST_CHARS = 100;
@@ -307,11 +321,13 @@ const FIRST_NOTE =
  *   scope?: string, repo?: string, type?: string, tags?: string, limit?: string,
  *   grep?: string, message?: string, preset?: string, callMe?: string,
  *   aboutMe?: string, language?: string, persona?: string, tone?: string,
- *   traits?: string, extra?: string, extractModel?: string, extractAgent?: string, budget?: string,
+ *   traits?: string, extra?: string, guard?: string, extractModel?: string, extractAgent?: string, budget?: string,
  *   include?: string, tasks?: string, out?: string, personaFile?: string, agent?: string, for?: string,
  *   triggers: string[],
+ *   cues: string[],
+ *   triggerMode?: string,
  *   pin: boolean, force: boolean, failure: boolean, pinned: boolean,
- *   stale: boolean, all: boolean, reset: boolean, show: boolean,
+ *   stale: boolean, all: boolean, archived: boolean, reset: boolean, show: boolean,
  *   presets: boolean, on?: boolean, off?: boolean, compact: boolean, audit: boolean,
  *   session: boolean, dryRun: boolean,
  *   allowSecrets: boolean, allowCrossSide: boolean, replace: boolean, json: boolean, help: boolean,
@@ -341,12 +357,14 @@ export function parseArgs(argv) {
   const options = {
     positionals: [],
     triggers: [],
+    cues: [],
     pin: false,
     force: false,
     failure: false,
     pinned: false,
     stale: false,
     all: false,
+    archived: false,
     reset: false,
     show: false,
     presets: false,
@@ -473,7 +491,7 @@ function changeConfig(deps, change, { refresh = false } = {}) {
  * @param {import('./personalize.js').Personalization} settings
  */
 const withHint = (settings) =>
-  [renderPersonalization(settings), languageHint(settings)]
+  [renderPersonalization(settings), languageHint(settings), guardLine(settings)]
     .filter(Boolean)
     .join('\n\n');
 
@@ -494,13 +512,22 @@ function output(deps, options, json, text) {
 /** @param {Options} options */
 function checkPersonaOptions(options) {
   if (options.on || options.off) {
-    const { on, off, json: _json, positionals, triggers, ...other } = options;
+    const {
+      on,
+      off,
+      json: _json,
+      positionals,
+      triggers,
+      cues,
+      ...other
+    } = options;
     if (on && off) {
       throw new Error('Use one of --on and --off.');
     }
     if (
       positionals.length !== 1 ||
       triggers.length > 0 ||
+      cues.length > 0 ||
       Object.values(other).some((value) => value !== false)
     ) {
       throw new Error('Use --on or --off by itself, with optional --json.');
@@ -1159,7 +1186,8 @@ export const COMMANDS = {
       ),
       pinned: active.filter((note) => note.pinned).length,
       stale: active.filter((note) => isStale(note, now)).length,
-      deleted: notes.length - active.length,
+      deleted: notes.filter((note) => note.status === 'deleted').length,
+      archived: notes.filter((note) => note.status === 'archived').length,
     };
     const core = renderStored(deps.rootDir);
     const warnings = [
@@ -1214,7 +1242,7 @@ export const COMMANDS = {
     const summary =
       notes.length === 0
         ? `Memory: no notes yet. Save one: ${FIRST_NOTE}`
-        : `Memory: ${plural(counts.active, 'note')} (${SCOPES.map((scope) => `${scope} ${counts.scopes[scope]}`).join(', ')}); ${counts.pinned} pinned; ${counts.stale} stale; ${counts.deleted} deleted`;
+        : `Memory: ${plural(counts.active, 'note')} (${SCOPES.map((scope) => `${scope} ${counts.scopes[scope]}`).join(', ')}); ${counts.pinned} pinned; ${counts.stale} stale; ${counts.deleted} deleted${counts.archived ? `; ${counts.archived} archived` : ''}`;
     output(
       deps,
       options,
@@ -1309,7 +1337,12 @@ export const COMMANDS = {
         repo: noteRepo(deps, options, options.scope),
         type: options.type,
         tags: splitList(options.tags ?? ''),
+        cues: options.cues.length > 0 ? options.cues : undefined,
         triggers: options.triggers,
+        triggerMode:
+          /** @type {import('./store.js').NoteInput['triggerMode']} */ (
+            options.triggerMode
+          ),
         source: writerSource({ env: deps.env, rootDir: deps.rootDir }),
         pinned: options.pin,
       },
@@ -1332,12 +1365,15 @@ export const COMMANDS = {
     const limit = parseLimit(options.limit, RECALL_LIMIT, MAX_RECALL);
     const dir = dirOf(deps);
     const now = deps.now();
-    const { notes, index } = loadIndex(dir);
+    const { notes, index } = options.archived
+      ? { ...loadNotes(dir), index: undefined }
+      : loadIndex(dir);
     const results = recall(
       scope ? notes.filter((note) => note.scope === scope) : notes,
       query,
       {
         index,
+        archived: options.archived,
         repo:
           options.repo !== undefined
             ? repoArg(deps, options.repo)
@@ -1423,8 +1459,11 @@ export const COMMANDS = {
       `${id} (${headLabels(note, deps.now())})`,
       note.text,
       ...(note.tags.length > 0 ? [`Tags: ${note.tags.join(', ')}`] : []),
+      ...(note.cues?.length ? [`Cues: ${note.cues.join(', ')}`] : []),
       ...(note.triggers.length > 0
-        ? [`Triggers: ${note.triggers.join(', ')}`]
+        ? [
+            `Triggers: ${note.triggers.join(', ')}${note.triggerMode === 'block' ? ' (block)' : ''}`,
+          ]
         : []),
       `Source: ${[
         source.via,
@@ -1485,7 +1524,10 @@ export const COMMANDS = {
     const changes = {};
     if (text) changes.text = text;
     if (options.tags !== undefined) changes.tags = splitList(options.tags);
+    if (options.cues.length > 0) changes.cues = options.cues;
     if (options.triggers.length > 0) changes.triggers = options.triggers;
+    if (options.triggerMode !== undefined)
+      changes.triggerMode = options.triggerMode;
     if (options.type !== undefined) changes.type = options.type;
     if (options.scope !== undefined) {
       changes.scope = options.scope;
@@ -1495,7 +1537,7 @@ export const COMMANDS = {
     }
     if (Object.keys(changes).length === 0) {
       throw new Error(
-        'Nothing to change: give new text, or --tags, --trigger, --type, --scope, --repo.'
+        'Nothing to change: give new text, or --tags, --cue, --trigger, --trigger-mode, --type, --scope, --repo.'
       );
     }
     const note = updateNote(dirOf(deps), id, changes, {
@@ -1507,6 +1549,17 @@ export const COMMANDS = {
       options,
       note,
       `Edited ${id} (${kindLabel(note)}): ${shorten(note.text, ANNOUNCE_CHARS)}`
+    );
+  },
+
+  restore(options, deps) {
+    const id = needId(options, 'restore');
+    const note = restoreNote(dirOf(deps), id, deps.now());
+    return reportChange(
+      deps,
+      options,
+      note,
+      `Active ${id}: ${shorten(note.text, ANNOUNCE_CHARS)}`
     );
   },
 
@@ -1641,7 +1694,10 @@ export const COMMANDS = {
         for (const key of fields) {
           const value = /** @type {string} */ (options[key]);
           if (key === 'traits') settings.traits = splitList(value);
-          else if (key === 'tone') {
+          else if (key === 'guard') {
+            if (value === 'off') delete settings.guard;
+            else settings.guard = value;
+          } else if (key === 'tone') {
             // A preset's name picks that preset's tone.
             settings.tone = presetNames.includes(value)
               ? readPreset(value).tone

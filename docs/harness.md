@@ -396,6 +396,29 @@ digests, at most 3,000 characters) that every session loads. Rules for agents: A
   agents answer in the language the user writes in (`pnpm memory status` says so). In Claude
   Code, `"language": "<name>"` in `.claude/settings.local.json` adds a system-prompt rule; it
   also asks for code comments in that language and changes session titles.
+- **Language guard** (`utils/memory/language_guard.js`, Stop, Claude Code and Codex). A reply that
+  slips out of the Language tends to be copied by the next turns (in this checkout's transcripts,
+  2026-11-21..27: 62-67% of replies after an English reply were English, 6% after a Japanese one),
+  so the guard catches the first slip. It checks only the workspace's languages besides English,
+  Japanese and Chinese (as in the README), and only when it is turned on with
+  `pnpm memory personalize --guard ja|zh`: a field of its own in `personalization.json`, not
+  rendered into the core block, so the guard never guesses a language from the free-text Language.
+  Older kyoten versions refuse a `personalization.json` with this field, so turn it on after every
+  checkout that shares `memory/` is updated, and run `pnpm memory personalize --guard off` before
+  going back to an older version. When it is set and the reply has at least 40 letters of prose
+  (letters of any script; fenced and indented code blocks, including those inside list items, code
+  spans, URLs, POSIX and Windows paths, and `>` quotes removed before the first 20,000 characters of
+  prose are measured) of which under 20% are in that script, it blocks once with a one-line rewrite
+  request. The reply is the Stop input's `last_assistant_message`; in Claude Code, when that is
+  missing, the last assistant message in the transcript's tail (never an earlier one: no text there
+  means no reply). The stop right after its own block passes: a per-session mark under
+  `memory/cache/language-guard/` together with `stop_hook_active`, so it never loops, and a rewrite
+  that was interrupted does not exempt the next turn (any stop it does not block, a stop without
+  reply text included, clears the mark). It writes and prunes only its own mark files (regular files
+  named `<session id>.json`), and passes when `memory/`, `memory/cache`, or that folder is a link.
+  It adds nothing to a reply already in that language and passes while personalization is off, in
+  headless runs (`MEMORY_EXTRACT`), for the reviewer and verifier, and on any error. DSH and
+  Antigravity send no reply text at Stop, so it is not registered there.
 - **Pause personalization.** `pnpm memory personalize --off` pauses the workspace's saved
   response settings across sessions. The memory hooks report the paused state on session start
   and at each typed prompt. You can still edit, audit, and compact the saved persona while it
@@ -410,13 +433,18 @@ digests, at most 3,000 characters) that every session loads. Rules for agents: A
   and `--reset`, which removes the file (kept in `tasks/.trash/` and a snapshot; `pnpm memory
 undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in the agent's
   environment, and the hook reads it, so no shared file is rewritten at launch and a second
-  session of another agent in the same home is unaffected. At SessionStart, when personalization
+  session of another agent in the same home is unaffected. When the variable is missing, or names
+  an agent of another harness (inherited from a parent agent), the hook uses its `--harness`
+  (`claude`, `codex`, `dsh` → `ds`, `agy`). Codex needs this: its TUI connects to a shared
+  app-server daemon by default, and hooks inherit the daemon's environment, not kyoten's, so
+  `KYOTEN_AGENT` never reaches them. At SessionStart, when personalization
   is on and the agent's file exists: Codex and Antigravity (core block injected by the hook) get
   the core with that persona; Claude Code, dscc, and DSH (core block loaded natively) get a
   `[Persona] This <agent> session has its own persona: …` line and the rendered
-  personalization. The per-prompt `[Persona]` line names it. Without the variable (a plain clone,
-  or an agent not started by kyoten), without the file, or with `personalize --off`, nothing
-  changes: the default persona applies, or none when paused. The `AGENTS.local.md` core block always
+  personalization. The per-prompt `[Persona]` line names it. Without the file, or with
+  `personalize --off`, nothing changes: the default persona applies, or none when paused. An agent
+  not started by kyoten gets its harness's file, so a plain `claude` uses `persona.claude.md`
+  (and dscc without kyoten does too). The `AGENTS.local.md` core block always
   shows the default persona. `pnpm memory` lists the agent personas. The hook reads the file at
   each session start, so a hand edit applies to the next session without `pnpm memory init`
   (unlike `memory/persona.md`). A file the checks refuse (over the limit, or text that looks like
@@ -452,12 +480,22 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   Antigravity (`.agents/hooks.json`; core block, prompt recall on turn 0, failure recall on
   `PostInvocation`). It fails open and stays silent for the reviewer and verifier roles where the
   harness reports `agent_type`.
+  Use repeatable `--cue` flags on a note for short prompt phrases that should get priority.
+  `--trigger-mode block` gives Claude Code and Codex the note as the denial reason on the first
+  matching command per session; a reason shows at most 4 notes, so with more matching notes the
+  retry is denied again until each has been shown, then it proceeds. Other harnesses retain their
+  recall behavior. A blocking trigger needs a run of at least 4 characters besides spaces between
+  `*`s. Older notes with shorter blocking patterns stay available in recall and backups. The
+  command hook ignores those patterns. Use `pnpm memory edit <id>` to change the trigger mode
+  or blocking patterns of an existing note.
 - **Extraction (B)** (Claude Code, Codex, and Antigravity; DSH has no SessionEnd or transcript):
   SessionEnd (or `SessionStart` idle catch-up in Antigravity, using `condenseAgy`) queues the
   session; a detached worker reads what the transcript gained, condenses it (prompts, final
   replies, failed commands; secrets left out), and makes one read-only call without tools, on the
   session's own agent CLI (claude, codex, dsh, or agy; `pnpm memory set --extract-agent <agent>`
-  overrides, `default` restores), for ADD/UPDATE/DELETE ops on the related notes. `--extract-model`
+  overrides, `default` restores), for ADD/UPDATE/DELETE ops on the related notes. If a proposed
+  addition resembles a note outside the prompt, a follow-up call checks for a duplicate.
+  `--extract-model`
   pairs with the configured agent (claude by default; cleared when switching `--extract-agent`
   alone, and not accepted for DSH, which chooses its model in its profile); otherwise the session's
   own model is used.
@@ -484,6 +522,10 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   `pnpm memory consolidate` then refuses with a Fix line unless `--force` (a `--dry-run` is always
   allowed). Consolidation reuses the last run's model only when that run used the same agent and
   side as the worker. `pnpm memory status` names the sides that need `--allow-cross-side`.
+  Consolidation rotates batches of similar notes and can archive old task digests and stale,
+  unused facts after taking a snapshot. Use `pnpm memory recall <query> --archived` to search
+  those notes and `pnpm memory restore <id>` to return one to active recall. Export and import
+  preserve the archive tier. Suggested scope changes are listed in `pnpm memory inbox` for review.
   Memory jobs build their isolation arguments without a double quote, so they start through
   Windows `.cmd` shims (which refuse `"`): Codex gets bare or single-quoted TOML values, and Claude
   and Antigravity each get a relative path to their settings file in the job's temporary folder.
@@ -673,9 +715,9 @@ commands, the last verify to have passed.
   a `.git` or secrets.
 - **Tasks in another repository** (`--repo`) work interactively; `pnpm loop` and `pnpm swarm`
   refuse them, because their worktrees are of this workspace.
-- **Memory recall is by words, not meaning.** A note without the words a later prompt uses is
-  not recalled; specific tags (with synonyms and other languages) are the fix. In a small store, one
-  generic tag word can recall a note; that fades as the store grows.
+- **Memory recall is lexical.** Specific tags with synonyms and other languages increase matches.
+  For notes that must surface on a common phrase, add a cue. Once a store reaches the reference
+  size, the evidence normalization stops growing with the collection.
 - **Hooks differ per harness.** See the matrix in "Four harnesses". Where a harness lacks a hook
   event, it gets the same state through `pnpm task status`, and the same enforcement through git
   hooks and the `done` gate. Codex needs a one-time trust (`/hooks`); Antigravity needs the

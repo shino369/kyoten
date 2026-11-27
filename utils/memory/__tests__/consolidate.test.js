@@ -25,7 +25,13 @@ import {
 import { appendJournal, readInbox, readJournal, tryLock } from '../queue.js';
 import { PROFILE_FILE, initLocal } from '../render.js';
 import { listSnapshots } from '../snapshot.js';
-import { addNote, loadNotes, memoryDir, setPinned } from '../store.js';
+import {
+  addNote,
+  loadNotes,
+  memoryDir,
+  setPinned,
+  updateNote,
+} from '../store.js';
 
 /** @type {string} */
 let root;
@@ -227,27 +233,30 @@ describe('similarGroups and consolidationInput', () => {
       { now: NOW }
     );
 
-    const { shown, groups } = consolidationInput(loadNotes(dir).notes);
+    const { shown, groups } = consolidationInput(loadNotes(dir).notes, {
+      now: NOW,
+    });
 
     expect(shown.map((note) => note.id)).toEqual([user.id, a.id, b.id]);
     expect(groups).toEqual([[a.id, b.id]]);
   });
 
-  test('should keep within MAX_SHOWN, leaving out groups that do not fit', () => {
+  test('should reserve room for groups even with many user notes', () => {
     for (let i = 0; i < MAX_SHOWN - 1; i++) {
       add({
         scope: 'user',
         type: 'preference',
-        text: `Preference ${i}: ${'word'.repeat(1)}${i}x likes ${i}y.`,
+        text: `preference${i} ownoption${i}.`,
         tags: [`u${i}`],
       });
     }
-    seed();
+    const { a, b } = seed();
 
     const { shown, groups } = consolidationInput(loadNotes(dir).notes);
 
     expect(shown.length).toBeLessThanOrEqual(MAX_SHOWN);
-    expect(groups).toEqual([]);
+    expect(shown.filter((note) => note.scope === 'user')).toHaveLength(30);
+    expect(groups).toEqual([[a.id, b.id]]);
   });
 });
 
@@ -319,8 +328,130 @@ describe('cleanProfile', () => {
 });
 
 describe('consolidate', () => {
+  test('should retain the source if a merge cannot update its keeper', () => {
+    const a = add({
+      text: 'The office proxy blocks GitHub GraphQL requests.',
+      triggerMode: 'block',
+      triggers: ['gh api graphql'],
+    });
+    const b = add({
+      text: 'The office proxy blocks GitHub GraphQL requests. Staging uses web-stage.',
+    });
+    const runAgent = agentReturning({
+      ops: [
+        { op: 'DELETE', id: b.id, why: `merged into ${a.id}` },
+        { op: 'UPDATE', id: a.id, text: b.text },
+      ],
+    });
+
+    const run = consolidate(deps({ runAgent }));
+
+    expect(run.changes).toEqual([]);
+    expect(run.invalid).toEqual(
+      expect.arrayContaining([expect.stringContaining('keeper')])
+    );
+    expect(loadNotes(dir).notes.find((note) => note.id === b.id)).toMatchObject(
+      { status: 'active', text: b.text }
+    );
+  });
+  test('should put model scope suggestions in the inbox without applying them', () => {
+    add({
+      scope: 'repo',
+      repo: 'projectweb',
+      text: 'Runs a projectweb release.',
+    });
+    const note = add({
+      text: 'The projectweb repository uses a release manifest.',
+    });
+    const runAgent = agentReturning({ ops: [{ op: 'RESCOPE', id: note.id }] });
+
+    expect(consolidate(deps({ runAgent })).quarantined).toBe(1);
+    expect(readInbox(dir)).toMatchObject([
+      {
+        op: 'RESCOPE',
+        id: note.id,
+        changes: { scope: 'repo', repo: 'projectweb' },
+      },
+    ]);
+    expect(
+      loadNotes(dir).notes.find((item) => item.id === note.id)?.scope
+    ).toBe('machine');
+  });
+  test('should archive an eligible digest, retain its text, and create a snapshot', () => {
+    const old = add(
+      {
+        text: 'Delivered the basil recipe.',
+        type: 'episode',
+        source: { via: 'digest' },
+      },
+      new Date(NOW.getTime() - 31 * DAY)
+    );
+    const recent = add({
+      text: 'Delivered the mint recipe.',
+      type: 'episode',
+      source: { via: 'digest' },
+    });
+    const runAgent = agentReturning({
+      ops: [
+        { op: 'ARCHIVE', id: old.id },
+        { op: 'ARCHIVE', id: recent.id },
+      ],
+    });
+
+    expect(consolidate(deps({ runAgent })).changes).toEqual([
+      expect.objectContaining({ action: 'archived', id: old.id }),
+    ]);
+    expect(loadNotes(dir).notes).toEqual([
+      expect.objectContaining({ status: 'archived', text: old.text }),
+      expect.objectContaining({ status: 'active' }),
+    ]);
+    expect(listSnapshots(root)[0].reason).toBe('consolidate');
+  });
+
+  test('should rotate through groups even with over thirty user notes', () => {
+    for (let i = 0; i < 65; i++)
+      add({
+        scope: 'user',
+        type: 'preference',
+        text: `preference${i} ownoption${i}.`,
+      });
+    for (let i = 0; i < 20; i++) {
+      const key = `compoundxyz${i}`;
+      add({
+        scope: 'repo',
+        repo: key,
+        text: `${key} builds use cache where enabled.`,
+        tags: ['build cache'],
+      });
+      add({
+        scope: 'repo',
+        repo: key,
+        text: `${key} builds cache artifacts using enabled settings.`,
+        tags: ['build cache'],
+      });
+    }
+    const first = consolidate(deps({ dryRun: true }));
+    consolidate(deps());
+    const second = consolidate(deps({ dryRun: true }));
+
+    expect(first.prompt).toContain('compoundxyz0');
+    expect(first.prompt).not.toContain('compoundxyz19');
+    expect(second.prompt).toContain('compoundxyz19');
+  });
   test('should merge, retire, and rewrite the profile after a snapshot', () => {
     const { a, b } = seed();
+    updateNote(
+      dir,
+      a.id,
+      { type: 'howto', cues: ['merge PR'], triggers: ['git merge'] },
+      { now: NOW }
+    );
+    updateNote(
+      dir,
+      b.id,
+      { cues: ['pull request'], triggers: ['gh pr'] },
+      { now: NOW }
+    );
     const runAgent = agentReturning({
       profile: ['Prefers short answers.'],
       ops: [
@@ -328,6 +459,9 @@ describe('consolidate', () => {
           op: 'UPDATE',
           id: a.id,
           text: 'The office proxy blocks GitHub GraphQL requests (gh pr create fails).',
+          tags: ['replacement'],
+          cues: ['triage PR'],
+          triggers: ['git status'],
         },
         { op: 'DELETE', id: b.id, why: `merged into ${a.id}` },
         { op: 'ADD', scope: 'user', type: 'fact', text: 'New fact.' },
@@ -362,6 +496,11 @@ describe('consolidate', () => {
     ]);
     const updated = loadNotes(dir).notes.find((note) => note.id === a.id);
     expect(updated?.source.via).not.toBe('consolidate');
+    expect(updated).toMatchObject({
+      tags: ['proxy', 'graphql'],
+      cues: ['merge PR', 'pull request'],
+      triggers: ['git merge', 'gh pr'],
+    });
   });
 
   test('should hold back a pinned delete and keep the old profile when none comes', () => {

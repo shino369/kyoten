@@ -3,11 +3,14 @@ import { vi } from 'vitest';
 import {
   MAX_PUSH_PLAINTEXT_BYTES,
   WebPushError,
+  assertPublicDns,
   buildAlertPayload,
   createVapidAuthHeader,
   decryptWebPush,
   encryptWebPush,
   generateVapidKeys,
+  isKnownPushHost,
+  isPrivateHost,
   sendWebPush,
   validatePushEndpoint,
 } from '../webpush.js';
@@ -50,7 +53,6 @@ describe('webpush (RFC 8291 + RFC 8292)', () => {
     expect(claims.aud).toBe('https://fcm.googleapis.com');
     expect(claims.sub).toBe('mailto:test@example.com');
 
-    // Verify ES256 signature using public key
     const spkiHeader = Buffer.from(
       '3059301306072a8648ce3d020106082a8648ce3d030107034200',
       'hex'
@@ -92,7 +94,6 @@ describe('webpush (RFC 8291 + RFC 8292)', () => {
     });
     expect(plain.toString('utf-8')).toBe(message);
 
-    // Wrong private key fails decryption
     expect(() =>
       decryptWebPush({
         body,
@@ -102,7 +103,6 @@ describe('webpush (RFC 8291 + RFC 8292)', () => {
       })
     ).toThrow(WebPushError);
 
-    // Tampered ciphertext fails GCM tag verification
     const tampered = Buffer.from(body);
     tampered[tampered.length - 1] ^= 0xff;
     expect(() =>
@@ -129,34 +129,105 @@ describe('webpush (RFC 8291 + RFC 8292)', () => {
     ).toThrow(/exceeds/);
   });
 
-  test('validatePushEndpoint blocks non-https, credentials, and private/SSRF targets', () => {
-    expect(
-      validatePushEndpoint(
-        'https://updates.push.services.mozilla.com/wpush/v2/abc'
-      ).hostname
-    ).toBe('updates.push.services.mozilla.com');
+  test('validatePushEndpoint enforces allow-list and blocks SSRF bypasses (trailing dots, NAT64, IPv4-compat, site-local, reserved)', () => {
+    for (const good of [
+      'https://updates.push.services.mozilla.com/wpush/v2/abc',
+      'https://fcm.googleapis.com/fcm/send/abc',
+      'https://web.push.apple.com/QAbc123',
+      'https://wns2-par02p.notify.windows.com/w/?token=abc',
+    ]) {
+      expect(isKnownPushHost(new URL(good).hostname)).toBe(true);
+      expect(validatePushEndpoint(good)).toBeInstanceOf(URL);
+    }
+
     expect(
       validatePushEndpoint('http://127.0.0.1:8080/push', {
         allowLocalhost: true,
       }).hostname
     ).toBe('127.0.0.1');
 
+    // Unknown custom hosts are blocked by default unless explicitly opted in
+    expect(() => validatePushEndpoint('https://push.example.com/sub')).toThrow(
+      /untrusted push endpoint host/
+    );
+    expect(
+      validatePushEndpoint('https://push.example.com/sub', {
+        allowCustomHost: true,
+      }).hostname
+    ).toBe('push.example.com');
+
+    // All SSRF bypasses must fail even when allowCustomHost is true
     for (const bad of [
       'not-a-url',
-      'https://user:pass@example.com/push',
-      'http://example.com/push',
+      'https://user:pass@fcm.googleapis.com/push',
+      'http://fcm.googleapis.com/push',
       'https://localhost/push',
+      'https://localhost./push',
       'https://127.0.0.1/push',
       'https://10.0.0.1/push',
       'https://172.16.5.4/push',
       'https://192.168.1.1/push',
+      'https://192.0.0.1/push',
+      'https://198.18.0.1/push',
+      'https://255.255.255.255/push',
       'https://169.254.169.254/latest/meta-data',
       'https://[::1]/push',
+      'https://[::127.0.0.1]/push',
+      'https://[::ffff:127.0.0.1]/push',
       'https://[fe80::1]/push',
-      'https://printer.local/push',
+      'https://[fec0::1]/push',
+      'https://[fc00::1]/push',
+      'https://[64:ff9b::a9fe:a9fe]/push',
+      'https://[64:ff9b:1::1]/push',
+      'https://[2002:7f00:0001::1]/push',
+      'https://metadata.google.internal./push',
+      'https://foo.local./push',
+      'https://1.0.0.127.in-addr.arpa/push',
     ]) {
-      expect(() => validatePushEndpoint(bad)).toThrow(WebPushError);
+      expect(() =>
+        validatePushEndpoint(bad, { allowCustomHost: true })
+      ).toThrow(WebPushError);
     }
+
+    expect(isPrivateHost('8.8.8.8')).toBe(false);
+    expect(isPrivateHost('2606:4700:4700::1111')).toBe(false);
+    expect(isPrivateHost('100::1')).toBe(true);
+    expect(isPrivateHost('2001:db8::1')).toBe(true);
+    expect(isPrivateHost('ff02::1')).toBe(true);
+  });
+
+  test('assertPublicDns rejects domains resolving to private/loopback IPs (e.g. nip.io)', async () => {
+    await expect(
+      assertPublicDns('127.0.0.1.nip.io', {
+        lookupFn: async () => [{ address: '127.0.0.1' }],
+      })
+    ).rejects.toThrow(/private IP/);
+
+    await expect(
+      assertPublicDns('meta.example.com', {
+        lookupFn: async () => [{ address: '64:ff9b::a9fe:a9fe' }],
+      })
+    ).rejects.toThrow(/private IP/);
+
+    await expect(
+      assertPublicDns('empty.example.com', {
+        lookupFn: async () => [],
+      })
+    ).rejects.toThrow(/no addresses/);
+
+    await expect(
+      assertPublicDns('broken.example.com', {
+        lookupFn: async () => {
+          throw new Error('ENOTFOUND');
+        },
+      })
+    ).rejects.toThrow(/Failed to resolve/);
+
+    await expect(
+      assertPublicDns('custom.example.com', {
+        lookupFn: async () => [{ address: '93.184.216.34' }],
+      })
+    ).resolves.toBeUndefined();
   });
 
   test('buildAlertPayload redacts secrets before push delivery', () => {
@@ -173,7 +244,7 @@ describe('webpush (RFC 8291 + RFC 8292)', () => {
     expect(alert.tag).toBe('kyoten-agy-stop');
   });
 
-  test('sendWebPush sends aes128gcm encrypted payload and detects 410 Gone', async () => {
+  test('sendWebPush sends aes128gcm encrypted payload, checks custom-host DNS, and detects 410 Gone', async () => {
     const vapid = generateVapidKeys();
     const sub = makeSubscriber();
     const subscription = {
@@ -220,5 +291,20 @@ describe('webpush (RFC 8291 + RFC 8292)', () => {
       fetchFn: /** @type {any} */ (fetchGone),
     });
     expect(goneRes).toEqual({ ok: false, status: 410, gone: true });
+
+    // Custom host resolving to loopback is rejected before fetch
+    await expect(
+      sendWebPush({
+        subscription: {
+          ...subscription,
+          endpoint: 'https://127.0.0.1.nip.io/push',
+        },
+        payload: 'ping',
+        vapid: { ...vapid, subject: 'mailto:test@example.com' },
+        allowCustomHost: true,
+        lookupFn: async () => [{ address: '127.0.0.1' }],
+        fetchFn: /** @type {any} */ (fetchOk),
+      })
+    ).rejects.toThrow(/private IP/);
   });
 });

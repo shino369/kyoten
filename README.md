@@ -197,6 +197,7 @@ pnpm memory add "The user prefers design first, then review." --scope user --typ
 pnpm memory recall "how do I merge this PR"   # preview what the hooks would inject
 pnpm memory personalize --presets   # set how agents talk to you (chat only, never code/commits)
 pnpm memory personalize --language "Japanese"   # keep your reply language even when writing in English
+pnpm memory personalize --guard ja              # send a reply that slipped out of Japanese back once (ja|zh|off)
 pnpm memory personalize --persona-file persona.md   # load a longer markdown persona
 # or edit memory/persona.md directly: pnpm memory init (and workspace:setup) apply your edits
 pnpm memory personalize --off       # pause saved response personalization

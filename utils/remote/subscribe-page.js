@@ -4,8 +4,12 @@
  * Solves phone Web Push subscription creation without shipping standalone browser
  * `.js` files in the repository or storing secrets in URL query parameters:
  * - VAPID public key travels strictly in the `#vapid=<base64url>` fragment.
- * - Persists the key in `localStorage` so iOS Safari "Add to Home Screen" keeps
- *   it even when iOS strips URL fragments on launch (plus manual input fallback).
+ * - Provides an explicit Copy VAPID Key button for iOS Safari "Add to Home Screen"
+ *   (WebKit isolates Safari localStorage from the installed Home Screen app).
+ * - Detects VAPID key rotation (`existing.options.applicationServerKey`) and
+ *   unsubscribes stale subscriptions before re-subscribing.
+ * - Outputs a clean JSON subscription payload for `pnpm remote push add --stdin`
+ *   so auth secrets stay out of CLI arguments and shell expansion is impossible.
  * - Loopback-only `startSubscribeServer()` pairs cleanly with `tailscale serve`.
  */
 import fs from 'node:fs';
@@ -88,7 +92,10 @@ self.addEventListener('notificationclick', (event) => {
       body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; background: #0f172a; color: #e2e8f0; }
       label { display: block; margin: 1rem 0 0.25rem; font-size: 0.9rem; color: #94a3b8; }
       input, textarea { width: 100%; box-sizing: border-box; padding: 0.6rem; border-radius: 6px; border: 1px solid #334155; background: #1e293b; color: #f8fafc; font-family: monospace; }
-      button { margin-top: 1rem; padding: 0.7rem 1.2rem; border-radius: 6px; border: 0; background: #38bdf8; color: #0f172a; font-weight: 600; cursor: pointer; }
+      .row { display: flex; gap: 0.5rem; align-items: center; }
+      .row input { flex: 1; }
+      button { margin-top: 0.75rem; padding: 0.65rem 1.1rem; border-radius: 6px; border: 0; background: #38bdf8; color: #0f172a; font-weight: 600; cursor: pointer; }
+      .secondary { background: #334155; color: #f8fafc; margin-top: 0; white-space: nowrap; }
       .note { margin-top: 1rem; font-size: 0.85rem; color: #cbd5e1; line-height: 1.5; }
       pre { background: #020617; padding: 0.8rem; border-radius: 6px; overflow-x: auto; font-size: 0.85rem; }
     </style>
@@ -96,39 +103,56 @@ self.addEventListener('notificationclick', (event) => {
   <body>
     <h1>kyoten Web Push Subscribe</h1>
     <p class="note">
-      On iOS Safari: tap <strong>Share &rarr; Add to Home Screen</strong>, open the installed app, then tap Subscribe.
-      The VAPID public key is read from <code>#vapid=...</code> (never sent in query strings) and saved locally.
+      <strong>iOS Safari:</strong> Home Screen web apps use separate storage from Safari, so tap
+      <strong>Copy Key</strong> first, tap <strong>Share &rarr; Add to Home Screen</strong>, open the
+      installed app, paste the VAPID key below, then tap Subscribe.
+      On Android / desktop, <code>#vapid=...</code> fills the key automatically.
     </p>
     <label for="vapid">VAPID Public Key (base64url)</label>
-    <input id="vapid" type="text" placeholder="Paste VAPID public key" autocomplete="off" />
+    <div class="row">
+      <input id="vapid" type="text" placeholder="Paste VAPID public key" autocomplete="off" />
+      <button id="copyVapidBtn" class="secondary" type="button">Copy Key</button>
+    </div>
     <label for="label">Device Label</label>
     <input id="label" type="text" value="phone" />
-    <button id="subBtn" type="button">Subscribe &amp; Generate Command</button>
+    <button id="subBtn" type="button">Subscribe &amp; Generate Payload</button>
     <p id="status" class="note"></p>
-    <pre id="cmd" hidden></pre>
-    <button id="copyBtn" type="button" hidden>Copy Command</button>
+    <p id="importHint" class="note" hidden>
+      Copy the JSON below and import it on your kyoten host via stdin (keeps auth out of shell history):
+      <code>pnpm remote push add --stdin</code>
+    </p>
+    <pre id="payload" hidden></pre>
+    <button id="copyBtn" type="button" hidden>Copy Subscription JSON</button>
     <script>
       const STORAGE_KEY = 'kyoten.vapidPublicKey';
       const vapidInput = document.getElementById('vapid');
       const labelInput = document.getElementById('label');
       const statusEl = document.getElementById('status');
-      const cmdEl = document.getElementById('cmd');
+      const importHintEl = document.getElementById('importHint');
+      const payloadEl = document.getElementById('payload');
       const copyBtn = document.getElementById('copyBtn');
+      const copyVapidBtn = document.getElementById('copyVapidBtn');
+
+      function normalizeBase64Url(str) {
+        return String(str || '').trim().replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+      }
 
       function readFragmentVapid() {
         const hash = location.hash.startsWith('#') ? location.hash.slice(1) : '';
         const params = new URLSearchParams(hash);
         const fromHash = params.get('vapid');
         if (fromHash) {
-          try { localStorage.setItem(STORAGE_KEY, fromHash); } catch {}
-          return fromHash;
+          const clean = normalizeBase64Url(fromHash);
+          try { localStorage.setItem(STORAGE_KEY, clean); } catch {}
+          return clean;
         }
         try { return localStorage.getItem(STORAGE_KEY) || ''; } catch { return ''; }
       }
 
       function urlBase64ToUint8Array(base64url) {
-        const pad = '='.repeat((4 - (base64url.length % 4)) % 4);
-        const b64 = (base64url + pad).replace(/-/g, '+').replace(/_/g, '/');
+        const clean = normalizeBase64Url(base64url);
+        const pad = '='.repeat((4 - (clean.length % 4)) % 4);
+        const b64 = (clean + pad).replace(/-/g, '+').replace(/_/g, '/');
         const raw = atob(b64);
         const out = new Uint8Array(raw.length);
         for (let i = 0; i < raw.length; i += 1) out[i] = raw.charCodeAt(i);
@@ -142,11 +166,37 @@ self.addEventListener('notificationclick', (event) => {
         return btoa(bin).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
       }
 
+      function sanitizeLabel(value) {
+        return String(value || '').replace(/[^\\w .-]/g, '').trim() || 'phone';
+      }
+
+      function existingKeyMatches(existing, expectedKey) {
+        const appKey = existing && existing.options && existing.options.applicationServerKey;
+        if (!appKey) return false;
+        try {
+          return bufToBase64Url(appKey) === normalizeBase64Url(expectedKey);
+        } catch {
+          return false;
+        }
+      }
+
       vapidInput.value = readFragmentVapid();
+
+      copyVapidBtn.addEventListener('click', async () => {
+        const key = vapidInput.value.trim();
+        if (!key) {
+          statusEl.textContent = 'Error: VAPID public key is empty.';
+          return;
+        }
+        if (navigator.clipboard) {
+          await navigator.clipboard.writeText(key);
+          statusEl.textContent = 'Copied VAPID public key. Paste it into the Home Screen app if installing on iOS.';
+        }
+      });
 
       document.getElementById('subBtn').addEventListener('click', async () => {
         try {
-          const vapidKey = vapidInput.value.trim();
+          const vapidKey = normalizeBase64Url(vapidInput.value);
           if (!vapidKey) throw new Error('VAPID public key is required.');
           try { localStorage.setItem(STORAGE_KEY, vapidKey); } catch {}
           if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
@@ -156,32 +206,41 @@ self.addEventListener('notificationclick', (event) => {
           if (perm !== 'granted') throw new Error('Notification permission denied.');
           const reg = await navigator.serviceWorker.register('./sw.js', { scope: './' });
           await navigator.serviceWorker.ready;
-          const existing = await reg.pushManager.getSubscription();
+          let existing = await reg.pushManager.getSubscription();
+          let rotated = false;
+          if (existing && !existingKeyMatches(existing, vapidKey)) {
+            await existing.unsubscribe();
+            existing = null;
+            rotated = true;
+          }
           const sub = existing || await reg.pushManager.subscribe({
             userVisibleOnly: true,
             applicationServerKey: urlBase64ToUint8Array(vapidKey),
           });
           const p256dh = bufToBase64Url(sub.getKey('p256dh'));
           const auth = bufToBase64Url(sub.getKey('auth'));
-          const label = (labelInput.value.trim() || 'phone').replace(/"/g, '');
-          const cmd =
-            'pnpm remote push add --endpoint "' + sub.endpoint +
-            '" --p256dh "' + p256dh +
-            '" --auth "' + auth +
-            '" --label "' + label + '"';
-          cmdEl.textContent = cmd;
-          cmdEl.hidden = false;
+          const label = sanitizeLabel(labelInput.value);
+          const json = JSON.stringify(
+            { endpoint: sub.endpoint, label, keys: { p256dh, auth } },
+            null,
+            2
+          );
+          payloadEl.textContent = json;
+          payloadEl.hidden = false;
+          importHintEl.hidden = false;
           copyBtn.hidden = false;
-          statusEl.textContent = 'Subscription created. Run this command on your kyoten host:';
+          statusEl.textContent = rotated
+            ? 'Rotated subscription to the new VAPID key. Pipe this JSON into pnpm remote push add --stdin.'
+            : 'Subscription created. Pipe this JSON into pnpm remote push add --stdin.';
         } catch (err) {
           statusEl.textContent = 'Error: ' + (err && err.message ? err.message : String(err));
         }
       });
 
       copyBtn.addEventListener('click', async () => {
-        if (navigator.clipboard && cmdEl.textContent) {
-          await navigator.clipboard.writeText(cmdEl.textContent);
-          statusEl.textContent = 'Copied command to clipboard.';
+        if (navigator.clipboard && payloadEl.textContent) {
+          await navigator.clipboard.writeText(payloadEl.textContent);
+          statusEl.textContent = 'Copied subscription JSON to clipboard.';
         }
       });
     </script>
@@ -206,6 +265,19 @@ export function buildSubscribeUrl({ baseUrl, vapidPublicKey }) {
   if (typeof vapidPublicKey !== 'string' || !vapidPublicKey.trim()) {
     throw new Error('VAPID public key is required to build a subscribe URL.');
   }
+  const url = validateSubscribeBaseUrl(baseUrl);
+  url.search = '';
+  url.hash = `vapid=${encodeURIComponent(vapidPublicKey.trim())}`;
+  return url.toString();
+}
+
+/**
+ * Validate a subscribe page base URL before writing any bundle files.
+ *
+ * @param {string} baseUrl
+ * @returns {URL}
+ */
+export function validateSubscribeBaseUrl(baseUrl) {
   let url;
   try {
     url = new URL(baseUrl);
@@ -219,9 +291,7 @@ export function buildSubscribeUrl({ baseUrl, vapidPublicKey }) {
       `Subscribe page base URL must use https:// (got ${url.protocol}).`
     );
   }
-  url.search = '';
-  url.hash = `vapid=${encodeURIComponent(vapidPublicKey.trim())}`;
-  return url.toString();
+  return url;
 }
 
 /**

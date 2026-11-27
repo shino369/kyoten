@@ -6,6 +6,7 @@ import {
   exportSubscribeBundle,
   renderSubscribeBundle,
   startSubscribeServer,
+  validateSubscribeBaseUrl,
 } from '../subscribe-page.js';
 
 /** @type {string} */
@@ -22,7 +23,7 @@ afterEach(() => {
 });
 
 describe('remote subscribe-page PWA', () => {
-  test('renderSubscribeBundle includes fragment VAPID handling, localStorage fallback, and standalone manifest', () => {
+  test('renderSubscribeBundle includes iOS key handoff, VAPID rotation check, and stdin JSON payload', () => {
     const bundle = renderSubscribeBundle();
     expect(Object.keys(bundle).sort()).toEqual([
       'index.html',
@@ -30,16 +31,23 @@ describe('remote subscribe-page PWA', () => {
       'sw.js',
     ]);
     expect(bundle['index.html']).toContain('#vapid=');
-    expect(bundle['index.html']).toContain('localStorage');
-    expect(bundle['index.html']).toContain('userVisibleOnly: true');
-    expect(bundle['index.html']).toContain('pnpm remote push add');
+    expect(bundle['index.html']).toContain('copyVapidBtn');
+    expect(bundle['index.html']).toContain('existingKeyMatches');
+    expect(bundle['index.html']).toContain('existing.unsubscribe()');
+    expect(bundle['index.html']).toContain('pnpm remote push add --stdin');
+    expect(bundle['index.html']).not.toContain('--auth "');
     expect(bundle['sw.js']).toContain('showNotification');
     expect(JSON.parse(bundle['manifest.webmanifest']).display).toBe(
       'standalone'
     );
   });
 
-  test('buildSubscribeUrl places VAPID public key strictly in fragment and rejects insecure URLs', () => {
+  test('validateSubscribeBaseUrl and buildSubscribeUrl validate scheme and keep VAPID key in fragment', () => {
+    expect(
+      validateSubscribeBaseUrl('https://shino369.github.io/kyoten-push/')
+        .protocol
+    ).toBe('https:');
+
     expect(
       buildSubscribeUrl({
         baseUrl: 'https://shino369.github.io/kyoten-push/?old=1#ignored',

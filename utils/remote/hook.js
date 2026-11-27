@@ -1,30 +1,29 @@
 #!/usr/bin/env node
 /**
- * Official cross-harness hook for OSC 7501 status updates (Herdr / Rex) and
- * opt-in host-direct E2EE Web Push notifications on agent Stop/idle.
+ * Official cross-harness hook for:
+ * - OSC 7501 status written to the controlling terminal (`pnpm remote osc7501 on` / `KYOTEN_OSC7501=1`)
+ * - Native Herdr pane reporting (`pnpm remote herdr on` / `KYOTEN_HERDR=1`)
+ * - Opt-in host-direct E2EE Web Push notifications on agent done/blocked
  *
- * Silent and zero-side-effect by default until configured via `pnpm remote`
- * (or `KYOTEN_OSC7501=1`). Never blocks or breaks an agent session.
+ * Silent and zero-side-effect by default until configured. Never blocks or
+ * breaks an agent session.
  */
 import { spawn as nodeSpawn } from 'node:child_process';
-import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { normalizeHookInput, parseHarness } from '../harness/input.js';
-import { SKIP_AGENTS } from '../memory/hook.js';
+import { QUIET_AGENTS } from '../memory/extract-env.js';
 import { EXTRACT_ENV } from '../memory/queue.js';
 import { mainCheckout } from '../memory/repo.js';
-import { readJsonOrNull } from '../memory/store.js';
 import { runIfMain } from '../module-runner.js';
-import { writeFileAtomic } from '../task/store.js';
 import { ROOT_DIR } from '../workspace-config.js';
 import {
-  LAST_PUSH_FILE,
+  claimPushThrottle,
   hasRemoteConfig,
   readRemoteConfig,
-  remoteDir,
 } from './config.js';
+import { reportHerdrStatus } from './herdr.js';
 import { NOTIFY_PAYLOAD_ENV } from './notify-worker.js';
 import { emitOsc7501, stateForHookEvent } from './osc7501.js';
 import { buildAlertPayload } from './webpush.js';
@@ -62,32 +61,15 @@ export function kickNotify({
 }
 
 /**
- * @param {string} rootDir
- * @param {number} quietMs
- * @param {Date} now
- * @returns {boolean}
- */
-function shouldThrottlePush(rootDir, quietMs, now) {
-  if (quietMs <= 0) return false;
-  const file = path.join(remoteDir(rootDir), LAST_PUSH_FILE);
-  const last = /** @type {{ at?: number } | null} */ (readJsonOrNull(file));
-  const nowMs = now.getTime();
-  if (typeof last?.at === 'number' && nowMs - last.at < quietMs) {
-    return true;
-  }
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  writeFileAtomic(file, JSON.stringify({ at: nowMs }));
-  return false;
-}
-
-/**
  * @param {Record<string, any>} input
  * @param {{
  *   harness?: import('../harness/input.js').Harness,
  *   rootDir?: string,
  *   now?: Date,
  *   env?: NodeJS.ProcessEnv,
- *   stream?: { isTTY?: boolean, write: (chunk: string) => unknown },
+ *   ttyPath?: string,
+ *   writer?: (chunk: string) => unknown,
+ *   spawnSyncFn?: typeof import('node:child_process').spawnSync,
  *   kick?: typeof kickNotify,
  *   hostname?: string,
  * }} [options]
@@ -99,7 +81,9 @@ export function handleHook(
     rootDir = ROOT_DIR,
     now = new Date(),
     env = process.env,
-    stream = process.stderr,
+    ttyPath,
+    writer,
+    spawnSyncFn,
     kick = kickNotify,
     hostname = os.hostname() || 'kyoten',
   } = {}
@@ -113,33 +97,54 @@ export function handleHook(
         : null
       : null;
 
-  if (env[EXTRACT_ENV] === '1' || SKIP_AGENTS.includes(normalized.agent_type)) {
+  if (
+    env[EXTRACT_ENV] === '1' ||
+    QUIET_AGENTS.includes(normalized.agent_type)
+  ) {
     return silentOutput;
   }
 
   const home = mainCheckout(rootDir);
   const oscEnv = env.KYOTEN_OSC7501 === '1';
+  const herdrEnv = env.KYOTEN_HERDR === '1';
   const configured = hasRemoteConfig(home);
-  if (!configured && !oscEnv) {
+  if (!configured && !oscEnv && !herdrEnv) {
     return silentOutput;
   }
 
   const config = configured ? readRemoteConfig(home) : null;
+  const state = stateForHookEvent(normalized, harness);
+
   const oscEnabled = oscEnv || Boolean(config?.osc7501);
   if (oscEnabled) {
-    const state = stateForHookEvent(normalized, harness);
-    emitOsc7501(state, { enabled: true, stream, app: 'kyoten' });
+    emitOsc7501(state, {
+      enabled: true,
+      env,
+      ttyPath,
+      writer,
+      app: 'kyoten',
+    });
   }
 
+  const herdrEnabled = herdrEnv || Boolean(config?.herdr);
+  if (herdrEnabled) {
+    reportHerdrStatus(normalized, harness, {
+      enabled: true,
+      env,
+      spawnSyncFn,
+    });
+  }
+
+  // Push only on user-actionable terminal transitions (`done` or `blocked`).
+  // `stateForHookEvent` already returns `'working'` when agy `fullyIdle === false`
+  // and `null` when `stop_hook_active` / `continuationActive` is true.
   if (
-    event === 'Stop' &&
+    (state === 'done' || state === 'blocked') &&
     config?.pushEnabled &&
     config.vapid &&
     config.subscriptions.length > 0 &&
-    !(harness === 'agy' && normalized.fullyIdle === false) &&
-    !shouldThrottlePush(home, config.quietMs, now)
+    !claimPushThrottle(home, config.quietMs, now)
   ) {
-    const state = stateForHookEvent(normalized, harness);
     const title =
       state === 'blocked'
         ? `kyoten (${harness}) needs input`
@@ -192,7 +197,7 @@ export function runHook(raw, options = {}) {
   }
 }
 
-/* c8 ignore start - stdin/stdout wiring; logic tested through runHook */
+/* c8 ignore start - stdin/stdout wiring; logic tested through runHook and child-process integration tests */
 function main() {
   const harness = parseHarness(process.argv.slice(2));
   const failOpen = () => {
