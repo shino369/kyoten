@@ -47,21 +47,64 @@ const LETTER = /[A-Za-zÀ-ɏ぀-ヿ㐀-䶿一-鿿ᄀ-ᇿ㄰-㆏가-힯]/gu;
 const SCRIPT_RE = { ja: KANA, ko: HANGUL, zh: HAN };
 
 /**
- * The script a Language setting asks for: a language name first, then the
- * script the setting itself is written in. Null for any other language.
+ * The first phrase of a Language setting ("日本語。…" → "日本語"): the part
+ * that names the language; the rest is free text that may mention others.
+ *
+ * @param {string} language
+ */
+export const languageName = (language) =>
+  language
+    .split(/[。．.,，、;；:：\n(（]/u)
+    .map((part) => part.trim())
+    .find(Boolean) ?? '';
+
+/**
+ * The script a Language setting asks for, from its first phrase: a language
+ * name first, then the script the phrase is written in. Null for any other
+ * language.
  *
  * @param {string | undefined} language
  * @returns {Script | null}
  */
 export function targetScript(language) {
-  if (!language) return null;
-  if (/日本語|japanese/iu.test(language)) return 'ja';
-  if (/한국어|korean/iu.test(language)) return 'ko';
-  if (/中文|漢語|汉语|chinese/iu.test(language)) return 'zh';
-  if (/[぀-ヿ]/u.test(language)) return 'ja';
-  if (/[ᄀ-ᇿ㄰-㆏가-힯]/u.test(language)) return 'ko';
-  if (/[㐀-䶿一-鿿]/u.test(language)) return 'zh';
+  const name = language ? languageName(language) : '';
+  if (!name) return null;
+  if (/日本語|japanese/iu.test(name)) return 'ja';
+  if (/한국어|korean/iu.test(name)) return 'ko';
+  if (/中文|漢語|汉语|chinese/iu.test(name)) return 'zh';
+  if (/[぀-ヿ]/u.test(name)) return 'ja';
+  if (/[ᄀ-ᇿ㄰-㆏가-힯]/u.test(name)) return 'ko';
+  if (/[㐀-䶿一-鿿]/u.test(name)) return 'zh';
   return null;
+}
+
+/**
+ * Drop fenced code blocks: a fence may be indented (inside a list item) and
+ * is closed by a fence of the same character at least as long; an unclosed
+ * fence runs to the end.
+ *
+ * @param {string} text
+ */
+function stripFences(text) {
+  /** @type {string[]} */
+  const kept = [];
+  /** @type {string | null} */
+  let open = null;
+  for (const line of text.split('\n')) {
+    const fence = /^\s*(`{3,}|~{3,})/u.exec(line)?.[1];
+    if (open === null) {
+      if (fence) open = fence;
+      else kept.push(line);
+    } else if (
+      fence &&
+      fence[0] === open[0] &&
+      fence.length >= open.length &&
+      /^\s*[`~]+\s*$/u.test(line)
+    ) {
+      open = null;
+    }
+  }
+  return kept.join('\n');
 }
 
 /**
@@ -71,8 +114,7 @@ export function targetScript(language) {
  * @param {string} text
  */
 function prose(text) {
-  return text
-    .replace(/^(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\1[ \t]*$/gmu, '')
+  return stripFences(text)
     .replace(/`[^`\n]*`/gu, '')
     .replace(/https?:\/\/\S+/gu, '')
     .replace(/[\w.~-]*\/[\w./~-]+/gu, '')
@@ -174,17 +216,14 @@ export function checkStop(input, options = {}) {
 
   const { letters, inScript } = measureReply(reply, script);
   const slipped = letters >= MIN_LETTERS && inScript / letters < MIN_SHARE;
-  // One retry per reply: the stop right after a block passes, whatever the
-  // harness reports in stop_hook_active (DSH always sends false).
-  const decide = (/** @type {boolean} */ wasBlocked) =>
-    slipped && event.stop_hook_active !== true && !wasBlocked;
+  // One retry per reply: the stop right after the guard's own block passes.
+  // stop_hook_active is not used: it is also true after another Stop hook
+  // (the task loop) continued the turn, and DSH always sends false.
+  const decide = (/** @type {boolean} */ wasBlocked) => slipped && !wasBlocked;
   const block = session ? recordStop(dir, session, decide, now) : decide(false);
   if (!block) return null;
 
-  const name =
-    String(language)
-      .split(/[。.\n]/u)[0]
-      .trim() || language;
+  const name = languageName(/** @type {string} */ (language));
   const reason = `[Persona] Your last reply was not in ${name}. Rewrite the whole reply in ${name} (the Language setting); keep code, commands, paths, and identifiers as they are.`;
   return harness === 'agy'
     ? { decision: 'continue', reason }

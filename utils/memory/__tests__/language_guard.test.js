@@ -62,12 +62,16 @@ describe('targetScript', () => {
     expect(targetScript(language)).toBe(script);
   });
 
-  test.each([['English'], ['français'], [''], [undefined]])(
-    'should return null for %s',
-    (language) => {
-      expect(targetScript(language)).toBeNull();
-    }
-  );
+  test.each([
+    ['English'],
+    ['français'],
+    ['English, even when the user writes in Japanese'],
+    ['English (the user is learning 日本語)'],
+    [''],
+    [undefined],
+  ])('should return null for %s', (language) => {
+    expect(targetScript(language)).toBeNull();
+  });
 });
 
 describe('measureReply', () => {
@@ -76,6 +80,14 @@ describe('measureReply', () => {
 
     expect(letters).toBe(6);
     expect(inScript).toBe(3);
+  });
+
+  test('should end a fence at a longer closing fence', () => {
+    const text = `日本語の説明ですわ\n\`\`\`\njust some english code words here\n\`\`\`\`\n`;
+
+    expect(measureReply(text, 'ja').letters).toBe(
+      measureReply('日本語の説明ですわ', 'ja').letters
+    );
   });
 
   test('should ignore fenced blocks of any fence length', () => {
@@ -140,10 +152,35 @@ describe('checkStop', () => {
     ).toBe('block');
   });
 
-  test('should pass when stop_hook_active is true', () => {
+  test('should check a stop that another Stop hook continued (stop_hook_active)', () => {
+    expect(
+      stop({ last_assistant_message: EN, stop_hook_active: true })?.decision
+    ).toBe('block');
+  });
+
+  test('should pass the rewrite after its own block even with stop_hook_active', () => {
+    stop({ last_assistant_message: EN });
+
     expect(
       stop({ last_assistant_message: EN, stop_hook_active: true })
     ).toBeNull();
+  });
+
+  test('should pass a Japanese step list with an indented code block', () => {
+    const reply = [
+      '手順をまとめましたわ。',
+      '',
+      '1. まずブランチを作りますの。',
+      '   ```bash',
+      '   git switch -c feat/some-long-feature-branch-name origin/main',
+      '   pnpm install --frozen-lockfile && pnpm check && pnpm test:coverage',
+      '   echo running the whole quality gate before opening the pull request',
+      '   echo then waiting for continuous integration to report its results',
+      '   ```',
+      '2. それから確認してくださいな。',
+    ].join('\n');
+
+    expect(stop({ last_assistant_message: reply })).toBeNull();
   });
 
   test('should pass a reply under the letter minimum', () => {
@@ -250,10 +287,12 @@ describe('checkStop output', () => {
     ).toBe('continue');
   });
 
-  test('should name the whole Language when its first sentence is empty', () => {
-    writePersonalization(dir, { language: '。日本語' });
+  test('should name the language from the first non-empty phrase', () => {
+    writePersonalization(dir, { language: '。日本語。進捗メモも日本語で' });
 
-    expect(stop({ last_assistant_message: EN })?.reason).toContain('。日本語');
+    expect(stop({ last_assistant_message: EN })?.reason).toContain(
+      'not in 日本語.'
+    );
   });
 
   test('should treat a non-object state file as empty', () => {
