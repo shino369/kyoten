@@ -5,14 +5,15 @@
  * Run as `node utils/memory/language_guard.js --harness <claude|codex>` (see
  * utils/harness/hooks.js). It reads the reply from the Stop input
  * (`last_assistant_message`; in Claude Code, the transcript's last assistant
- * message when that is missing), and when the Language names a CJK language and
+ * message when that is missing), and when the Language is Japanese or Chinese and
  * the reply is mostly in another script, it blocks once so the agent rewrites
  * it. A slip tends to be copied by the following turns (an English reply is
  * followed by another English reply most of the time), so catching the first
  * one is what keeps the session in the Language.
  *
  * It adds nothing to a reply already in the Language, and passes (fail open)
- * without a reply text, without a CJK Language, while personalization is off,
+ * without a reply text, for any other Language (English or a language the
+ * workspace does not support), while personalization is off,
  * in headless runs (EXTRACT_ENV), for the reviewer and verifier roles, on the
  * rewrite that follows its own block, when its state directory is a link,
  * and on any error.
@@ -45,34 +46,34 @@ const STATE_TTL_MS = 24 * 60 * 60 * 1000;
 /** A mark file: a SESSION_ID_RE-shaped name plus `.json`. */
 const MARK_RE = /^[A-Za-z0-9_-]{1,128}\.json$/u;
 
-/** @typedef {'ja' | 'ko' | 'zh'} Script */
+/**
+ * The scripts the guard checks: the workspace's languages besides English
+ * (Japanese and Chinese, as in the README). Any other Language passes.
+ *
+ * @typedef {'ja' | 'zh'} Script
+ */
 /** @typedef {{ decision: 'block', reason: string }} GuardOutput */
 
-const HANGUL = /[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF]/u;
+const KANA = /[\u3040-\u30FF\u31F0-\u31FF\uFF66-\uFF9F]/u;
 const HAN = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/u;
+const LATIN = /[A-Za-z\u00C0-\u024F]/u;
 /** Letters of any script, so a reply in Cyrillic or Greek counts too. */
 const LETTER = /\p{L}/gu;
 // Japanese prose is kana plus kanji; a Chinese reply would also pass for a
 // Japanese Language, which is accepted (the guard is for slips into English).
-/** @type {Record<Script, RegExp>} */
-const SCRIPT_RE = {
-  // Hiragana, Katakana (with phonetic extensions and half-width forms), and Han.
-  ja: /[\u3040-\u30FF\u31F0-\u31FF\uFF66-\uFF9F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/u,
-  ko: HANGUL,
-  zh: HAN,
+/** @type {Record<Script, (letter: string) => boolean>} */
+const IN_SCRIPT = {
+  ja: (letter) => KANA.test(letter) || HAN.test(letter),
+  zh: (letter) => HAN.test(letter),
 };
-/** Names of languages the guard does not check, in their own and English spelling. */
-const OTHER_LANGUAGE =
-  /english|français|french|deutsch|german|español|spanish|italiano|italian|português|portuguese|русский|russian|nederlands|dutch|tiếng việt|vietnamese|bahasa|indonesian|ไทย|thai|العربية|arabic|हिन्दी|hindi/iu;
-/** @type {[Script | null, RegExp][]} */
-const LANGUAGE_NAMES = [
-  ['ja', /日本語|japanese/iu],
-  ['ko', /한국어|korean/iu],
-  ['zh', /中文|漢語|汉语|chinese/iu],
-  [null, OTHER_LANGUAGE],
-];
+/**
+ * A Language that starts by naming one of the workspace's languages, after
+ * an optional lead-in ("Reply in", "Always answer in Traditional").
+ */
+const NAMED =
+  /^(?:please\s+)?(?:always\s+)?(?:(?:reply|respond|answer|write|speak|talk|use)\s+(?:only\s+)?(?:in\s+)?)?(?:traditional\s+|simplified\s+)?(?:(?<ja>japanese|日本語)|(?<zh>chinese|中文|漢語|汉语|華語|华语)|(?<en>english|英語|英文|英语))/iu;
 /** Fixed names for the reason: the user's free-text setting is never echoed into it. */
-const SCRIPT_LABEL = { ja: '日本語', ko: '한국어', zh: '中文' };
+const SCRIPT_LABEL = { ja: '日本語', zh: '中文' };
 
 /**
  * The first phrase of a Language setting ("日本語。…" → "日本語"): the part
@@ -87,9 +88,12 @@ export const languageName = (language) =>
     .find(Boolean) ?? '';
 
 /**
- * The script a Language setting asks for, from its first phrase: a language
- * name first, then the script the phrase is written in. Null for any other
- * language.
+ * The script a Language setting asks for, from its first phrase. A phrase
+ * that starts by naming Japanese, Chinese, or English decides by that name
+ * ("English even when the user writes in Japanese" is English). Otherwise a
+ * phrase written in Latin letters is some other language, and a phrase in
+ * kana or Han asks for Japanese or Chinese. Null for English and for any
+ * language the guard does not support (it passes those).
  *
  * @param {string | undefined} language
  * @returns {Script | null}
@@ -97,20 +101,17 @@ export const languageName = (language) =>
 export function targetScript(language) {
   const name = language ? languageName(language) : '';
   if (!name) return null;
-  // The language named first is the one asked for ("English even when the
-  // user writes in Japanese"); later ones are what the rest of the phrase
-  // mentions.
-  /** @type {{ at: number, script: Script | null } | null} */
-  let first = null;
-  for (const [script, re] of LANGUAGE_NAMES) {
-    const at = name.search(re);
-    if (at >= 0 && (first === null || at < first.at)) first = { at, script };
-  }
-  if (first) return first.script;
-  if (/[぀-ヿ]/u.test(name)) return 'ja';
-  if (/[ᄀ-ᇿ㄰-㆏가-힯]/u.test(name)) return 'ko';
-  if (/[㐀-䶿一-鿿]/u.test(name)) return 'zh';
-  return null;
+  const named = NAMED.exec(name)?.groups;
+  if (named?.ja) return 'ja';
+  if (named?.zh) return 'zh';
+  if (named?.en) return null;
+  const letters = name.match(LETTER) ?? [];
+  const latin = letters.filter((letter) => LATIN.test(letter)).length;
+  const kana = letters.filter((letter) => KANA.test(letter)).length;
+  const han = letters.filter((letter) => HAN.test(letter)).length;
+  if (latin >= kana + han) return null;
+  if (kana > 0) return 'ja';
+  return han > 0 ? 'zh' : null;
 }
 
 const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s/u;
@@ -197,7 +198,7 @@ export function measureReply(text, script) {
   const letters = body.match(LETTER) ?? [];
   return {
     letters: letters.length,
-    inScript: letters.filter((letter) => SCRIPT_RE[script].test(letter)).length,
+    inScript: letters.filter(IN_SCRIPT[script]).length,
   };
 }
 
