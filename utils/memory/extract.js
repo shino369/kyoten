@@ -603,14 +603,14 @@ function deferredMessage(run, name) {
       Array.isArray(run.foreign) && run.foreign.length > 0
         ? ` (notes include ${run.foreign.join(', ')})`
         : '';
-    return `Deferred the consolidation: auto-consolidation is off for ${run.side ?? 'this agent'}${extra}.`;
+    return `Deferred the consolidation: auto-consolidation is off for ${run.policyAgent}${extra}.`;
   }
   if (
     run.job === 'consolidation' &&
     Array.isArray(run.foreign) &&
     run.foreign.length > 0
   ) {
-    return `Deferred the consolidation: notes from ${run.foreign.join(', ')} would go to this session's provider (${run.side ?? 'this side'}).`;
+    return `Deferred the consolidation: notes from ${run.foreign.join(', ')} would go to the selected provider (${run.side ?? 'this side'}).`;
   }
   if (run.side === 'agy') {
     return run.caller
@@ -654,9 +654,10 @@ export function deferredRun(agent, kyotenAgent, env, base) {
  * What a run did, for `pnpm memory extract`.
  *
  * @param {Run} run
+ * @param {{ agent?: string, force?: boolean, dryRun?: boolean }} [retryOptions]
  * @returns {string[]}
  */
-export function formatRun(run) {
+export function formatRun(run, { agent, force, dryRun } = {}) {
   const { session } = run;
   const name = run.job === 'consolidation' ? 'the consolidation' : session;
   if (run.status === 'applied' || run.status === 'consolidated') {
@@ -686,11 +687,10 @@ export function formatRun(run) {
         (/** @type {string} */ problem) => `Skipped ${problem}`
       ),
     ];
-    const crossSideFlag = run.crossSideVia ?? '--allow-cross-side';
     const crossSide =
       Array.isArray(run.crossSide) && run.crossSide.length > 0
         ? [
-            `Sent notes from ${run.crossSide.join(', ')} to this session's provider (${run.side}) because ${crossSideFlag} was given.`,
+            `Sent notes from ${run.crossSide.join(', ')} to the selected provider (${run.side}) because --allow-cross-side was given.`,
           ]
         : [];
     const title =
@@ -702,11 +702,10 @@ export function formatRun(run) {
       : [`${title}:`, ...[...details, ...crossSide].map((line) => `  ${line}`)];
   }
   if (run.status === 'dry-run') {
-    const crossSideFlag = run.crossSideVia ?? '--allow-cross-side';
     const crossSide =
       Array.isArray(run.crossSide) && run.crossSide.length > 0
         ? [
-            `${crossSideFlag}: notes from ${run.crossSide.join(', ')} would go to this session's provider (${run.side}).`,
+            `--allow-cross-side: notes from ${run.crossSide.join(', ')} would go to the selected provider (${run.side}).`,
           ]
         : [];
     return [
@@ -733,13 +732,28 @@ export function formatRun(run) {
     nothing: 'Nothing to consolidate yet.',
   };
   if (run.status === 'deferred') {
+    if (run.policy === 'ambiguous-harness') {
+      return [
+        'Deferred the consolidation: multiple agent harnesses are present.',
+        'Fix: specify --agent claude, --agent codex, or --agent dsh for this run.',
+      ];
+    }
+    const retry = [
+      'pnpm memory consolidate',
+      agent && `--agent ${agent}`,
+      force && '--force',
+      dryRun && '--dry-run',
+      '--allow-cross-side',
+    ]
+      .filter(Boolean)
+      .join(' ');
     const fix =
       run.job === 'consolidation' && run.policy === 'disabled'
         ? [
-            `Fix: pnpm memory set --auto-consolidate ${run.side}=on (or one-shot: pnpm memory consolidate --allow-cross-side)`,
+            `Fix: pnpm memory set --auto-consolidate ${run.policyAgent}=on (or one-shot: ${retry})`,
           ]
         : Array.isArray(run.foreign) && run.foreign.length > 0
-          ? ['Fix: pnpm memory consolidate --allow-cross-side']
+          ? [`Fix: ${retry}`]
           : [];
     return [deferredMessage(run, name), ...fix];
   }
@@ -810,7 +824,7 @@ export function extractEntry(entry, deps) {
   // the entry stays queued, untouched, for a worker of the matching side.
   const config = readConfig(dir);
   const agent = config.extractAgent ?? harness;
-  const side = agentSide(agent, deps.env) ?? memorySide(entry.kyotenAgent);
+  const side = agentSide(agent, deps.env) ?? 'normal';
   const off = savingOff(config, session);
   if (!off) {
     const deferred = deferredRun(agent, entry.kyotenAgent, deps.env, base);
@@ -976,8 +990,7 @@ export function runWorker(deps) {
           harness: entry.harness,
           transcript: entry.transcript,
           status: 'failed',
-          side:
-            agentSide(failedAgent, deps.env) ?? memorySide(entry.kyotenAgent),
+          side: agentSide(failedAgent, deps.env) ?? 'normal',
           error: message,
           attempts,
           gaveUp,
@@ -1026,25 +1039,21 @@ export function announcement(dir) {
   const gaveUp = runs.filter(
     (run) => run.status === 'failed' && run.gaveUp
   ).length;
-  const consolidationFailed = runs.filter(
+  const consolidationFailed = runs.some(
     (run) => run.job === 'consolidation' && run.status === 'failed'
   );
   if (
     lines.length === 0 &&
     held === 0 &&
     gaveUp === 0 &&
-    consolidationFailed.length === 0
+    !consolidationFailed
   ) {
     return null;
   }
-  const latestConsolidationError = shorten(
-    String(consolidationFailed.at(-1)?.error ?? 'unknown error')
-      .replace(/\s+/g, ' ')
-      .trim(),
-    120
-  );
   return [
-    '[Memory] Saved by automatic extraction or consolidation after earlier sessions (pnpm memory show <id>; pnpm memory undo reverts the last job):',
+    lines.length > 0
+      ? '[Memory] Saved by automatic extraction or consolidation after earlier sessions (pnpm memory show <id>; pnpm memory undo reverts the last job):'
+      : '[Memory] Updates from earlier sessions:',
     ...lines.map((line) => `- ${line}`),
     ...(held > 0
       ? [
@@ -1056,9 +1065,9 @@ export function announcement(dir) {
           `- Extraction gave up on ${count(gaveUp, 'session', 'sessions')} (errors: memory/extract/journal.jsonl)`,
         ]
       : []),
-    ...(consolidationFailed.length > 0
+    ...(consolidationFailed
       ? [
-          `- Consolidation failed (${latestConsolidationError}; retried after a day; details: memory/extract/journal.jsonl)`,
+          '- Consolidation failed. See memory/extract/journal.jsonl for details. Fix: run pnpm memory status to check which agent is configured.',
         ]
       : []),
   ].join('\n');

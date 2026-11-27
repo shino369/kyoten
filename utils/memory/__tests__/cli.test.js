@@ -801,13 +801,80 @@ describe('consolidate and undo', () => {
     expect(runAgent).toHaveBeenCalledTimes(1);
   });
 
-  test('should allow manual consolidate --agent agy from a plain terminal and block other harnesses', () => {
+  test('should keep the explicit agent in the suggested one-shot retry', () => {
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, agy: false },
+    });
     const runAgent = agent({ profile: [], ops: [] });
 
-    const manual = run(['consolidate', '--agent', 'agy'], {
+    const deferred = run(['consolidate', '--agent', 'agy'], {
       runAgent,
       env: {},
     });
+
+    expect(deferred.out).toContain(
+      'pnpm memory consolidate --agent agy --allow-cross-side'
+    );
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  test('should require an explicit agent for manual runs with conflicting harness IDs', () => {
+    const runAgent = agent({ profile: [], ops: [] });
+    const env = { CODEX_THREAD_ID: 'outer', CLAUDE_CODE_SESSION_ID: 'inner' };
+
+    const deferred = run(['consolidate'], { runAgent, env });
+
+    expect(deferred.code).toBe(1);
+    expect(deferred.out).toMatch(/multiple agent harnesses.*\nFix: .*--agent/);
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  test('should preserve preview and force flags in a cross-side retry', () => {
+    const runAgent = agent({ profile: [], ops: [] });
+
+    const deferred = run(
+      ['consolidate', '--agent', 'agy', '--force', '--dry-run'],
+      { runAgent, env: {} }
+    );
+
+    expect(deferred.out).toContain(
+      'Fix: pnpm memory consolidate --agent agy --force --dry-run --allow-cross-side'
+    );
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  test.each([['--allow-cross-side=false'], ['--allow-cross-side', 'false']])(
+    'should reject an explicit false value for cross-side consent (%j)',
+    (...args) => {
+      const runAgent = agent({ profile: [], ops: [] });
+
+      expect(() =>
+        run(['consolidate', '--agent', 'agy', ...args], { runAgent, env: {} })
+      ).toThrow();
+      expect(runAgent).not.toHaveBeenCalled();
+    }
+  );
+
+  test('should reject set-only consolidation flags before sending notes', () => {
+    const runAgent = agent({ profile: [], ops: [] });
+
+    expect(() =>
+      run(['consolidate', '--auto-consolidate', 'claude=off'], { runAgent })
+    ).toThrow(/--auto-consolidate is only supported on set/);
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  test('should allow manual consolidate --agent agy from a plain terminal and block other harnesses', () => {
+    const runAgent = agent({ profile: [], ops: [] });
+
+    const manual = run(
+      ['consolidate', '--agent', 'agy', '--allow-cross-side'],
+      {
+        runAgent,
+        env: {},
+      }
+    );
     expect(manual.code).toBe(0);
     expect(runAgent).toHaveBeenCalledTimes(1);
     expect(runAgent).toHaveBeenCalledWith(
@@ -927,7 +994,7 @@ describe('consolidate and undo', () => {
     expect(json.consolidation.foreign).toEqual([]);
   });
 
-  test('should report auto-consolidation enabled for Antigravity by default even with mixed notes', () => {
+  test('should report cross-side consent is needed for Antigravity even when enabled', () => {
     appendJournal(dir, { status: 'applied', side: 'normal' });
 
     const json = runJson(['status'], {
@@ -936,7 +1003,7 @@ describe('consolidate and undo', () => {
 
     expect(json.consolidation.agent).toBe('agy');
     expect(json.consolidation.autoEnabled).toBe(true);
-    expect(json.consolidation.foreign).toEqual([]);
+    expect(json.consolidation.foreign).toEqual(['unknown']);
   });
 
   test('should report when KYOTEN_CALLER_HARNESS identifies agy and agy is disabled', () => {
@@ -952,7 +1019,7 @@ describe('consolidate and undo', () => {
 
     expect(json.consolidation.agent).toBe('agy');
     expect(json.consolidation.autoEnabled).toBe(false);
-    expect(json.consolidation.foreign).toEqual(['normal']);
+    expect(json.consolidation.foreign).toEqual(['unknown']);
   });
 
   test('should say when consolidation is due', () => {
@@ -1506,6 +1573,21 @@ describe('personalize --compact and --audit', () => {
 });
 
 describe('status', () => {
+  test('should show the consent required to send a task digest selected for archiving', () => {
+    save({
+      type: 'episode',
+      text: 'Completed setup of the sample workspace.',
+      source: { via: 'digest', task: 'sample' },
+    });
+
+    const status = runJson(['status'], {
+      env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1' },
+      now: () => new Date('2027-01-01T00:00:00Z'),
+    });
+
+    expect(status.consolidation.foreign).toEqual(['unknown']);
+  });
+
   test('should be the default command', () => {
     expect(run([]).out).toBe(run(['status']).out);
   });

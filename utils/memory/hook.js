@@ -471,6 +471,7 @@ function triggerOutput(store, harness, matches) {
 function consolidationNotice(due, config, workerEnv) {
   if (!due) return null;
   const agent = consolidationAgent(config, workerEnv);
+  if (agent === null) return null;
   if (agent === 'agy') {
     const caller = foreignHarnessForAgy(workerEnv);
     if (caller) {
@@ -483,7 +484,7 @@ function consolidationNotice(due, config, workerEnv) {
   }
   const policyKey = consolidationPolicyKey(agent, workerEnv);
   if (!config.autoConsolidate[policyKey]) {
-    return `[Memory] Consolidation is due (${due}), but auto-consolidation is off for ${policyKey}. Enable: pnpm memory set --auto-consolidate ${policyKey}=on — or run once: pnpm memory consolidate --allow-cross-side`;
+    return `[Memory] Consolidation is due (${due}), but auto-consolidation is off for ${policyKey}. Fix: pnpm memory set --auto-consolidate ${policyKey}=on — or run once: pnpm memory consolidate --allow-cross-side`;
   }
   return null;
 }
@@ -587,7 +588,7 @@ export function handleHook(
         ? [
             harness === 'claude'
               ? news
-              : `${news}\nMention these saves to the user in one line.`,
+              : `${news}\nMention this memory update to the user in one line.`,
           ]
         : []),
       ...(notice

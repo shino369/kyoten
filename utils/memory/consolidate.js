@@ -18,8 +18,9 @@ import { answerOf } from '../agent/cli.js';
 import { CALLER_HARNESS_ENV, foreignHarnessForAgy } from '../loop/adapters.js';
 import { findSecrets, redactSecrets } from '../redact.js';
 import {
+  readIfExists,
   sessionFromEnv,
-  sessionHarness,
+  sessionHarnesses,
   writeFileAtomic,
 } from '../task/store.js';
 import { CALL_AGENTS, callAgent } from './agent-call.js';
@@ -39,7 +40,6 @@ import {
   agentSide,
   appendInbox,
   appendJournal,
-  memorySide,
   readJournal,
   runSide,
   tryLock,
@@ -52,8 +52,10 @@ import {
   canArchive,
   loadNotes,
   memoryDir,
+  parseLog,
   readJsonOrNull,
   readUsage,
+  replay,
 } from './store.js';
 import { jaccard, termSet } from './tokenize.js';
 
@@ -380,34 +382,104 @@ function lastRun(dir) {
   };
 }
 
+/** @param {string} dir */
+const readNoteOps = (dir) =>
+  parseLog(readIfExists(path.join(dir, LOG_FILE)) ?? '').ops;
+
+/** @param {string} at @param {string} session @param {string} id */
+const extractionKey = (at, session, id) => JSON.stringify([at, session, id]);
+
 /**
- * The provider sides of the applied extraction runs that are not `side`,
- * oldest first. `unknown` when the journal has no applied run: nothing proves
- * that those notes came from the worker's side.
+ * Provider sides that require per-run consent for agy or dscc. Also check the
+ * prompt notes' add/edit history: an unrelated extraction run cannot establish
+ * where those notes came from. Manual, imported and unmatched writes are unknown.
  *
  * @param {string} dir
  * @param {string} side
+ * @param {import('./store.js').Op[]} noteOps
+ * @param {Note[]} shown
  * @returns {string[]}
  */
-export function foreignSides(dir, side) {
-  const runs = readJournal(dir).filter((item) => item.status === 'applied');
-  if (runs.length === 0) return ['unknown'];
-  return [
-    ...new Set(
-      runs.map((item) => runSide(item)).filter((value) => value !== side)
-    ),
-  ];
+function foreignSides(dir, side, noteOps, shown) {
+  const sides = new Set();
+  const extracted = new Map();
+  const consolidated = new Map();
+  for (const run of readJournal(dir)) {
+    if (typeof run.at !== 'string') continue;
+    if (run.status === 'consolidated' && run.job === 'consolidation') {
+      consolidated.set(run.at, [
+        runSide(run),
+        ...(Array.isArray(run.crossSide) ? run.crossSide : ['unknown']),
+      ]);
+    } else if (
+      run.status === 'applied' &&
+      typeof run.session === 'string' &&
+      Array.isArray(run.changes)
+    ) {
+      for (const change of run.changes) {
+        if (typeof change?.id === 'string') {
+          extracted.set(
+            extractionKey(run.at, run.session, change.id),
+            runSide(run)
+          );
+        }
+      }
+    }
+  }
+  const ids = new Set(shown.map((note) => note.id));
+  for (const op of noteOps) {
+    if (op.op !== 'add' && op.op !== 'update') continue;
+    const id = op.op === 'add' ? op.note?.id : op.id;
+    if (typeof id !== 'string' || !ids.has(id)) continue;
+    const source = /** @type {import('./store.js').Source | undefined} */ (
+      op.op === 'add' ? op.note?.source : op.source
+    );
+    if (source?.via === 'extract' && typeof source.session === 'string') {
+      sides.add(
+        extracted.get(extractionKey(op.at, source.session, id)) ?? 'unknown'
+      );
+    } else if (source?.via === 'consolidate') {
+      for (const origin of consolidated.get(op.at) ?? ['unknown'])
+        sides.add(origin);
+    } else {
+      sides.add('unknown');
+    }
+  }
+  sides.delete(side);
+  return [...sides];
+}
+
+/**
+ * Select the candidate prompt and check its provenance from the same log.
+ * Status uses this too so it reports the consent the next run will need.
+ *
+ * @param {string} rootDir
+ * @param {string} side
+ * @param {Date} now
+ */
+export function prepareConsolidation(rootDir, side, now) {
+  const dir = memoryDir(rootDir);
+  const noteOps = side === 'normal' ? null : readNoteOps(dir);
+  const notes = noteOps ? replay(noteOps).notes : loadNotes(dir).notes;
+  const input = consolidationInput(notes, {
+    cursor: readConsolidated(dir)?.cursor,
+    now,
+    usage: readUsage(dir),
+    repo: repoName(rootDir),
+  });
+  const foreign = noteOps ? foreignSides(dir, side, noteOps, input.shown) : [];
+  return { input, foreign };
 }
 
 /**
  * The CLI that runs consolidation in this environment: `--extract-agent`,
  * else `KYOTEN_CALLER_HARNESS` (set by hooks so an inner harness beats
- * inherited outer session IDs), else `claude` when `KYOTEN_AGENT=dscc`,
- * else this session's harness, else `claude`.
+ * inherited outer session IDs), else this session's harness or `claude`.
+ * Conflicting session IDs without a caller marker require an explicit choice.
  *
  * @param {{ extractAgent?: string | null }} config
  * @param {NodeJS.ProcessEnv} env
- * @returns {string}
+ * @returns {string | null}
  */
 export function consolidationAgent(config, env) {
   if (config.extractAgent) return config.extractAgent;
@@ -415,10 +487,10 @@ export function consolidationAgent(config, env) {
   if (caller && CALL_AGENTS.includes(/** @type {any} */ (caller))) {
     return caller;
   }
+  const sessions = sessionHarnesses(env);
+  if (sessions.length > 1) return null;
   if (env.KYOTEN_AGENT === DSCC_AGENT) return 'claude';
-  const session = sessionHarness(env);
-  if (session) return session;
-  return 'claude';
+  return sessions[0] ?? 'claude';
 }
 
 /**
@@ -480,27 +552,45 @@ export function consolidate(deps) {
   // a session to another CLI. It still supplies the model when agent and side
   // match.
   const agent = deps.agent ?? consolidationAgent(config, deps.env);
-  // The side this run records: the agent that actually runs it, falling back
-  // to the session's side when the agent names its own provider (dsh, codex).
-  const side = agentSide(agent, deps.env) ?? memorySide(deps.env.KYOTEN_AGENT);
+  if (agent === null) {
+    return { ...base, status: 'deferred', policy: 'ambiguous-harness' };
+  }
+  const side = agentSide(agent, deps.env) ?? 'normal';
   if (!deps.dryRun && !deps.force && savingOff(config, session)) {
     const run = { ...base, status: 'off', side };
     appendJournal(dir, run);
     return run;
   }
-  const input = consolidationInput(loadNotes(dir).notes, {
-    cursor: readConsolidated(dir)?.cursor,
-    now,
-    usage: readUsage(dir),
-    repo: repoName(deps.rootDir),
-  });
+  if (agent === 'agy') {
+    const tos = deferredRun(agent, null, deps.env, base);
+    if (tos) return tos;
+  }
+  const { input, foreign } = prepareConsolidation(deps.rootDir, side, now);
+  const policyAgent = consolidationPolicyKey(agent, deps.env);
   const { shown, cursor, archiveIds, scopeHints } = input;
+  if (
+    !config.autoConsolidate[policyAgent] &&
+    !deps.allowCrossSide &&
+    !deps.force
+  ) {
+    return {
+      ...base,
+      status: 'deferred',
+      side,
+      policy: 'disabled',
+      policyAgent,
+      ...(foreign.length > 0 ? { foreign } : {}),
+    };
+  }
   if (shown.length === 0) {
     const run = { ...base, status: 'nothing', side };
     if (deps.dryRun) return run;
     writeConsolidated(dir, { at, ops: countOps(dir) });
     appendJournal(dir, run);
     return run;
+  }
+  if (foreign.length > 0 && !deps.allowCrossSide) {
+    return { ...base, status: 'deferred', side, foreign };
   }
   const prompt = buildConsolidationPrompt(input);
   const last = lastRun(dir);
@@ -511,42 +601,6 @@ export function consolidate(deps) {
     // A model name only fits the provider it ran on: never from the other side.
     ownModel: last?.agent === agent && last.side === side ? last.model : null,
   });
-  // Google Antigravity Terms of Service: only an agy session or a plain
-  // terminal may call agy.
-  if (agent === 'agy') {
-    const tos = deferredRun(agent, null, deps.env, base);
-    if (tos) return tos;
-  }
-  // Per-agent automatic consolidation policy: claude, codex, dsh, and agy
-  // default on (consolidating mixed notes automatically); dscc defaults off
-  // (opt-in via `pnpm memory set --auto-consolidate dscc=on` or one-shot
-  // `--allow-cross-side` / `--force`).
-  const policyKey = consolidationPolicyKey(agent, deps.env);
-  const autoAllowed = config.autoConsolidate[policyKey];
-  const callSide = agentSide(agent, deps.env);
-  const foreign =
-    !autoAllowed && callSide && callSide !== 'normal'
-      ? foreignSides(dir, callSide)
-      : [];
-  if (!autoAllowed && !deps.allowCrossSide && !deps.force) {
-    return {
-      ...base,
-      status: 'deferred',
-      side: policyKey,
-      policy: 'disabled',
-      ...(foreign.length > 0 ? { foreign } : {}),
-    };
-  }
-  const crossSide =
-    !autoAllowed && (deps.allowCrossSide || deps.force) && foreign.length > 0
-      ? foreign
-      : [];
-  const crossSideVia =
-    crossSide.length > 0
-      ? deps.allowCrossSide
-        ? '--allow-cross-side'
-        : '--force'
-      : null;
   if (deps.dryRun) {
     return {
       ...base,
@@ -555,7 +609,7 @@ export function consolidate(deps) {
       agent,
       model,
       prompt,
-      ...(crossSide.length > 0 ? { crossSide, crossSideVia } : {}),
+      ...(foreign.length > 0 ? { crossSide: foreign } : {}),
     };
   }
 
@@ -633,7 +687,7 @@ export function consolidate(deps) {
     agent,
     model,
     side,
-    ...(crossSide.length > 0 ? { crossSide, crossSideVia } : {}),
+    ...(side !== 'normal' ? { crossSide: foreign } : {}),
     changes,
     profile: profile.lines.length,
     quarantined: checked.quarantined.length,
@@ -688,8 +742,9 @@ export function consolidateLocked(deps) {
       job: 'consolidation',
       session: 'consolidation',
       status: 'failed',
-      side:
-        agentSide(failedAgent, deps.env) ?? memorySide(deps.env.KYOTEN_AGENT),
+      side: failedAgent
+        ? (agentSide(failedAgent, deps.env) ?? 'normal')
+        : 'unknown',
       error: message,
     };
     appendJournal(dir, run);

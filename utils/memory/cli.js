@@ -53,7 +53,7 @@ import {
   consolidationAgent,
   consolidationDue,
   consolidationPolicyKey,
-  foreignSides,
+  prepareConsolidation,
   readConsolidated,
   validateConsolidateAgent,
 } from './consolidate.js';
@@ -179,9 +179,11 @@ Extraction and consolidation
                                 in the background; never while saving is off, --force
                                 overrides for a manual run). Auto-consolidation defaults on
                                 for ${CALL_AGENTS.join('/')} and off for dscc (pnpm memory set
-                                --auto-consolidate <agent>=on|off); --allow-cross-side runs
-                                once when an agent is off. --agent selects the CLI for a
-                                manual run (other harnesses cannot pass --agent agy)
+                                --auto-consolidate <agent>=on|off). --allow-cross-side or --force
+                                overrides an agent's off setting once. agy and dscc require
+                                --allow-cross-side to send notes from other or unknown sides,
+                                including with --force. --agent selects the CLI for a manual
+                                run (other harnesses cannot pass --agent agy)
   undo [--dry-run]              Revert the last extraction, consolidation, import, or persona
                                 compaction (notes saved since are kept)
 
@@ -238,10 +240,11 @@ Settings
                                 A new session loads the full settings after --on
   set [--extract-agent ${CALL_AGENTS.join('|')}|default] [--extract-model <model>|default]
       [--budget <characters>|default]
-      [--auto-consolidate <${CONSOLIDATE_AGENTS.join('|')}>=on|off|default|default]…
+      [--auto-consolidate <${CONSOLIDATE_AGENTS.join('|')}>=on|off|default]…
                                 Agent CLI and model for memory jobs (default: the session's
                                 own CLI and model), core block budget, and per-agent automatic
-                                consolidation (default: on for ${CALL_AGENTS.join('/')}, off for dscc)
+                                consolidation (default: on for ${CALL_AGENTS.join('/')}, off for dscc).
+                                --auto-consolidate default resets all five settings
   off [--session] · on [--session]
                                 Pause automatic saving everywhere, or for this session
                                 (incognito); recall still works
@@ -413,7 +416,13 @@ export function parseArgs(argv) {
     } else if (Object.hasOwn(BOOLEAN_FLAGS, flag)) {
       const key =
         BOOLEAN_FLAGS[/** @type {keyof typeof BOOLEAN_FLAGS} */ (flag)];
-      if (eq !== -1 && (key === 'on' || key === 'off')) {
+      if (
+        eq !== -1 &&
+        (key === 'on' ||
+          key === 'off' ||
+          key === 'allowCrossSide' ||
+          key === 'force')
+      ) {
         throw new Error(`${flag} does not take a value`);
       }
       record[key] = true;
@@ -535,7 +544,7 @@ function checkPersonaOptions(options) {
       positionals,
       triggers,
       cues,
-      autoConsolidate,
+      autoConsolidate: _autoConsolidate,
       ...other
     } = options;
     if (on && off) {
@@ -545,7 +554,6 @@ function checkPersonaOptions(options) {
       positionals.length !== 1 ||
       triggers.length > 0 ||
       cues.length > 0 ||
-      autoConsolidate.length > 0 ||
       Object.values(other).some((value) => value !== false)
     ) {
       throw new Error('Use --on or --off by itself, with optional --json.');
@@ -1080,7 +1088,7 @@ export const COMMANDS = {
       { runs },
       runs.length === 0
         ? 'Nothing to extract: the queue is empty.'
-        : runs.flatMap(formatRun).join('\n')
+        : runs.flatMap((run) => formatRun(run)).join('\n')
     );
     return runs.some((run) => run.status === 'failed') ? 1 : 0;
   },
@@ -1153,6 +1161,9 @@ export const COMMANDS = {
   },
 
   consolidate(options, deps) {
+    if (options.positionals.length > 1) {
+      throw new Error('consolidate does not take positional arguments.');
+    }
     if (options.agent !== undefined) {
       validateConsolidateAgent(options.agent, deps.env);
     }
@@ -1187,8 +1198,10 @@ export const COMMANDS = {
       );
       return 0;
     }
-    output(deps, options, { run }, formatRun(run).join('\n'));
-    return run.status === 'failed' ? 1 : 0;
+    output(deps, options, { run }, formatRun(run, options).join('\n'));
+    return run.status === 'failed' || run.policy === 'ambiguous-harness'
+      ? 1
+      : 0;
   },
 
   undo(options, deps) {
@@ -1285,11 +1298,16 @@ export const COMMANDS = {
     };
     const consolidated = readConsolidated(dir);
     const consolidateCli = consolidationAgent(core.config, deps.env);
-    const policyKey = consolidationPolicyKey(consolidateCli, deps.env);
-    const autoEnabled = core.config.autoConsolidate[policyKey];
+    const policyKey =
+      consolidateCli === null
+        ? null
+        : consolidationPolicyKey(consolidateCli, deps.env);
+    const autoEnabled =
+      policyKey === null ? null : core.config.autoConsolidate[policyKey];
     const tosBlockedBy =
       consolidateCli === 'agy' ? foreignHarnessForAgy(deps.env) : null;
-    const callSide = agentSide(consolidateCli, deps.env);
+    const callSide =
+      consolidateCli === null ? null : agentSide(consolidateCli, deps.env);
     const consolidation = {
       last: consolidated?.at ?? null,
       due: consolidationDue(deps.rootDir, { now }),
@@ -1297,8 +1315,8 @@ export const COMMANDS = {
       autoEnabled,
       tosBlockedBy,
       foreign:
-        !autoEnabled && callSide && callSide !== 'normal'
-          ? foreignSides(dirOf(deps), callSide)
+        callSide && callSide !== 'normal'
+          ? prepareConsolidation(deps.rootDir, callSide, now).foreign
           : [],
     };
     const lastRun = extraction.running
@@ -1343,7 +1361,7 @@ export const COMMANDS = {
           `Extraction model: ${extractModel ?? "the main session's model"}`,
           autoConsolidateLine(core.config.autoConsolidate),
           `Extraction: ${plural(extraction.queued, 'session')} queued; ${lastRun}`,
-          `Consolidation: ${consolidation.last ? `last ${localTime(consolidation.last)}` : 'not yet'}${consolidation.due ? `; due (${consolidation.due})` : ''}${!consolidation.autoEnabled ? `; auto-consolidation off for ${consolidation.agent} (pnpm memory set --auto-consolidate ${consolidation.agent}=on or --allow-cross-side)` : ''}${consolidation.tosBlockedBy ? `; agy blocked from ${consolidation.tosBlockedBy} (ToS)` : ''}`,
+          `Consolidation: ${consolidation.last ? `last ${localTime(consolidation.last)}` : 'not yet'}${consolidation.due ? `; due (${consolidation.due})` : ''}${consolidation.agent === null ? '; multiple agent harnesses (choose --agent for manual runs)' : ''}${consolidation.autoEnabled === false ? `; auto-consolidation off for ${consolidation.agent} (pnpm memory set --auto-consolidate ${consolidation.agent}=on or --allow-cross-side)` : ''}${consolidation.tosBlockedBy ? `; agy blocked from ${consolidation.tosBlockedBy} (ToS)` : ''}${consolidation.foreign.length > 0 ? `; notes from ${consolidation.foreign.join(', ')} need --allow-cross-side` : ''}`,
           ...(extraction.inbox > 0
             ? [
                 `Inbox: ${plural(extraction.inbox, 'change')} held for review (pnpm memory inbox)`,
@@ -1924,6 +1942,9 @@ export function main({ argv = process.argv.slice(2), deps = {} } = {}) {
   }
   if (command !== 'personalize' && (options.on || options.off)) {
     throw new Error('--on and --off are only supported on personalize.');
+  }
+  if (command !== 'set' && options.autoConsolidate.length > 0) {
+    throw new Error('--auto-consolidate is only supported on set.');
   }
   if (
     command !== 'personalize' &&

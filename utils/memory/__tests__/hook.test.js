@@ -1159,7 +1159,7 @@ describe('extraction hooks', () => {
     );
 
     expect(context(output)).toMatch(
-      /Mention these saves to the user in one line\.$/
+      /Mention this memory update to the user in one line\.$/
     );
     expect(output.systemMessage).toBeUndefined();
   });
@@ -1220,7 +1220,7 @@ describe('Antigravity hooks', () => {
       'Saved earlier.'
     );
     expect(output.injectSteps[0].systemMessage.systemMessage).toContain(
-      'Mention these saves to the user in one line.'
+      'Mention this memory update to the user in one line.'
     );
     expect(readOpen(dir).map((e) => e.session)).toEqual(['agy-1']);
   });

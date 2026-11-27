@@ -501,8 +501,9 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   own model is used.
   Consolidation runs on the current session's CLI (claude, codex, dsh, or agy), on the agent
   `--extract-agent` assigns, or on an explicit manual `--agent <claude|codex|dsh|agy>` (foreign
-  agent harnesses are refused `--agent agy` under the Antigravity ToS); it never inherits the last
-  run's agent, so one session never calls another CLI by accident. Persona compaction and audit
+  agent harnesses are refused `--agent agy` under the Antigravity ToS). A manual run with
+  conflicting session markers and no known caller or configured agent requires `--agent`.
+  Consolidation never inherits the last run's agent. Persona compaction and audit
   accept an explicit `--agent` and otherwise follow the memory configuration and session. Codex
   needs zero configured MCP servers. A missing CLI or failed check prints commands for switching
   agents. The next session announces saved notes, consolidation failures, and waiting
@@ -515,16 +516,23 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   dscc. A mismatching entry stays queued for a matching worker without recording an attempt.
   Automatic consolidation is controlled per agent via
   `pnpm memory set --auto-consolidate <claude|codex|dsh|agy|dscc>=on|off|default`: `claude`,
-  `codex`, `dsh`, and `agy` default **on** (consolidating mixed notes automatically), while `dscc`
+  `codex`, `dsh`, and `agy` default **on**, while `dscc`
   defaults **off** (opt-in, because `dscc` runs through the Claude Code harness against DeepSeek).
+  A bare `--auto-consolidate default` restores all five defaults.
   When auto-consolidation is off for the resolved agent, background and default manual runs defer
   with a Fix line; `pnpm memory set --auto-consolidate <agent>=on` opts in, or
-  `pnpm memory consolidate --allow-cross-side` (or `--force`) runs once. Consolidation is paused
+  `pnpm memory consolidate --allow-cross-side` (or `--force`) runs once. An `agy` or `dscc` run
+  still requires `--allow-cross-side` each time it would send notes from other or unknown provider
+  sides. The check uses the selected notes' history. Edits without a matching provider record
+  and legacy consolidations that predate this tracking count as unknown, as do imported notes.
+  This applies with auto-consolidation enabled and when using `--force`. Normal providers
+  continue to consolidate notes from every side. Consolidation is paused
   while saving is off everywhere (`pnpm memory off`; it stays due and runs once saving is back on);
   a manual `pnpm memory consolidate` then refuses with a Fix line unless `--force` (a `--dry-run`
   is always allowed). Consolidation reuses the last run's model only when that run used the same
   agent and side as the worker. `pnpm memory status` shows the per-agent auto-consolidation
-  settings and whether consolidation is off or ToS-blocked for the current session.
+  settings, any sides that need per-run consent, and whether consolidation is off or ToS-blocked
+  for the current session.
   Consolidation rotates batches of similar notes and can archive old task digests and stale,
   unused facts after taking a snapshot. Use `pnpm memory recall <query> --archived` to search
   those notes and `pnpm memory restore <id>` to return one to active recall. Export and import
