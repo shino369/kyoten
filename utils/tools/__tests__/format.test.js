@@ -48,7 +48,7 @@ describe('toolsLine', () => {
         ],
       })
     ).toBe(
-      'Tools: agents codex, claude, agy (interactive only) · cli gh (broken) · sources dsh-src (pnpm tools list; call another agent: pnpm agent ask --agent claude|codex|dsh "…")'
+      'Tools: agents codex, claude, agy (interactive only) · cli gh (broken) · sources dsh-src (pnpm tools list; call another agent: pnpm agent ask --agent claude|codex|dsh|dscc "…")'
     );
   });
 

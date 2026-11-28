@@ -185,11 +185,13 @@ commands it loads.
    and Codex patches.
 3. **Role.** Edit `.claude/agents/<role>.md`, then `pnpm harness sync`. It regenerates
    `.codex/agents/<role>.toml` and `.agents/agents/<role>.md` (inheriting the main model). The
-   Antigravity file maps the role's Claude tools to the verified `agy` CLI names (`Read` →
-   `read_file`, `Edit` → `edit_file`, `Write` → `write_file`, `Bash` → `run_command`; `Grep` and
-   `Glob` are covered by `run_command`), because an omitted `tools:` defaults to `[]` there and an
-   unmapped IDE/App name can hang the subagent. Check a changed mapping in an interactive `agy`
-   session before merging.
+   Antigravity file targets `agy` CLI and maps the role's Claude tools to the verified CLI names
+   (`Read` → `read_file`, `Edit` → `edit_file`, `Write` → `write_file`, `Bash` → `run_command`;
+   `Grep` and `Glob` are covered by `run_command`), because an omitted `tools:` defaults to `[]`
+   there and an unmapped name can hang the subagent (note: Antigravity App/IDE uses different tool
+   names such as `view_file`/`replace_file_content`, so these generated files are for `agy` CLI).
+   `mainAgent: false` keeps roles out of `/agents`'s primary-agent switcher while exposing them to
+   `invoke_subagent`. Check a changed mapping in an interactive `agy` session before merging.
 
 `pnpm harness check` fails on a stale generated file, and when the `hooks` in
 `.claude/settings.json` differ from the manifest. It never rewrites `.claude/settings.json`.
@@ -622,8 +624,9 @@ plan ─▶ build test-first ─▶ e2e (if required) ─▶ review round N ─�
   is green and every `fix:` step is marked done.
 - **Manual / other harnesses.** The same commands by hand, with
   `pnpm agent ask --agent <other> "…"` as the clean-context reviewer. The reviewer and the triage
-  need not run on the session's model: `pnpm agent ask --agent dscc - < <brief>` runs the reviewer
-  on DeepSeek through the `claude` CLI, `--agent dsh` runs DeepSeek Harness, and a lighter model
+  need not run on the session's model: `pnpm agent ask --agent dscc - < <brief>` runs read-only on
+  DeepSeek through the `claude` CLI (paste its Markdown rows into the findings table before
+  `pnpm task review record`), `--agent dsh` runs DeepSeek Harness, and a lighter model
   (an Antigravity flash subagent) is fine for the triage. This keeps the primary model's quota for
   fixing; the findings table and the triage rules stay the same.
 

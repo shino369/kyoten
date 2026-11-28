@@ -1341,7 +1341,7 @@ export const COMMANDS = {
         `  Codex: spawn_agent with agent_type "reviewer", message "Follow ${brief}", then wait_agent before you end the turn; then the same with agent_type "verifier" and "Triage ${findings} as step 2 of ${brief} says".`,
         `  DSH: subagent with prompt "Follow .claude/agents/reviewer.md, then ${brief}"; wait for its notice before you end the turn; then one with "Follow .claude/agents/verifier.md (triage mode), then triage ${findings} as step 2 of ${brief} says".`,
         `  Other harnesses: pnpm agent ask --agent <another agent> - < ${brief}, paste its rows into the findings table, then ask another agent for the triage.`,
-        `Cross-model (saves primary quota): pnpm agent ask --agent dscc - < ${brief}`,
+        `Cross-model (saves primary quota, read-only — paste its rows into ${findings}): pnpm agent ask --agent dscc - < ${brief}`,
         'Then: pnpm task review record',
       ].join('\n')
     );

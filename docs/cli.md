@@ -474,7 +474,7 @@ Options
   --json      Machine-readable output
   --help, -h  Show this help (also pnpm tools help)
 
-Call another agent: pnpm agent ask --agent claude|codex|dsh "…". Never put
+Call another agent: pnpm agent ask --agent claude|codex|dsh|dscc "…". Never put
 secrets in the registry; --env records env var names only.
 ```
 

@@ -1219,7 +1219,11 @@ describe('review', () => {
     );
     expect(brief).toContain('- utils/x.js (+1/-1)\n');
     expect(brief).toContain('## Reading budget');
-    expect(run(['review', '--json'], { runGit }).out).toBeDefined();
+    const reopened = JSON.parse(run(['review', '--json'], { runGit }).out);
+    expect(reopened).toMatchObject({
+      reopened: true,
+      diff: `tasks/${NAME}/reviews/DIFF_${NAME}-r1.patch`,
+    });
   });
 
   test('should print the diff paths and the cross-model hint', () => {
@@ -1244,7 +1248,7 @@ describe('review', () => {
 
     expect(out).toContain(`Diff: tasks/${NAME}/reviews/DIFF_${NAME}-r1.patch`);
     expect(out).toContain(
-      `Cross-model (saves primary quota): pnpm agent ask --agent dscc - < tasks/${NAME}/reviews/BRIEF_${NAME}-r1.md`
+      `Cross-model (saves primary quota, read-only — paste its rows into tasks/${NAME}/reviews/REVIEW_${NAME}-r1.md): pnpm agent ask --agent dscc - < tasks/${NAME}/reviews/BRIEF_${NAME}-r1.md`
     );
   });
 

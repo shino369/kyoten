@@ -1272,6 +1272,19 @@ describe('generateReviewDiff', () => {
     expect(patch).not.toContain('+++ b/b.js');
     expect(patch).not.toContain('+++ b/c.js');
   });
+
+  test('should report tracked files whose git diff returned null instead of silently dropping them', () => {
+    const runGit = runGitFor({ 'huge.js': null }, ['huge.js']);
+
+    const patch = generateReviewDiff({
+      repoDir: root,
+      scope: gitScope(['huge.js']),
+      runGit,
+    });
+
+    expect(patch).toContain('git diff unavailable for 1 file(s)');
+    expect(patch).toContain('huge.js (+1/-1)');
+  });
 });
 
 describe('saveSnapshot and listSnapshotFiles', () => {
@@ -1428,5 +1441,56 @@ describe('generateIncrementalDiff', () => {
 
     expect(patch).toContain('[REDACTED]');
     expect(patch).not.toContain('ghp_');
+  });
+
+  test('should not render snapshot-skipped binary or oversized files as newly added', () => {
+    fs.writeFileSync(path.join(root, 'blob.bin'), Buffer.from([0, 1, 2]));
+    fs.writeFileSync(
+      path.join(root, 'big.json'),
+      'x'.repeat(SNAPSHOT_MAX_FILE_BYTES + 1)
+    );
+    const snapshotDir = path.join(root, '.snapshot-r1');
+    saveSnapshot({
+      repoDir: root,
+      dir: snapshotDir,
+      files: ['blob.bin', 'big.json'],
+    });
+    fs.rmSync(path.join(root, 'blob.bin'));
+
+    const patch = generateIncrementalDiff({
+      repoDir: root,
+      snapshotDir,
+      files: ['blob.bin', 'big.json'],
+    });
+
+    expect(patch).toContain('diff --git a/big.json b/big.json');
+    expect(patch).toContain('omitted from previous round snapshot');
+    expect(patch).not.toContain('new file mode 100644');
+    expect(patch).toContain('diff --git a/blob.bin b/blob.bin');
+    expect(patch).toContain('deleted file (was omitted from previous round');
+  });
+
+  test('should preserve literal dollar signs when rewriting --no-index headers', () => {
+    const snapshotDir = path.join(root, '.snapshot-r1');
+    fs.mkdirSync(path.join(snapshotDir, 'routes'), { recursive: true });
+    fs.writeFileSync(path.join(snapshotDir, 'routes', '$id.js'), 'a\n');
+    fs.mkdirSync(path.join(root, 'routes'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'routes', '$id.js'), 'b\n');
+    /** @type {(args: string[], cwd: string) => { status: number | null, stdout: string }} */
+    const runGitStatus = vi.fn(() => ({
+      status: 1,
+      stdout: 'diff --git a/x b/y\n--- a/x\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n',
+    }));
+
+    const patch = generateIncrementalDiff({
+      repoDir: root,
+      snapshotDir,
+      files: ['routes/$id.js'],
+      runGitStatus,
+    });
+
+    expect(patch).toContain('diff --git a/routes/$id.js b/routes/$id.js');
+    expect(patch).toContain('--- a/routes/$id.js');
+    expect(patch).toContain('+++ b/routes/$id.js');
   });
 });

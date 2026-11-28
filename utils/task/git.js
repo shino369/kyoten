@@ -25,6 +25,7 @@ export function git(spawn, cwd, args) {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 5000,
+      maxBuffer: 16 * 1024 * 1024,
     });
     return result.status === 0 ? String(result.stdout ?? '').trim() : null;
   } catch {

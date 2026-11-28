@@ -98,6 +98,7 @@ export const defaultRunGitStatus = (args, cwd) => {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 5000,
+      maxBuffer: 16 * 1024 * 1024,
     });
     return { status: result.status, stdout: String(result.stdout ?? '') };
   } catch {
@@ -599,6 +600,8 @@ export function generateReviewDiff({
   const chunks = [];
   /** @type {string[]} */
   const omitted = [];
+  /** @type {string[]} */
+  const unavailable = [];
   let total = 0;
   for (const file of [...scope.files].sort()) {
     /** @type {string | null} */
@@ -616,6 +619,10 @@ export function generateReviewDiff({
         ],
         repoDir
       );
+      if (diff === null) {
+        unavailable.push(file);
+        continue;
+      }
       if (diff) text = `${diff}\n`;
     } else {
       try {
@@ -633,21 +640,38 @@ export function generateReviewDiff({
     chunks.push(text);
     total += text.length;
   }
-  if (chunks.length === 0) return null;
-  if (omitted.length === 0) return chunks.join('');
+  if (chunks.length === 0 && unavailable.length === 0) return null;
+  if (omitted.length === 0 && unavailable.length === 0) return chunks.join('');
   const stats = diffStats({ repoDir, scope, runGit });
-  return `${chunks.join('')}${[
-    '',
-    `... [truncated: total patch cap of ${maxTotalBytes} bytes reached; ${omitted.length} more file(s) not shown — inspect targeted line ranges directly if needed]`,
-    ...omitted.map((file) => `  ${file} (${statLabel(stats.get(file))})`),
-    '',
-  ].join('\n')}`;
+  const notes = [
+    ...(omitted.length > 0
+      ? [
+          `... [truncated: total patch cap of ${maxTotalBytes} bytes reached; ${omitted.length} more file(s) not shown — inspect targeted line ranges directly if needed]`,
+          ...omitted.map((file) => `  ${file} (${statLabel(stats.get(file))})`),
+        ]
+      : []),
+    ...(unavailable.length > 0
+      ? [
+          `... [omitted: git diff unavailable for ${unavailable.length} file(s) (too large or failed) — inspect targeted line ranges directly]`,
+          ...unavailable.map(
+            (file) => `  ${file} (${statLabel(stats.get(file))})`
+          ),
+        ]
+      : []),
+  ];
+  const prefix = chunks.length > 0 ? `${chunks.join('')}\n` : '';
+  return `${prefix}${notes.join('\n')}\n`;
 }
+
+/** Manifest inside a snapshot folder listing files skipped (binary / oversized). */
+const SNAPSHOT_SKIPPED_FILE = '.snapshot-skipped.json';
 
 /**
  * Save the working-tree versions of `files` under `dir` (relative paths
  * mirrored) so a later round can diff against them. Binary and oversized
- * files are left out. Returns the number of files saved.
+ * files are recorded in `.snapshot-skipped.json` instead of mirrored, so a
+ * later round does not mistake them for newly added files. Returns the number
+ * of files saved.
  *
  * @param {{ repoDir: string, dir: string, files: string[] }} options
  * @returns {number}
@@ -655,6 +679,8 @@ export function generateReviewDiff({
 export function saveSnapshot({ repoDir, dir, files }) {
   fs.rmSync(dir, { recursive: true, force: true });
   let saved = 0;
+  /** @type {string[]} */
+  const skipped = [];
   for (const file of files) {
     let buffer;
     try {
@@ -662,13 +688,44 @@ export function saveSnapshot({ repoDir, dir, files }) {
     } catch {
       continue;
     }
-    if (buffer.length > SNAPSHOT_MAX_FILE_BYTES || isBinary(buffer)) continue;
+    if (buffer.length > SNAPSHOT_MAX_FILE_BYTES || isBinary(buffer)) {
+      skipped.push(file);
+      continue;
+    }
     const target = path.join(dir, file);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, buffer);
     saved++;
   }
+  if (skipped.length > 0) {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, SNAPSHOT_SKIPPED_FILE),
+      JSON.stringify(skipped.sort()),
+      'utf-8'
+    );
+  }
   return saved;
+}
+
+/**
+ * Files recorded as skipped (binary or oversized) in a saved snapshot.
+ *
+ * @param {string} dir
+ * @returns {Set<string>}
+ */
+function readSnapshotSkipped(dir) {
+  try {
+    const raw = fs.readFileSync(path.join(dir, SNAPSHOT_SKIPPED_FILE), 'utf-8');
+    const parsed = JSON.parse(raw);
+    return new Set(
+      Array.isArray(parsed)
+        ? parsed.filter((item) => typeof item === 'string')
+        : []
+    );
+  } catch {
+    return new Set();
+  }
 }
 
 /**
@@ -687,6 +744,7 @@ export function listSnapshotFiles(dir) {
   const walk = (current, prefix) => {
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (!prefix && entry.name === SNAPSHOT_SKIPPED_FILE) continue;
       if (entry.isDirectory()) walk(path.join(current, entry.name), rel);
       else out.push(rel);
     }
@@ -705,9 +763,9 @@ export function listSnapshotFiles(dir) {
  */
 function rewriteNoIndexHeaders(patch, file) {
   return patch
-    .replace(/^diff --git .*$/m, `diff --git a/${file} b/${file}`)
-    .replace(/^--- .*$/m, `--- a/${file}`)
-    .replace(/^\+\+\+ .*$/m, `+++ b/${file}`);
+    .replace(/^diff --git .*$/m, () => `diff --git a/${file} b/${file}`)
+    .replace(/^--- .*$/m, () => `--- a/${file}`)
+    .replace(/^\+\+\+ .*$/m, () => `+++ b/${file}`);
 }
 
 /**
@@ -727,6 +785,7 @@ export function generateIncrementalDiff({
   maxFileBytes = MAX_DIFF_FILE_BYTES,
   maxTotalBytes = MAX_DIFF_TOTAL_BYTES,
 }) {
+  const skippedInSnapshot = readSnapshotSkipped(snapshotDir);
   /** @type {string[]} */
   const chunks = [];
   /** @type {string[]} */
@@ -744,7 +803,15 @@ export function generateIncrementalDiff({
     }
     /** @type {string | null} */
     let text = null;
-    if (snapshot === null) {
+    if (snapshot === null && skippedInSnapshot.has(file)) {
+      text = [
+        `diff --git a/${file} b/${file}`,
+        fs.existsSync(currentFile)
+          ? `... [omitted from previous round snapshot (binary or >${SNAPSHOT_MAX_FILE_BYTES} bytes); inspect the full DIFF patch or targeted line ranges]`
+          : `deleted file (was omitted from previous round snapshot as binary or >${SNAPSHOT_MAX_FILE_BYTES} bytes)`,
+        '',
+      ].join('\n');
+    } else if (snapshot === null) {
       try {
         text = newFileDiff(file, fs.readFileSync(currentFile));
       } catch {
@@ -757,7 +824,7 @@ export function generateIncrementalDiff({
         [
           'diff',
           '--no-index',
-          '--unified=8',
+          `--unified=${DIFF_CONTEXT_LINES}`,
           '--no-ext-diff',
           '--no-color',
           snapshotFile,
@@ -984,7 +1051,7 @@ export function formatReviewBrief({
     '   not or you are not sure. Write the verdict and a one-line reason.',
     '3. Record: pnpm task review record',
     '',
-    "Cross-model option (keeps the primary model's quota free): `pnpm agent ask --agent dscc - < <this brief>` runs the review on DeepSeek, or `--agent dsh`; a lighter model (an Antigravity flash subagent, or a flash-configured reviewer) is fine for the triage."
+    "Cross-model option (keeps the primary model's quota free): `pnpm agent ask --agent dscc - < <this brief>` runs read-only on DeepSeek (or `--agent dsh`) — paste its Markdown rows into the findings table before `pnpm task review record`; a lighter model (an Antigravity flash subagent, or a flash-configured reviewer) is fine for the triage."
   );
   return `${lines.join('\n')}\n`;
 }
