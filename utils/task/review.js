@@ -2085,7 +2085,7 @@ function diffPathOf(block) {
   );
 }
 
-/** @param {string} text @param {string} file @param {number} line */
+/** @param {string} text @param {string} file @param {number | null} line */
 export function extractHunksForFile(text, file, line) {
   return diffBlocks(text).flatMap((block) => {
     if (
@@ -2093,18 +2093,25 @@ export function extractHunksForFile(text, file, line) {
       !block.startsWith(`diff --git a/${file} b/${file}\n`)
     )
       return [];
-    return block
-      .split(/(?=^@@ )/m)
-      .slice(1)
-      .filter((hunk) => {
-        const range = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(hunk);
-        if (!range) return false;
-        const start = Number(range[1]);
-        return (
-          line >= start - TRIAGE_CONTEXT_RADIUS &&
-          line <= start + Number(range[2] ?? 1) + TRIAGE_CONTEXT_RADIUS
-        );
-      });
+    const hunks = block.split(/(?=^@@ )/m).slice(1);
+    if (line === null) return hunks;
+    return hunks.filter((hunk) => {
+      const range = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(hunk);
+      if (!range) return false;
+      const oldStart = Number(range[1]);
+      const oldLen = Number(range[2] ?? 1);
+      const newStart = Number(range[3]);
+      const newLen = Number(range[4] ?? 1);
+      const inNew =
+        line >= newStart - TRIAGE_CONTEXT_RADIUS &&
+        line <= newStart + newLen + TRIAGE_CONTEXT_RADIUS;
+      const inOld =
+        newStart === 0 &&
+        newLen === 0 &&
+        line >= oldStart - TRIAGE_CONTEXT_RADIUS &&
+        line <= oldStart + oldLen + TRIAGE_CONTEXT_RADIUS;
+      return inNew || inOld;
+    });
   });
 }
 
@@ -2123,12 +2130,14 @@ export function readReviewText(repoDir, file) {
   }
 }
 
-/** @param {string} repoDir @param {string} file @param {number} line @param {(text: string) => string} [scrub] */
+/** @param {string} repoDir @param {string} file @param {number | null} line @param {(text: string) => string} [scrub] */
 export function extractFileWindow(repoDir, file, line, scrub = redactSecrets) {
   const text = readReviewText(repoDir, file);
   if (text === null) return null;
-  const start = Math.max(0, line - TRIAGE_CONTEXT_RADIUS - 1);
-  const end = line + TRIAGE_CONTEXT_RADIUS;
+  const start =
+    line === null ? 0 : Math.max(0, line - TRIAGE_CONTEXT_RADIUS - 1);
+  const end =
+    line === null ? TRIAGE_CONTEXT_RADIUS * 2 : line + TRIAGE_CONTEXT_RADIUS;
   return (
     scrub(text)
       .split(/\r?\n/)
@@ -2228,7 +2237,7 @@ export function buildReviewPack(input) {
           earlier
             .map(
               (finding) =>
-                `- ${finding.verdict === 'REFUTED' ? 'Refuted' : 'Fixed'} ${finding.file}:${finding.line} ${finding.claim} (${finding.reason})`
+                `- ${finding.verdict === 'REFUTED' ? 'Refuted' : 'Fixed'} ${where(finding)} ${finding.claim} (${finding.reason})`
             )
             .join('\n')
         ),
@@ -2325,13 +2334,9 @@ export function buildTriagePack(input) {
   const inScope = new Set(scope.files);
   const evidence = new Set();
   for (const row of rows) {
-    const location = /^(.+?):(\d+)(?::\d+)?$/.exec(
-      (splitRow(row)[1] ?? '').replace(/`/g, '')
-    );
-    if (!location) continue;
-    const [, file, rawLine] = location;
-    const line = Number(rawLine);
-    if (!Number.isSafeInteger(line) || line < 1 || isSecretFile(file)) continue;
+    const loc = parseFindingLocation(splitRow(row)[1] ?? '');
+    if (!loc || isSecretFile(loc.file)) continue;
+    const { file, line } = loc;
     const hunks = extractHunksForFile(patch, file, line);
     for (const hunk of hunks)
       evidence.add(

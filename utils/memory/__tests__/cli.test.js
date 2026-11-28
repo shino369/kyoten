@@ -1668,6 +1668,24 @@ describe('status', () => {
     expect(out).toMatch(
       /^Extraction model: Haiku on Claude\/dscc; session model on other supported harnesses$/m
     );
+    expect(out).not.toContain('--extract-agent dscc');
+  });
+
+  test('should show the agy Fix hint only when agy is targeted or active', () => {
+    const agyOut = run(['status'], {
+      env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1' },
+    }).out;
+    expect(agyOut).toContain('Fix: pnpm memory set --extract-agent dscc');
+
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'dscc' });
+    expect(
+      run(['status'], { env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1' } }).out
+    ).not.toContain('--extract-agent dscc');
+
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: null });
+    expect(
+      run(['status'], { env: { CLAUDE_CODE_SESSION_ID: 'claude-1' } }).out
+    ).not.toContain('--extract-agent dscc');
   });
 
   test('should show a session that is off', () => {

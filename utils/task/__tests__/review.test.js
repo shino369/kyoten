@@ -137,6 +137,55 @@ test('should inline safe task code and deduplicate triage windows', () => {
   }
 });
 
+test('should include diff hunks and initial source lines for file-level findings without :line, deleted hunks, and null-line earlier findings', () => {
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-noline-'));
+  try {
+    fs.writeFileSync(
+      path.join(repoDir, 'app.js'),
+      Array.from(
+        { length: 80 },
+        (_, i) => `const line${i + 1} = ${i + 1};`
+      ).join('\n') + '\n'
+    );
+    const input = {
+      state: codeState({
+        quality: {
+          ...freshQuality(),
+          findings: [
+            finding({ line: null, verdict: 'REFUTED', claim: 'Missing guard' }),
+          ],
+        },
+      }),
+      round: 2,
+      repoDir,
+      scope: { base: 'main', since: 'base', files: ['app.js', 'deleted.js'] },
+      planText: 'Goal: Ship it.',
+      diff:
+        'diff --git a/app.js b/app.js\n@@ -1,2 +1,2 @@\n-old\n+new\n' +
+        'diff --git a/deleted.js b/deleted.js\n@@ -40,5 +0,0 @@\n-removed\n',
+    };
+    const pack = buildReviewPack(input);
+    expect(pack).toContain('Refuted app/a.js Missing guard');
+    expect(pack).not.toContain('app/a.js:null');
+    const triage = buildTriagePack({
+      ...input,
+      rows: [
+        '| | app.js | high | File-level issue | Fails across file | | |',
+        '| | deleted.js:42 | high | Deleted code | Missing fallback | | |',
+      ],
+    });
+    expect(triage).toContain('### app.js (diff)');
+    expect(triage).toContain('+new');
+    expect(triage).toContain('### app.js (working source)');
+    expect(triage).toContain('60  const line60 = 60;');
+    expect(triage).not.toContain('61  const line61 = 61;');
+    expect(triage).toContain('### deleted.js (diff)');
+    expect(triage).toContain('-removed');
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
 test('should redact a known credential before capping plan and triage evidence', () => {
   const secretStart = 'distinctive-credential-prefix-';
   const secret = secretStart + 'x'.repeat(256);

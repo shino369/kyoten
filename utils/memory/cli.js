@@ -1377,7 +1377,9 @@ export const COMMANDS = {
           `Extraction model: ${extractModel ?? 'Haiku on Claude/dscc; session model on other supported harnesses'}`,
           autoPolicyLine(core.config.autoExtract, 'Auto-extraction'),
           autoPolicyLine(core.config.autoConsolidate),
-          ...(!core.config.autoExtract.agy || !core.config.autoConsolidate.agy
+          ...((extractAgent === 'agy' ||
+            (extractAgent === null && policyKey === 'agy')) &&
+          (!core.config.autoExtract.agy || !core.config.autoConsolidate.agy)
             ? [
                 `Fix: ${AGY_MEMORY_FIX}${!core.config.autoConsolidate.agy ? '; enable consolidation with --auto-consolidate agy=on' : ''}`,
               ]

@@ -584,9 +584,17 @@ export function runReviewAgents({
    */
   const ask = (stage, execution, prompt, validate) => {
     let problem = 'timeout';
+    let correction = '';
     for (let attempt = 1; attempt <= 2; attempt++) {
       const remaining = deadline - clock();
       if (remaining <= 0) break;
+      const attemptPrompt = correction
+        ? `${prompt}\n\n## Retry note\nYour previous reply was rejected (${correction}). ${
+            mode === 'oneshot'
+              ? `Output ONLY the ${BEGIN} … ${END} block with valid rows and no surrounding prose.`
+              : `End your reply with a valid ${BEGIN} … ${END} block.`
+          }`
+        : prompt;
       const { agent, model, effort } = execution;
       const entry = { stage, agent, model, effort, attempt };
       let result;
@@ -595,7 +603,7 @@ export function runReviewAgents({
           rootDir,
           mode,
           execution,
-          prompt,
+          prompt: attemptPrompt,
           timeoutMs: Math.min(remaining, perAttemptMs),
           runAgent,
           clock,
@@ -620,7 +628,7 @@ export function runReviewAgents({
             `# ${stage}\n\n${attempts
               .filter((call) => call.stage === stage)
               .map(reviewTelemetry)
-              .join('\n')}\n\n## Prompt\n\n${prompt}${output}\n`
+              .join('\n')}\n\n## Prompt\n\n${attemptPrompt}${output}\n`
           )
         );
       }
@@ -639,6 +647,7 @@ export function runReviewAgents({
           : validate(printed);
       if (printed !== null && problems.length === 0) return { rows: printed };
       problem = problems.join('; ');
+      correction = problem;
     }
     return { problem };
   };

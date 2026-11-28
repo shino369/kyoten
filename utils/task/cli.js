@@ -1867,7 +1867,43 @@ function runReview(options, deps) {
         !untriaged &&
         !options.noRecord &&
         (rows.length === 0 || selection.triage !== null);
-      if (recorded) recordReview(options, { ...deps, log: () => {} });
+      let recordedData = null;
+      if (recorded) {
+        /** @type {string[]} */
+        const captured = [];
+        recordReview(
+          { ...options, json: true },
+          { ...deps, log: (line) => captured.push(line) }
+        );
+        recordedData =
+          /** @type {{ findings: import('./quality.js').Finding[], fixSteps: import('./state.js').Step[], quality: import('./quality.js').Quality }} */ (
+            JSON.parse(captured.join('\n'))
+          );
+      }
+      const logPath = relPosix(
+        deps.rootDir,
+        path.join(dir, reviewFiles(name, opened.round).runLog)
+      );
+      const fixSteps = recordedData?.fixSteps ?? [];
+      const confirmed = recordedData
+        ? recordedData.findings.filter((f) => f.verdict === 'CONFIRMED').length
+        : null;
+      const refuted = recordedData
+        ? recordedData.findings.filter((f) => f.verdict === 'REFUTED').length
+        : null;
+      const fixIds = new Set(
+        recordedData
+          ? toFix({
+              ...recordedData.quality,
+              findings: recordedData.findings,
+            }).map((f) => f.id)
+          : []
+      );
+      const mediumLow = recordedData
+        ? recordedData.findings
+            .filter((f) => f.verdict === 'CONFIRMED' && !fixIds.has(f.id))
+            .map((f) => f.id)
+        : [];
       const summary = [
         `Review round ${opened.round} for ${name} (${selection.mode}).`,
         `Reviewer: ${selection.reviewer.agent}; ${rows.length} finding(s).`,
@@ -1878,7 +1914,15 @@ function runReview(options, deps) {
             : selection.triage
               ? `Triage: ${selection.triage.agent}.`
               : 'Triage skipped (--triage none).',
-        `${recorded ? 'Recorded' : 'Round remains open'}; telemetry: ${relPosix(deps.rootDir, path.join(dir, reviewFiles(name, opened.round).runLog))}.`,
+        ...(recorded
+          ? [
+              `Recorded: ${confirmed} confirmed, ${refuted} refuted; ${fixSteps.length} fix step(s); telemetry: ${logPath}.`,
+              ...fixSteps.map((s) => `  ${s.id}. ${s.title}`),
+              ...(mediumLow.length > 0
+                ? [`Recorded (medium/low): ${mediumLow.join(', ')}.`]
+                : []),
+            ]
+          : [`Round remains open; telemetry: ${logPath}.`]),
         ...(selection.tip ? [selection.tip] : []),
       ];
       output(
@@ -1892,6 +1936,9 @@ function runReview(options, deps) {
           recorded,
           failure,
           mode: selection.mode,
+          log: logPath,
+          fixSteps,
+          ...(recordedData !== null ? { confirmed, refuted, mediumLow } : {}),
         },
         summary.join('\n')
       );

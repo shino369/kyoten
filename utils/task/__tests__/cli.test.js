@@ -1357,6 +1357,10 @@ describe('review', () => {
       { runAgent }
     );
     expect(runAgent).toHaveBeenCalledTimes(2);
+    expect(runAgent.mock.calls[1][0].prompt).toContain('## Retry note');
+    expect(runAgent.mock.calls[1][0].prompt).toContain(
+      'printed no BEGIN FINDINGS … END FINDINGS block'
+    );
     expect(JSON.parse(result.out)).toMatchObject({
       findings: 1,
       recorded: false,
@@ -1413,6 +1417,76 @@ describe('review', () => {
       ]);
     }
   );
+
+  test('should report confirmed/refuted counts, fix steps, medium/low IDs, and log path from review run', () => {
+    newTask(['--verify', 'pnpm test']);
+    fs.writeFileSync(
+      path.join(tasksRoot(root), NAME, 'scripts', 'source.js'),
+      'export {};\n'
+    );
+    const reply = { code: 0, signal: null, durationMs: 5, output: '' };
+    const runAgent = vi
+      .fn()
+      .mockReturnValueOnce({
+        ...reply,
+        stdout: [
+          'BEGIN FINDINGS',
+          '| | source.js:1 | high | Race condition | Concurrent writes collide | | |',
+          '| | source.js | low | Naming | Nitpick | | |',
+          '| | source.js:2 | medium | Dead branch | Never hits | | |',
+          'END FINDINGS',
+        ].join('\n'),
+      })
+      .mockReturnValueOnce({
+        ...reply,
+        stdout: [
+          'BEGIN FINDINGS',
+          '| | source.js:1 | high | Race condition | Concurrent writes collide | CONFIRMED | Verified race |',
+          '| | source.js | low | Naming | Nitpick | CONFIRMED | Confirmed nit |',
+          '| | source.js:2 | medium | Dead branch | Never hits | REFUTED | Branch is reachable |',
+          'END FINDINGS',
+        ].join('\n'),
+      });
+
+    const textResult = run(['review', 'run', '--folder', '--force'], {
+      runAgent,
+    });
+    expect(textResult.code).toBe(0);
+    expect(textResult.out).toContain(
+      `Recorded: 2 confirmed, 1 refuted; 1 fix step(s); telemetry: tasks/${NAME}/reviews/RUN_${NAME}-r1.md.`
+    );
+    expect(textResult.out).toContain(
+      '  s3. fix: Race condition (source.js:1; r1-1)'
+    );
+    expect(textResult.out).toContain('Recorded (medium/low): r1-2.');
+
+    run(['step', 's1', 'done']);
+    run(['step', 's2', 'done']);
+    run(['step', 's3', 'done']);
+    run(['verify']);
+    fs.writeFileSync(
+      path.join(tasksRoot(root), NAME, 'scripts', 'source.js'),
+      'export const v = 2;\n'
+    );
+    const jsonAgent = vi.fn().mockReturnValueOnce({
+      ...reply,
+      stdout: 'BEGIN FINDINGS\nEND FINDINGS',
+    });
+    const jsonResult = run(['review', 'run', '--json'], {
+      runAgent: jsonAgent,
+    });
+    expect(JSON.parse(jsonResult.out)).toMatchObject({
+      ok: true,
+      round: 2,
+      findings: 0,
+      recorded: true,
+      confirmed: 0,
+      refuted: 0,
+      fixSteps: [],
+      mediumLow: [],
+      log: `tasks/${NAME}/reviews/RUN_${NAME}-r2.md`,
+    });
+  });
 
   test('should run an opt-in dscc review and redact its credential from artifacts', () => {
     const credential = 'fixture-only-profile-value';
