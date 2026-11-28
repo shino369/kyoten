@@ -1,3 +1,4 @@
+import { spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -22,7 +23,7 @@ import {
   updateState,
   writeSession,
 } from '../store.js';
-import { FOLDER_BASE } from '../review.js';
+import { FOLDER_BASE, defaultRunGit, defaultRunGitStatus } from '../review.js';
 import { DEFAULT_CONFIG, writeConfig } from '../../memory/config.js';
 import { loadNotes, memoryDir } from '../../memory/store.js';
 
@@ -1400,6 +1401,122 @@ describe('review', () => {
       'diff --git a/huge-untracked.json b/huge-untracked.json'
     );
     expect(incremental).toContain('deleted file (was omitted from previous');
+  });
+
+  test('should open round 2 when deleting the only oversized untracked file empties the git scope', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'review-r2-only-big-'));
+    const gitExec = (/** @type {string[]} */ args) => {
+      const res = spawnSync('git', args, { cwd: repo, encoding: 'utf-8' });
+      if (res.status !== 0) {
+        throw new Error(`git ${args.join(' ')} failed: ${res.stderr}`);
+      }
+      return res.stdout.trim();
+    };
+    try {
+      gitExec(['init']);
+      gitExec(['config', 'user.email', 'test@example.com']);
+      gitExec(['config', 'user.name', 'Test']);
+      fs.writeFileSync(path.join(repo, 'base.js'), 'base\n');
+      gitExec(['add', 'base.js']);
+      gitExec(['commit', '-m', 'init']);
+      const base = gitExec(['rev-parse', 'HEAD']);
+
+      newTask(['--verify', 'pnpm test', '--repo', repo]);
+      finishSteps();
+      run(['verify']);
+
+      const bigFile = path.join(repo, 'only-huge.json');
+      fs.writeFileSync(bigFile, 'x'.repeat(260 * 1024));
+      run(['review', '--base', base], {
+        runGit: defaultRunGit,
+        runGitStatus: defaultRunGitStatus,
+      });
+      addRows(1, [
+        '| | only-huge.json | low | Size | huge file | CONFIRMED | agreed |',
+      ]);
+      run(['review', 'record']);
+
+      fs.rmSync(bigFile);
+      const parsed = JSON.parse(
+        run(['review', '--json'], {
+          runGit: defaultRunGit,
+          runGitStatus: defaultRunGitStatus,
+        }).out
+      );
+
+      expect(parsed.round).toBe(2);
+      expect(parsed.scope.files).toEqual([]);
+      expect(parsed.diff).toBeNull();
+      expect(parsed.incrementalDiff).toBe(
+        `tasks/${NAME}/reviews/DIFF_${NAME}-r1-to-r2.patch`
+      );
+      const incremental = read(`reviews/DIFF_${NAME}-r1-to-r2.patch`);
+      expect(incremental).toContain(
+        'diff --git a/only-huge.json b/only-huge.json'
+      );
+      expect(incremental).toContain('deleted file (was omitted from previous');
+      const brief = read(`reviews/BRIEF_${NAME}-r2.md`);
+      expect(brief).toContain('Changes since round 1:');
+      expect(brief).toContain('## Reading budget');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('should report restoration of a tracked file deleted in round 1 on round 2 in a real git repo', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'review-r2-restore-'));
+    const gitExec = (/** @type {string[]} */ args) => {
+      const res = spawnSync('git', args, { cwd: repo, encoding: 'utf-8' });
+      if (res.status !== 0) {
+        throw new Error(`git ${args.join(' ')} failed: ${res.stderr}`);
+      }
+      return res.stdout.trim();
+    };
+    try {
+      gitExec(['init']);
+      gitExec(['config', 'user.email', 'test@example.com']);
+      gitExec(['config', 'user.name', 'Test']);
+      fs.writeFileSync(path.join(repo, 'keep.js'), 'v1\n');
+      fs.writeFileSync(path.join(repo, 'gone.js'), 'original line\n');
+      gitExec(['add', 'keep.js', 'gone.js']);
+      gitExec(['commit', '-m', 'init']);
+      const base = gitExec(['rev-parse', 'HEAD']);
+
+      newTask(['--verify', 'pnpm test', '--repo', repo]);
+      finishSteps();
+      run(['verify']);
+
+      fs.writeFileSync(path.join(repo, 'keep.js'), 'v2\n');
+      fs.rmSync(path.join(repo, 'gone.js'));
+      run(['review', '--base', base], {
+        runGit: defaultRunGit,
+        runGitStatus: defaultRunGitStatus,
+      });
+      addRows(1, [
+        '| | gone.js | high | Deleted file | missing module | CONFIRMED | needed |',
+      ]);
+      run(['review', 'record']);
+
+      gitExec(['checkout', '--', 'gone.js']);
+      run(['step', 's3', 'done']);
+      const parsed = JSON.parse(
+        run(['review', '--json'], {
+          runGit: defaultRunGit,
+          runGitStatus: defaultRunGitStatus,
+        }).out
+      );
+
+      expect(parsed.round).toBe(2);
+      expect(parsed.scope.files).toEqual(['keep.js']);
+      expect(parsed.incrementalDiff).toBe(
+        `tasks/${NAME}/reviews/DIFF_${NAME}-r1-to-r2.patch`
+      );
+      const incremental = read(`reviews/DIFF_${NAME}-r1-to-r2.patch`);
+      expect(incremental).toContain('diff --git a/gone.js b/gone.js');
+      expect(incremental).toContain('+original line');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   test('should review git changes since main when the task has no code', () => {

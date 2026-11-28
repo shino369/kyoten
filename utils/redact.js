@@ -59,9 +59,20 @@ const SECRET_RULES = [
     replace: () => `Bearer ${REDACTED}`,
   },
   {
+    name: 'basic-auth',
+    pattern: /\b(Authorization\s*:\s*Basic\s+)[A-Za-z0-9+/=]+/gi,
+    replace: (_match, prefix) => `${prefix}${REDACTED}`,
+  },
+  {
+    name: 'url-credentials',
+    pattern: /\b([a-z][a-z0-9+.-]*:\/\/)([^/\s@]+)@/gi,
+    replace: (match, scheme, creds) =>
+      creds.includes(REDACTED) ? match : `${scheme}${REDACTED}@`,
+  },
+  {
     name: 'secret-assignment',
     pattern:
-      /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|APIKEY|ACCESS_KEY)[A-Za-z0-9_]*)(\s*[=:]\s*)("[^"]*"|'[^']*'|<[^>\n]*>|\S+)/gi,
+      /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|APIKEY|ACCESS_KEY)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)("[^"]*"|'[^']*'|<[^>\n]*>|\S+)/gi,
     replace: (match, name, separator, value) =>
       isReference(value) ? match : `${name}${separator}${REDACTED}`,
   },

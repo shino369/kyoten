@@ -402,8 +402,20 @@ export function fingerprint(rootDir, files) {
   const hash = crypto.createHash('sha256');
   for (const file of [...files].sort()) {
     hash.update(`${file}\0`);
-    const full = path.join(rootDir, file);
-    hash.update(fs.existsSync(full) ? fs.readFileSync(full) : '\0deleted');
+    const entry = inspectWorkingFile(rootDir, file);
+    if (entry.kind === 'file') {
+      hash.update(fs.readFileSync(entry.full));
+    } else if (entry.kind === 'symlink') {
+      try {
+        hash.update(`\0symlink:${fs.readlinkSync(entry.full)}`);
+      } catch {
+        hash.update('\0symlink');
+      }
+    } else if (entry.kind === 'secret') {
+      hash.update('\0secret');
+    } else {
+      hash.update('\0deleted');
+    }
     hash.update('\0');
   }
   return hash.digest('hex').slice(0, 16);
@@ -607,6 +619,20 @@ function parseNumstat(text) {
   return stats;
 }
 
+const SECRET_DIR_NAMES = new Set(['secrets', '.ssh', '.aws', '.gnupg']);
+const SECRET_BASENAMES = new Set([
+  'credentials.json',
+  '.envrc',
+  '.netrc',
+  '.npmrc',
+  '.pypirc',
+  '.htpasswd',
+  'id_rsa',
+  'id_dsa',
+  'id_ecdsa',
+  'id_ed25519',
+]);
+const SECRET_KEY_EXT_RE = /\.(?:pem|key|p12|pfx|jks|keystore|kdbx|ppk|ovpn)$/i;
 const SECRET_CONFIG_EXT = new Set([
   '.json',
   '.jsonc',
@@ -616,6 +642,11 @@ const SECRET_CONFIG_EXT = new Set([
   '.toml',
   '.ini',
   '.cfg',
+  '.conf',
+  '.properties',
+  '.txt',
+  '.secret',
+  '.secrets',
 ]);
 const SECRET_CONFIG_NAME_RE =
   /(^|[._-])(credentials?|secrets?|service[-_]?account|api[-_]?keys?|private[-_]?key|tokens?|passwords?)([._-]|$)/i;
@@ -623,31 +654,98 @@ const ENV_TEMPLATE_RE = /\.(?:example|sample|template)$/i;
 
 /**
  * Whether `file` is a secret or credential path that review artifacts must
- * never read or copy (AGENTS.md §1: `.env*`, `secrets/`, `*.pem`, `*.key`,
- * `credentials.json`, and credential-named config files).
+ * never read or copy (AGENTS.md §1: `.env*`, `*.env`, `secrets/`, `.ssh/`,
+ * `.aws/`, `*.pem`, `*.key`, `credentials.json`, and credential-named config
+ * files).
  *
  * @param {string} file repo-relative POSIX path
  * @returns {boolean}
  */
 export function isSecretFile(file) {
-  const parts = file.split('/');
+  const normalized = file.replace(/\\/g, '/').replace(/^\.\//, '');
+  const parts = normalized.split('/');
   const base = parts.at(-1) ?? '';
+  const lower = base.toLowerCase();
   if (
-    parts.slice(0, -1).some((segment) => segment.toLowerCase() === 'secrets')
+    parts
+      .slice(0, -1)
+      .some((segment) => SECRET_DIR_NAMES.has(segment.toLowerCase()))
   ) {
     return true;
   }
-  if (/^\.env(?:\..+)?$/i.test(base) && !ENV_TEMPLATE_RE.test(base)) {
+  if (
+    (/^\.env(?:\..+)?$/i.test(base) || /\.env$/i.test(base)) &&
+    !ENV_TEMPLATE_RE.test(base)
+  ) {
     return true;
   }
-  if (
-    /\.(?:pem|key)$/i.test(base) ||
-    base.toLowerCase() === 'credentials.json'
-  ) {
+  if (SECRET_KEY_EXT_RE.test(base) || SECRET_BASENAMES.has(lower)) {
     return true;
   }
   const ext = path.posix.extname(base).toLowerCase();
-  return SECRET_CONFIG_EXT.has(ext) && SECRET_CONFIG_NAME_RE.test(base);
+  return (
+    SECRET_CONFIG_EXT.has(ext) &&
+    SECRET_CONFIG_NAME_RE.test(base) &&
+    !ENV_TEMPLATE_RE.test(base)
+  );
+}
+
+/**
+ * Resolve `relPath` strictly inside `baseDir`, returning null on traversal,
+ * absolute paths, or NUL bytes.
+ *
+ * @param {string} baseDir
+ * @param {string} relPath
+ * @returns {string | null}
+ */
+function resolveInside(baseDir, relPath) {
+  if (!relPath || relPath.includes('\0')) return null;
+  const normalized = relPath.replace(/\\/g, '/');
+  if (path.posix.isAbsolute(normalized) || path.win32.isAbsolute(relPath)) {
+    return null;
+  }
+  if (normalized.split('/').some((segment) => segment === '..')) return null;
+  const resolvedBase = path.resolve(baseDir);
+  const full = path.resolve(resolvedBase, relPath);
+  const rel = path.relative(resolvedBase, full);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  return full;
+}
+
+/**
+ * Inspect a repo-relative path without ever following symlinks or reading
+ * files outside `repoDir` or secret targets.
+ *
+ * @param {string} repoDir
+ * @param {string} file
+ * @returns {{ kind: 'secret' | 'unsafe' | 'missing' | 'other' } | { kind: 'symlink', full: string } | { kind: 'file', full: string, size: number }}
+ */
+function inspectWorkingFile(repoDir, file) {
+  if (isSecretFile(file)) return { kind: 'secret' };
+  const full = resolveInside(repoDir, file);
+  if (!full) return { kind: 'unsafe' };
+  let st;
+  try {
+    st = fs.lstatSync(full);
+  } catch {
+    return { kind: 'missing' };
+  }
+  if (st.isSymbolicLink()) return { kind: 'symlink', full };
+  if (!st.isFile()) return { kind: 'other' };
+  try {
+    const realRepo = fs.realpathSync(repoDir);
+    const realFull = fs.realpathSync(full);
+    const rel = path.relative(realRepo, realFull);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+      return { kind: 'unsafe' };
+    }
+    if (isSecretFile(rel.split(path.sep).join('/'))) {
+      return { kind: 'secret' };
+    }
+  } catch {
+    return { kind: 'unsafe' };
+  }
+  return { kind: 'file', full, size: st.size };
 }
 
 /**
@@ -682,15 +780,17 @@ export function diffStats({ repoDir, scope, runGit = defaultRunGit }) {
   for (const [file, stat] of parseNumstat(
     runGit(['diff', '--numstat', '-z', scope.since], repoDir)
   )) {
-    if (inScope.has(file)) stats.set(file, stat);
+    if (inScope.has(file) && !isSecretFile(file)) stats.set(file, stat);
   }
   for (const file of splitGitPaths(
     runGit(['ls-files', '--others', '--exclude-standard', '-z'], repoDir)
   )) {
-    if (!inScope.has(file) || stats.has(file) || isSecretFile(file)) continue;
+    if (!inScope.has(file) || stats.has(file)) continue;
+    const entry = inspectWorkingFile(repoDir, file);
+    if (entry.kind !== 'file') continue;
     let buffer;
     try {
-      buffer = fs.readFileSync(path.join(repoDir, file));
+      buffer = fs.readFileSync(entry.full);
     } catch {
       continue;
     }
@@ -752,12 +852,14 @@ export function generateReviewDiff({
     if (tracked.has(file)) {
       const diff = runGit(
         [
+          '--literal-pathspecs',
           '-c',
           'core.quotePath=false',
           'diff',
           '-M',
           `--unified=${DIFF_CONTEXT_LINES}`,
           '--no-ext-diff',
+          '--no-textconv',
           '--no-color',
           scope.since,
           '--',
@@ -771,14 +873,21 @@ export function generateReviewDiff({
       }
       if (diff) text = `${diff}\n`;
     } else {
-      try {
-        text = newFileDiff(file, fs.readFileSync(path.join(repoDir, file)));
-      } catch {
-        text = null;
+      const entry = inspectWorkingFile(repoDir, file);
+      if (entry.kind === 'secret') {
+        text = `diff --git a/${file} b/${file}\n... [omitted: protected secret path]\n`;
+      } else if (entry.kind === 'symlink' || entry.kind === 'unsafe') {
+        text = `diff --git a/${file} b/${file}\n... [omitted: symlink or protected path]\n`;
+      } else if (entry.kind === 'file') {
+        try {
+          text = newFileDiff(file, fs.readFileSync(entry.full));
+        } catch {
+          text = null;
+        }
       }
     }
     if (text === null) continue;
-    text = redactSecrets(capFileDiff(text, file, maxFileBytes));
+    text = capFileDiff(redactSecrets(text), file, maxFileBytes);
     if (chunks.length > 0 && total + text.length > maxTotalBytes) {
       omitted.push(file);
       continue;
@@ -809,16 +918,20 @@ export function generateReviewDiff({
   return `${prefix}${notes.join('\n')}\n`;
 }
 
-/** Manifest inside a snapshot folder listing files skipped (binary / oversized / secret). */
+/** Manifest inside a snapshot folder listing files skipped (binary / oversized / secret / symlink). */
 const SNAPSHOT_SKIPPED_FILE = '.snapshot-skipped.json';
+/** Manifest inside a snapshot folder listing the complete round scope (including absent/deleted files). */
+const SNAPSHOT_SCOPE_FILE = '.snapshot-scope.json';
 
 /**
  * Save the working-tree versions of `files` under `dir` (relative paths
- * mirrored) so a later round can diff against them. Binary, oversized, secret
- * paths, and files containing secret patterns are recorded in
+ * mirrored) so a later round can diff against them. Binary, oversized,
+ * symlink, secret paths, and files containing secret patterns are recorded in
  * `.snapshot-skipped.json` instead of mirrored, so no credentials are copied
  * into review artifacts and a later round does not mistake them for newly
- * added files. Returns the number of files saved.
+ * added files. The complete path inventory (including paths absent from the
+ * working tree, such as deleted tracked files) is recorded in
+ * `.snapshot-scope.json`. Returns the number of files saved.
  *
  * @param {{ repoDir: string, dir: string, files: string[] }} options
  * @returns {number}
@@ -828,44 +941,71 @@ export function saveSnapshot({ repoDir, dir, files }) {
   let saved = 0;
   /** @type {string[]} */
   const skipped = [];
-  for (const file of files) {
-    if (isSecretFile(file)) {
-      if (fs.existsSync(path.join(repoDir, file))) skipped.push(file);
+  /** @type {string[]} */
+  const inventory = [];
+  for (const file of [...new Set(files)].sort()) {
+    const target = resolveInside(dir, file);
+    if (!target) continue;
+    inventory.push(file);
+    const entry = inspectWorkingFile(repoDir, file);
+    if (entry.kind === 'secret') {
+      const full = resolveInside(repoDir, file);
+      if (full) {
+        try {
+          fs.lstatSync(full);
+          skipped.push(file);
+        } catch {
+          // Absent in working tree; still recorded in SNAPSHOT_SCOPE_FILE.
+        }
+      }
+      continue;
+    }
+    if (entry.kind === 'symlink') {
+      skipped.push(file);
+      continue;
+    }
+    if (entry.kind !== 'file') continue;
+    if (entry.size > SNAPSHOT_MAX_FILE_BYTES) {
+      skipped.push(file);
       continue;
     }
     let buffer;
     try {
-      buffer = fs.readFileSync(path.join(repoDir, file));
+      buffer = fs.readFileSync(entry.full);
     } catch {
       continue;
     }
-    if (
-      buffer.length > SNAPSHOT_MAX_FILE_BYTES ||
-      isBinary(buffer) ||
-      containsSecret(buffer.toString('utf-8'))
-    ) {
+    if (isBinary(buffer) || containsSecret(buffer.toString('utf-8'))) {
       skipped.push(file);
       continue;
     }
-    const target = path.join(dir, file);
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, buffer);
+    fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(target, buffer, { mode: 0o600 });
     saved++;
   }
+  if (skipped.length > 0 || inventory.length > 0) {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  }
   if (skipped.length > 0) {
-    fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(
       path.join(dir, SNAPSHOT_SKIPPED_FILE),
       JSON.stringify(skipped.sort()),
-      'utf-8'
+      { encoding: 'utf-8', mode: 0o600 }
+    );
+  }
+  if (inventory.length > 0) {
+    fs.writeFileSync(
+      path.join(dir, SNAPSHOT_SCOPE_FILE),
+      JSON.stringify(inventory),
+      { encoding: 'utf-8', mode: 0o600 }
     );
   }
   return saved;
 }
 
 /**
- * Files recorded as skipped (binary, oversized, or secret) in a saved snapshot,
- * as sorted POSIX paths.
+ * Files recorded as skipped (binary, oversized, symlink, or secret) in a saved
+ * snapshot, as sorted POSIX paths.
  *
  * @param {string} dir
  * @returns {string[]}
@@ -880,6 +1020,36 @@ export function listSnapshotSkipped(dir) {
   } catch {
     return [];
   }
+}
+
+/**
+ * The complete path inventory recorded for a snapshot round (saved files,
+ * skipped files, and files absent from the working tree at snapshot time), as
+ * sorted POSIX paths. Falls back to the union of saved and skipped files for
+ * snapshots written before `.snapshot-scope.json` existed.
+ *
+ * @param {string} dir
+ * @returns {string[]}
+ */
+export function listSnapshotScope(dir) {
+  /** @type {string[]} */
+  let recorded = [];
+  try {
+    const raw = fs.readFileSync(path.join(dir, SNAPSHOT_SCOPE_FILE), 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      recorded = parsed.filter((item) => typeof item === 'string');
+    }
+  } catch {
+    recorded = [];
+  }
+  return [
+    ...new Set([
+      ...recorded,
+      ...listSnapshotFiles(dir),
+      ...listSnapshotSkipped(dir),
+    ]),
+  ].sort();
 }
 
 /**
@@ -898,9 +1068,15 @@ export function listSnapshotFiles(dir) {
   const walk = (current, prefix) => {
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
-      if (!prefix && entry.name === SNAPSHOT_SKIPPED_FILE) continue;
+      if (
+        !prefix &&
+        (entry.name === SNAPSHOT_SKIPPED_FILE ||
+          entry.name === SNAPSHOT_SCOPE_FILE)
+      ) {
+        continue;
+      }
       if (entry.isDirectory()) walk(path.join(current, entry.name), rel);
-      else out.push(rel);
+      else if (entry.isFile()) out.push(rel);
     }
   };
   if (fs.existsSync(dir)) walk(dir, '');
@@ -925,8 +1101,8 @@ function rewriteNoIndexHeaders(patch, file) {
 /**
  * What changed since the previous round: the saved snapshot against the
  * current working tree, as a unified diff with repo-relative paths. `files`
- * should be the union of the current scope, the snapshot's files, and its
- * skipped files, so a file that appeared or disappeared still shows. Null when
+ * should be the union of the current scope and `listSnapshotScope(snapshotDir)`,
+ * so a file that appeared, disappeared, or was restored still shows. Null when
  * nothing changed.
  *
  * @param {{ repoDir: string, snapshotDir: string, files: string[], runGitStatus?: RunGitStatus, maxFileBytes?: number, maxTotalBytes?: number }} options
@@ -947,13 +1123,22 @@ export function generateIncrementalDiff({
   const omitted = [];
   let total = 0;
   for (const file of [...files].sort()) {
-    const snapshotFile = path.join(snapshotDir, file);
-    const currentFile = path.join(repoDir, file);
+    const snapshotFile = resolveInside(snapshotDir, file);
+    const currentPath = resolveInside(repoDir, file);
+    if (!snapshotFile || !currentPath) continue;
     if (isSecretFile(file)) {
+      let exists = false;
+      try {
+        fs.lstatSync(currentPath);
+        exists = true;
+      } catch {
+        exists = false;
+      }
+      if (!exists && !skippedInSnapshot.has(file)) continue;
       chunks.push(
         [
           `diff --git a/${file} b/${file}`,
-          fs.existsSync(currentFile)
+          exists
             ? '... [omitted: protected secret path]'
             : 'deleted file (protected secret path)',
           '',
@@ -965,29 +1150,46 @@ export function generateIncrementalDiff({
     /** @type {Buffer | null} */
     let snapshot = null;
     try {
-      snapshot = fs.readFileSync(snapshotFile);
+      if (fs.lstatSync(snapshotFile).isFile()) {
+        snapshot = fs.readFileSync(snapshotFile);
+      }
     } catch {
       snapshot = null;
     }
+    const current = inspectWorkingFile(repoDir, file);
     /** @type {string | null} */
     let text = null;
-    if (snapshot === null && skippedInSnapshot.has(file)) {
+    if (
+      current.kind === 'secret' ||
+      current.kind === 'symlink' ||
+      current.kind === 'unsafe'
+    ) {
       text = [
         `diff --git a/${file} b/${file}`,
-        fs.existsSync(currentFile)
+        current.kind === 'secret'
+          ? '... [omitted: protected secret path]'
+          : '... [omitted: symlink or protected path]',
+        '',
+      ].join('\n');
+    } else if (snapshot === null && skippedInSnapshot.has(file)) {
+      text = [
+        `diff --git a/${file} b/${file}`,
+        current.kind !== 'missing'
           ? `... [omitted from previous round snapshot (binary, >${SNAPSHOT_MAX_FILE_BYTES} bytes, or secret); inspect the full DIFF patch or targeted line ranges]`
           : `deleted file (was omitted from previous round snapshot as binary, >${SNAPSHOT_MAX_FILE_BYTES} bytes, or secret)`,
         '',
       ].join('\n');
     } else if (snapshot === null) {
-      try {
-        text = newFileDiff(file, fs.readFileSync(currentFile));
-      } catch {
-        text = null;
+      if (current.kind === 'file') {
+        try {
+          text = newFileDiff(file, fs.readFileSync(current.full));
+        } catch {
+          text = null;
+        }
       }
-    } else if (!fs.existsSync(currentFile)) {
+    } else if (current.kind === 'missing') {
       text = deletedFileDiff(file, snapshot);
-    } else {
+    } else if (current.kind === 'file') {
       const result = runGitStatus(
         [
           '-c',
@@ -996,9 +1198,11 @@ export function generateIncrementalDiff({
           '--no-index',
           `--unified=${DIFF_CONTEXT_LINES}`,
           '--no-ext-diff',
+          '--no-textconv',
           '--no-color',
+          '--',
           snapshotFile,
-          currentFile,
+          current.full,
         ],
         repoDir
       );
@@ -1008,7 +1212,7 @@ export function generateIncrementalDiff({
       }
     }
     if (text === null) continue;
-    text = redactSecrets(capFileDiff(text, file, maxFileBytes));
+    text = capFileDiff(redactSecrets(text), file, maxFileBytes);
     if (chunks.length > 0 && total + text.length > maxTotalBytes) {
       omitted.push(file);
       continue;
@@ -1161,11 +1365,13 @@ export function formatReviewBrief({
         )
       : ['- (no files: nothing changed)']),
     '',
-    ...(diffPath
+    ...(diffPath || incrementalDiffPath
       ? [
           '## Reading budget',
           '',
-          `Start with the pre-computed \`Diff:\` patch file${round > 1 ? ` and \`Changes since round ${round - 1}\`` : ''}. Only read specific line ranges (\`StartLine\`/\`EndLine\`) of source files when a hunk needs surrounding context. Avoid reading entire large test files unless a specific assertion needs full-file context.`,
+          diffPath
+            ? `Start with the pre-computed \`Diff:\` patch file${round > 1 ? ` and \`Changes since round ${round - 1}\`` : ''}. Only read specific line ranges (\`StartLine\`/\`EndLine\`) of source files when a hunk needs surrounding context. Avoid reading entire large test files unless a specific assertion needs full-file context.`
+            : `Start with the pre-computed \`Changes since round ${round - 1}\` patch file. Only read specific line ranges (\`StartLine\`/\`EndLine\`) of source files when a hunk needs surrounding context.`,
           '',
         ]
       : []),

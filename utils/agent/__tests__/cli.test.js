@@ -656,4 +656,46 @@ describe('dscc', () => {
     expect(recordText).toContain('[REDACTED]');
     expect(parsed.answer).toContain('[REDACTED]');
   });
+
+  test('should scrub custom header values, quoted tokens, URL query secrets, and inherited env keys', () => {
+    const file = profile(
+      [
+        'ANTHROPIC_BASE_URL=https://user:p%40ss@api.deepseek.com/anthropic?api_key=query-secret-99',
+        'ANTHROPIC_AUTH_TOKEN="quoted-dscc-tok"',
+        'ANTHROPIC_CUSTOM_HEADERS="X-Api-Key: hdr-secret-42"',
+        '',
+      ].join('\n')
+    );
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      stdout:
+        'echo quoted-dscc-tok hdr-secret-42 query-secret-99 p@ss inherited-env-secret\n',
+      output:
+        'full quoted-dscc-tok hdr-secret-42 query-secret-99 p@ss inherited-env-secret\n',
+      durationMs: 50,
+    }));
+
+    const { out } = run(['ask', '--agent', 'dscc', '--json', 'check it'], {
+      env: {
+        DSCC_PROFILE: file,
+        OPENAI_API_KEY: 'inherited-env-secret',
+      },
+      runAgent,
+    });
+
+    const parsed = JSON.parse(out);
+    const recordText = read(parsed.record);
+    for (const leaked of [
+      'quoted-dscc-tok',
+      'hdr-secret-42',
+      'query-secret-99',
+      'p@ss',
+      'inherited-env-secret',
+    ]) {
+      expect(recordText).not.toContain(leaked);
+      expect(parsed.answer).not.toContain(leaked);
+      expect(parsed.output).not.toContain(leaked);
+    }
+  });
 });

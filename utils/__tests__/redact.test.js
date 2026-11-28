@@ -49,6 +49,24 @@ describe('redact', () => {
       );
     });
 
+    test('should redact Basic auth headers without touching ordinary text', () => {
+      expect(redactSecrets('Authorization: Basic dXNlcjpwYXNz')).toBe(
+        `Authorization: Basic ${REDACTED}`
+      );
+      expect(redactSecrets('basic settings and Basic auth docs')).toBe(
+        'basic settings and Basic auth docs'
+      );
+    });
+
+    test('should redact URL credentials without touching scp-style git URLs', () => {
+      expect(
+        redactSecrets('https://user:s3cr3t@api.deepseek.com/anthropic')
+      ).toBe(`https://${REDACTED}@api.deepseek.com/anthropic`);
+      expect(redactSecrets('git@github.com:shino369/kyoten.git')).toBe(
+        'git@github.com:shino369/kyoten.git'
+      );
+    });
+
     test('should redact a whole PEM private key block', () => {
       expect(redactSecrets(`before\n${FAKE.pem}\nafter`)).toBe(
         'before\n[REDACTED PRIVATE KEY]\nafter'
@@ -77,6 +95,9 @@ describe('redact', () => {
       ['deepseek_apikey=foo', `deepseek_apikey=${REDACTED}`],
       ['PASSWORD=$ecret', `PASSWORD=${REDACTED}`],
       ['API_KEY=$Secret1', `API_KEY=${REDACTED}`],
+      ['{"api_key": "short-token"}', `{"api_key": ${REDACTED}}`],
+      ['{"password": "hunter2"}', `{"password": ${REDACTED}}`],
+      ["{'client_secret': 'xyz'}", `{'client_secret': ${REDACTED}}`],
     ])('should keep the name and redact the value in %s', (input, expected) => {
       expect(redactSecrets(input)).toBe(expected);
     });
@@ -102,7 +123,7 @@ describe('redact', () => {
     });
 
     test('should be idempotent', () => {
-      const text = `A=${FAKE.ghp} Bearer tok ${FAKE.pem} TOKEN=x`;
+      const text = `A=${FAKE.ghp} Bearer tok Authorization: Basic dXNlcjpwYXNz https://u:p@example.com {"api_key": "short"} ${FAKE.pem} TOKEN=x`;
 
       const once = redactSecrets(text);
 
@@ -121,6 +142,8 @@ describe('redact', () => {
     test.each([
       ['private-key', FAKE.pem],
       ['bearer-token', 'Authorization: Bearer abc.def-123'],
+      ['basic-auth', 'Authorization: Basic dXNlcjpwYXNz'],
+      ['url-credentials', 'https://user:pass@api.example.com/v1'],
       ['secret-assignment', 'DB_PASSWORD=hunter2'],
       ['aws-access-key', FAKE.aws],
       ['github-token', FAKE.ghp],
@@ -178,6 +201,8 @@ describe('redact', () => {
       expect(SECRET_RULE_NAMES).toEqual([
         'private-key',
         'bearer-token',
+        'basic-auth',
+        'url-credentials',
         'secret-assignment',
         'aws-access-key',
         'github-token',

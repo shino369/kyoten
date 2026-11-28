@@ -208,7 +208,87 @@ export function answerOf(result) {
 }
 
 const PROFILE_SECRET_NAME_RE = /AUTH|HEADERS/i;
-const URL_CREDENTIAL_RE = /^[a-z][a-z0-9+.-]*:\/\/([^/@]+)@/i;
+const URL_CREDENTIAL_RE = /^[a-z][a-z0-9+.-]*:\/\/([^/\s@]+)@/i;
+const URL_SECRET_PARAM_RE = /(?:token|secret|password|key|auth)/i;
+const HEADER_SCHEME_RE = /^(?:Bearer|Basic|Token)\s+(\S+)$/i;
+
+/**
+ * Add a literal secret (and its unquoted form when wrapped in matching quotes)
+ * to `values`.
+ *
+ * @param {Set<string>} values
+ * @param {string} raw
+ * @param {number} [minLength]
+ */
+function addSecretValue(values, raw, minLength = 1) {
+  const trimmed = raw.trim();
+  if (!trimmed) return;
+  const unquoted = /^(["']).*\1$/s.test(trimmed)
+    ? trimmed.slice(1, -1).trim()
+    : trimmed;
+  for (const candidate of [trimmed, unquoted]) {
+    if (
+      candidate.length >= minLength &&
+      !/^(?:\$|\[REDACTED|<[^>]*>$)/i.test(candidate)
+    ) {
+      values.add(candidate);
+    }
+  }
+}
+
+/**
+ * Extract header values and scheme tokens from a custom-headers env value
+ * (e.g. `ANTHROPIC_CUSTOM_HEADERS="X-Api-Key: secret\nAuthorization: Basic …"`).
+ *
+ * @param {Set<string>} values
+ * @param {string} raw
+ */
+function addHeaderSecrets(values, raw) {
+  const unquoted = /^(["']).*\1$/s.test(raw.trim())
+    ? raw.trim().slice(1, -1)
+    : raw;
+  for (const line of unquoted.split(/\r?\n/)) {
+    const colon = line.indexOf(':');
+    if (colon === -1) continue;
+    const headerValue = line.slice(colon + 1).trim();
+    if (!headerValue) continue;
+    addSecretValue(values, headerValue, 4);
+    const scheme = HEADER_SCHEME_RE.exec(headerValue)?.[1];
+    if (scheme) addSecretValue(values, scheme, 4);
+  }
+}
+
+/**
+ * Extract credential components from a URL string (userinfo, decoded password,
+ * and secret-named query parameters).
+ *
+ * @param {Set<string>} values
+ * @param {string} raw
+ */
+function addUrlSecrets(values, raw) {
+  const cred = URL_CREDENTIAL_RE.exec(raw)?.[1];
+  if (cred) {
+    addSecretValue(values, cred);
+    const colon = cred.indexOf(':');
+    if (colon !== -1 && cred.slice(colon + 1)) {
+      const pw = cred.slice(colon + 1);
+      addSecretValue(values, pw);
+      try {
+        addSecretValue(values, decodeURIComponent(pw));
+      } catch {
+        // Malformed percent-encoding: raw value is already captured.
+      }
+    }
+  }
+  try {
+    const parsed = new URL(raw);
+    for (const [param, val] of parsed.searchParams.entries()) {
+      if (URL_SECRET_PARAM_RE.test(param)) addSecretValue(values, val, 4);
+    }
+  } catch {
+    // Not a URL.
+  }
+}
 
 /**
  * Literal secret values from a dscc profile (`set`), longest first so
@@ -227,16 +307,28 @@ export function profileSecrets(set) {
       isSecretKey(key) ||
       PROFILE_SECRET_NAME_RE.test(key)
     ) {
-      values.add(value);
+      addSecretValue(values, value);
+      if (/HEADERS/i.test(key)) addHeaderSecrets(values, value);
     }
-    const cred = URL_CREDENTIAL_RE.exec(value)?.[1];
-    if (cred) {
-      values.add(cred);
-      const colon = cred.indexOf(':');
-      if (colon !== -1 && cred.slice(colon + 1)) {
-        values.add(cred.slice(colon + 1));
-      }
-    }
+    addUrlSecrets(values, value);
+  }
+  return [...values].sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Literal secret values from a child process environment (e.g. inherited API
+ * keys), requiring at least 8 characters so short flags like `1`/`true` never
+ * corrupt normal output.
+ *
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {string[]}
+ */
+function envSecrets(env) {
+  /** @type {Set<string>} */
+  const values = new Set();
+  for (const [key, value] of Object.entries(env)) {
+    if (!value) continue;
+    if (isSecretKey(key)) addSecretValue(values, value, 8);
   }
   return [...values].sort((a, b) => b.length - a.length);
 }
@@ -440,6 +532,9 @@ function ask(options, d) {
     env[INNER_LOOP_ENV] = 'off';
     env.TASK_AGENT = label;
   }
+  secrets = [...new Set([...secrets, ...envSecrets(env)])].sort(
+    (a, b) => b.length - a.length
+  );
   if (options.write) {
     let linked = false;
     try {
@@ -487,7 +582,7 @@ function ask(options, d) {
       result,
       secrets,
     }),
-    'utf-8'
+    { encoding: 'utf-8', mode: 0o600 }
   );
 
   const code = result.code === null ? 1 : result.code;

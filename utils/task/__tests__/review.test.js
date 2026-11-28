@@ -21,6 +21,7 @@ import {
   generateReviewDiff,
   isSecretFile,
   listSnapshotFiles,
+  listSnapshotScope,
   listSnapshotSkipped,
   openRound,
   parseFindings,
@@ -1189,12 +1190,14 @@ describe('generateReviewDiff', () => {
     expect(patch).toContain('@@ -0,0 +1,2 @@\n+one\n+two');
     expect(runGit).toHaveBeenCalledWith(
       [
+        '--literal-pathspecs',
         '-c',
         'core.quotePath=false',
         'diff',
         '-M',
         '--unified=8',
         '--no-ext-diff',
+        '--no-textconv',
         '--no-color',
         'abc123',
         '--',
@@ -1235,6 +1238,25 @@ describe('generateReviewDiff', () => {
 
     expect(patch).toContain('[REDACTED]');
     expect(patch).not.toContain('ghp_');
+  });
+
+  test('should redact secrets before per-file truncation so split tokens never leak', () => {
+    const token = 'sk-proj-' + 'z'.repeat(40);
+    const diff = `+${'a'.repeat(15)} ${token} ${'b'.repeat(100)}`;
+    const runGit = runGitFor({ 'src/a.js': diff }, ['src/a.js']);
+
+    const patch = generateReviewDiff({
+      repoDir: root,
+      scope: gitScope(['src/a.js']),
+      runGit,
+      maxFileBytes: 40,
+      maxTotalBytes: 10_000,
+    });
+
+    expect(patch).toContain('[REDACTED]');
+    expect(patch).toContain('truncated: omitted');
+    expect(patch).not.toContain('sk-proj-');
+    expect(patch).not.toContain('zzzzz');
   });
 
   test('should truncate one huge file and point at targeted line ranges', () => {
@@ -1364,6 +1386,111 @@ describe('generateReviewDiff', () => {
       fs.rmSync(repo, { recursive: true, force: true });
     }
   });
+
+  test('should treat per-file pathspecs literally so bracketed names do not match sibling files', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'review-literal-'));
+    const gitExec = (/** @type {string[]} */ args) => {
+      const res = spawnSync('git', args, { cwd: repo, encoding: 'utf-8' });
+      if (res.status !== 0) {
+        throw new Error(`git ${args.join(' ')} failed: ${res.stderr}`);
+      }
+      return res.stdout.trim();
+    };
+    try {
+      gitExec(['init']);
+      gitExec(['config', 'user.email', 'test@example.com']);
+      gitExec(['config', 'user.name', 'Test']);
+      fs.writeFileSync(path.join(repo, 'report[1].txt'), 'bracket-old\n');
+      fs.writeFileSync(path.join(repo, 'report1.txt'), 'plain-old\n');
+      gitExec(['add', 'report[1].txt', 'report1.txt']);
+      gitExec(['commit', '-m', 'init']);
+      const base = gitExec(['rev-parse', 'HEAD']);
+      fs.writeFileSync(path.join(repo, 'report[1].txt'), 'bracket-new\n');
+      fs.writeFileSync(path.join(repo, 'report1.txt'), 'plain-new\n');
+
+      const scope = reviewScope({
+        rootDir: repo,
+        taskDir: path.join(repo, 'tasks', NAME),
+        base,
+        repoDir: repo,
+      });
+      const patch = generateReviewDiff({ repoDir: repo, scope }) ?? '';
+
+      expect(patch).toContain('-bracket-old\n+bracket-new');
+      expect(patch).toContain('-plain-old\n+plain-new');
+      expect(
+        patch.match(/diff --git a\/report1\.txt b\/report1\.txt/g)
+      ).toHaveLength(1);
+      expect(
+        patch.match(/diff --git a\/report\[1\]\.txt b\/report\[1\]\.txt/g)
+      ).toHaveLength(1);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('should not read secret files or follow symlinks in fingerprint, diffStats, or diffs', () => {
+    fs.writeFileSync(path.join(root, '.env'), 'API_KEY=plain-secret\n');
+    fs.writeFileSync(path.join(root, 'dscc.env'), 'ANTHROPIC_AUTH_TOKEN=tok\n');
+    fs.writeFileSync(path.join(root, 'link.txt'), 'not-a-real-symlink\n');
+    const origLstat = fs.lstatSync.bind(fs);
+    const lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation((p, opts) => {
+      if (String(p).endsWith('link.txt')) {
+        return /** @type {any} */ ({
+          isSymbolicLink: () => true,
+          isFile: () => false,
+          size: 0,
+        });
+      }
+      return origLstat(p, /** @type {any} */ (opts));
+    });
+    const readlinkSpy = vi
+      .spyOn(fs, 'readlinkSync')
+      .mockImplementation((p) =>
+        String(p).endsWith('link.txt') ? '/etc/passwd' : ''
+      );
+    const readSpy = vi.spyOn(fs, 'readFileSync');
+    try {
+      const fp = fingerprint(root, ['.env', 'dscc.env', 'link.txt', '../out']);
+      expect(fp).toMatch(/^[0-9a-f]{16}$/);
+      const patch = generateReviewDiff({
+        repoDir: root,
+        scope: gitScope(['.env', 'dscc.env', 'link.txt', '../out']),
+        runGit: runGitFor({}, []),
+      });
+      expect(patch).toContain('diff --git a/dscc.env b/dscc.env');
+      expect(patch).toContain('protected secret path');
+      expect(patch).toContain('diff --git a/link.txt b/link.txt');
+      expect(patch).toContain('symlink or protected path');
+      const snapshotDir = path.join(root, '.snapshot-sec');
+      expect(
+        saveSnapshot({
+          repoDir: root,
+          dir: snapshotDir,
+          files: ['.env', 'dscc.env', 'link.txt', '../out'],
+        })
+      ).toBe(0);
+      expect(listSnapshotSkipped(snapshotDir)).toEqual([
+        '.env',
+        'dscc.env',
+        'link.txt',
+      ]);
+      const inc = generateIncrementalDiff({
+        repoDir: root,
+        snapshotDir,
+        files: ['.env', 'dscc.env', 'link.txt', '../out'],
+      });
+      expect(inc).toContain('symlink or protected path');
+      expect(inc).not.toContain('plain-secret');
+      expect(
+        readSpy.mock.calls.some(([p]) => /\.env$|link\.txt$/.test(String(p)))
+      ).toBe(false);
+    } finally {
+      lstatSpy.mockRestore();
+      readlinkSpy.mockRestore();
+      readSpy.mockRestore();
+    }
+  });
 });
 
 describe('saveSnapshot and listSnapshotFiles', () => {
@@ -1383,9 +1510,16 @@ describe('saveSnapshot and listSnapshotFiles', () => {
 
     expect(isSecretFile('.env')).toBe(true);
     expect(isSecretFile('.env.example')).toBe(false);
+    expect(isSecretFile('dscc.env')).toBe(true);
+    expect(isSecretFile('dscc.env.example')).toBe(false);
+    expect(isSecretFile('.envrc')).toBe(true);
+    expect(isSecretFile('.ssh/id_rsa')).toBe(true);
     expect(isSecretFile('secrets/key.txt')).toBe(true);
+    expect(isSecretFile('secrets\\key.txt')).toBe(true);
     expect(isSecretFile('certs/app.pem')).toBe(true);
+    expect(isSecretFile('certs/app.p12')).toBe(true);
     expect(isSecretFile('config/credentials.json')).toBe(true);
+    expect(isSecretFile('config/api_key.txt')).toBe(true);
     expect(isSecretFile('src/token.js')).toBe(false);
     expect(
       saveSnapshot({
@@ -1407,6 +1541,14 @@ describe('saveSnapshot and listSnapshotFiles', () => {
       'big.js',
       'blob.bin',
       'has-token.js',
+    ]);
+    expect(listSnapshotScope(dir)).toEqual([
+      '.env',
+      'a.js',
+      'big.js',
+      'blob.bin',
+      'has-token.js',
+      'missing.js',
     ]);
     expect(fs.existsSync(path.join(dir, '.env'))).toBe(false);
     expect(fs.existsSync(path.join(dir, 'has-token.js'))).toBe(false);
@@ -1475,7 +1617,9 @@ describe('generateIncrementalDiff', () => {
         '--no-index',
         '--unified=8',
         '--no-ext-diff',
+        '--no-textconv',
         '--no-color',
+        '--',
         snapshotFile,
         currentFile,
       ],
@@ -1548,6 +1692,33 @@ describe('generateIncrementalDiff', () => {
 
     expect(patch).toContain('[REDACTED]');
     expect(patch).not.toContain('ghp_');
+  });
+
+  test('should redact secrets before truncating an incremental file diff', () => {
+    const snapshotDir = path.join(root, '.snapshot-r1');
+    fs.mkdirSync(snapshotDir, { recursive: true });
+    fs.writeFileSync(path.join(snapshotDir, 'a.js'), 'old\n');
+    fs.writeFileSync(path.join(root, 'a.js'), 'new\n');
+    const token = 'sk-proj-' + 'z'.repeat(40);
+    /** @type {(args: string[], cwd: string) => { status: number | null, stdout: string }} */
+    const runGitStatus = vi.fn(() => ({
+      status: 1,
+      stdout: `diff --git a/x b/y\n--- a/x\n+++ b/y\n@@ -1 +1,2 @@\n+${'a'.repeat(15)} ${token}\n+${'b'.repeat(100)}\n`,
+    }));
+
+    const patch = generateIncrementalDiff({
+      repoDir: root,
+      snapshotDir,
+      files: ['a.js'],
+      runGitStatus,
+      maxFileBytes: 100,
+      maxTotalBytes: 10_000,
+    });
+
+    expect(patch).toContain('[REDACTED]');
+    expect(patch).toContain('truncated: omitted');
+    expect(patch).not.toContain('sk-proj-');
+    expect(patch).not.toContain('zzzzz');
   });
 
   test('should not render snapshot-skipped binary or oversized files as newly added', () => {

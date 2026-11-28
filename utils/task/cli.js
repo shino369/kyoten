@@ -75,8 +75,7 @@ import {
   formatReviewBrief,
   generateIncrementalDiff,
   generateReviewDiff,
-  listSnapshotFiles,
-  listSnapshotSkipped,
+  listSnapshotScope,
   openRound,
   parseFindings,
   recordFindings,
@@ -1195,24 +1194,43 @@ export const COMMANDS = {
       base: options.folder ? null : options.base,
       runGit: deps.runGit,
     });
+    const reviewsDir = path.join(task.dir, 'reviews');
+    const preScopeDir = scopeRoot(deps.rootDir, task.state, scope);
+    /** @type {string | null | undefined} */
+    let emptyScopeIncremental;
     if (scope.files.length === 0 && quality.phase !== 'review') {
-      if (scope.base === null) {
+      const priorSnapshot =
+        quality.reviewRounds > 0
+          ? path.join(reviewsDir, `.snapshot-r${quality.reviewRounds}`)
+          : null;
+      const priorFiles =
+        priorSnapshot && fs.existsSync(priorSnapshot)
+          ? listSnapshotScope(priorSnapshot)
+          : [];
+      if (priorSnapshot && priorFiles.length > 0) {
+        emptyScopeIncremental = generateIncrementalDiff({
+          repoDir: preScopeDir,
+          snapshotDir: priorSnapshot,
+          files: priorFiles,
+          runGitStatus: deps.runGitStatus,
+        });
+      }
+      if (!emptyScopeIncremental) {
+        if (scope.base === null) {
+          throw new Error(
+            `Nothing to review for ${name}: its task folder has no code (${taskRel}/).\nFix: pnpm task review --base <ref> to review git changes instead`
+          );
+        }
+        const noStart =
+          task.state.startCommit === undefined && options.base === undefined
+            ? ` ${name} has no recorded start commit (it predates them), so work committed on ${scope.base} itself cannot be found.`
+            : '';
         throw new Error(
-          `Nothing to review for ${name}: its task folder has no code (${taskRel}/).\nFix: pnpm task review --base <ref> to review git changes instead`
+          `Nothing to review for ${name}: no files changed since ${scope.base} (commit ${String(scope.since).slice(0, 7)}).${noStart} If the work is already committed there, review against the commit before it.\nFix: pnpm task review --base <the commit before the task's first commit>`
         );
       }
-      const noStart =
-        task.state.startCommit === undefined && options.base === undefined
-          ? ` ${name} has no recorded start commit (it predates them), so work committed on ${scope.base} itself cannot be found.`
-          : '';
-      throw new Error(
-        `Nothing to review for ${name}: no files changed since ${scope.base} (commit ${String(scope.since).slice(0, 7)}).${noStart} If the work is already committed there, review against the commit before it.\nFix: pnpm task review --base <the commit before the task's first commit>`
-      );
     }
-    const print = fingerprint(
-      scopeRoot(deps.rootDir, task.state, scope),
-      scope.files
-    );
+    const print = fingerprint(preScopeDir, scope.files);
     const now = deps.now();
     const agent = detectAgent(options, deps.env);
     let round = 0;
@@ -1239,8 +1257,7 @@ export const COMMANDS = {
       { now, agent }
     );
     const files = reviewFiles(name, round);
-    const reviewsDir = path.join(task.dir, 'reviews');
-    fs.mkdirSync(reviewsDir, { recursive: true });
+    fs.mkdirSync(reviewsDir, { recursive: true, mode: 0o700 });
     const scopeDir = scopeRoot(deps.rootDir, state, scope);
     const stats = diffStats({ repoDir: scopeDir, scope, runGit: deps.runGit });
     // The snapshot lets the next round show only what changed since this one;
@@ -1255,28 +1272,33 @@ export const COMMANDS = {
       runGit: deps.runGit,
     });
     if (patch !== null) {
-      fs.writeFileSync(path.join(task.dir, files.diff), patch, 'utf-8');
+      fs.writeFileSync(path.join(task.dir, files.diff), patch, {
+        encoding: 'utf-8',
+        mode: 0o600,
+      });
     }
     const previousSnapshot = path.join(reviewsDir, `.snapshot-r${round - 1}`);
     let incremental = null;
     if (round > 1 && files.incrementalDiff && fs.existsSync(previousSnapshot)) {
-      incremental = generateIncrementalDiff({
-        repoDir: scopeDir,
-        snapshotDir: previousSnapshot,
-        files: [
-          ...new Set([
-            ...scope.files,
-            ...listSnapshotFiles(previousSnapshot),
-            ...listSnapshotSkipped(previousSnapshot),
-          ]),
-        ].sort(),
-        runGitStatus: deps.runGitStatus,
-      });
+      incremental =
+        emptyScopeIncremental !== undefined
+          ? emptyScopeIncremental
+          : generateIncrementalDiff({
+              repoDir: scopeDir,
+              snapshotDir: previousSnapshot,
+              files: [
+                ...new Set([
+                  ...scope.files,
+                  ...listSnapshotScope(previousSnapshot),
+                ]),
+              ].sort(),
+              runGitStatus: deps.runGitStatus,
+            });
       if (incremental !== null) {
         fs.writeFileSync(
           path.join(task.dir, files.incrementalDiff),
           incremental,
-          'utf-8'
+          { encoding: 'utf-8', mode: 0o600 }
         );
       }
     }
@@ -1301,14 +1323,14 @@ export const COMMANDS = {
           scope,
         }),
       }),
-      'utf-8'
+      { encoding: 'utf-8', mode: 0o600 }
     );
     const findingsPath = path.join(task.dir, files.findings);
     if (!fs.existsSync(findingsPath)) {
       fs.writeFileSync(
         findingsPath,
         findingsTemplate({ name, round, brief: `${taskRel}/${files.brief}` }),
-        'utf-8'
+        { encoding: 'utf-8', mode: 0o600 }
       );
     }
     if (!reopened) {
