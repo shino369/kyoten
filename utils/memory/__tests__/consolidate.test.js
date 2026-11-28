@@ -540,7 +540,7 @@ describe('consolidate', () => {
     );
   });
 
-  test('should use the configured model, else the last session model', () => {
+  test('should use the configured Claude model or default to Haiku', () => {
     seed();
     appendJournal(dir, { at: 'x', status: 'applied', model: 'session-model' });
     const runAgent = agentReturning({ profile: [], ops: [] });
@@ -552,7 +552,7 @@ describe('consolidate', () => {
     const models = runAgent.mock.calls.map((call) =>
       /** @type {any} */ (call)[0].command.args.at(-1)
     );
-    expect(models).toEqual(['session-model', 'claude-sonnet-5-5']);
+    expect(models).toEqual(['haiku', 'claude-sonnet-5-5']);
   });
 
   describe('the consolidation agent', () => {
@@ -568,7 +568,7 @@ describe('consolidate', () => {
       const run = consolidate(deps({ runAgent }));
 
       expect(lastCall(runAgent).command.agent).toBe('claude');
-      expect(run).toMatchObject({ agent: 'claude', model: null });
+      expect(run).toMatchObject({ agent: 'claude', model: 'haiku' });
     });
 
     test('should use the session harness when there is no prior journal run', () => {
@@ -589,7 +589,7 @@ describe('consolidate', () => {
 
       const run = consolidate(deps({ runAgent: answering() }));
 
-      expect(run).toMatchObject({ agent: 'claude', model: 'old-model' });
+      expect(run).toMatchObject({ agent: 'claude', model: 'haiku' });
     });
 
     test('should use the session harness, not the last applied run', () => {
@@ -606,8 +606,11 @@ describe('consolidate', () => {
       const run = consolidate(deps({ runAgent }));
 
       expect(lastCall(runAgent).command.agent).toBe('claude');
-      expect(lastCall(runAgent).command.args).not.toContain('--model');
-      expect(run).toMatchObject({ agent: 'claude', model: null });
+      expect(lastCall(runAgent).command.args.slice(-2)).toEqual([
+        '--model',
+        'haiku',
+      ]);
+      expect(run).toMatchObject({ agent: 'claude', model: 'haiku' });
     });
 
     test('should omit any legacy journal model when consolidating on dsh', () => {
@@ -668,6 +671,7 @@ describe('consolidate', () => {
       writeConfig(dir, {
         ...DEFAULT_CONFIG,
         extractAgent: 'agy',
+        autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, agy: true },
         extractModel: 'gemini-3.8-flash-low',
       });
 
@@ -714,7 +718,7 @@ describe('consolidate', () => {
       expect(claudeRun).toMatchObject({
         status: 'consolidated',
         agent: 'claude',
-        model: null,
+        model: 'haiku',
       });
 
       // Explicit extractAgent=agy from a foreign harness defers without calling runAgent.
@@ -780,7 +784,7 @@ describe('consolidate', () => {
 
     const run = consolidate(deps({ runAgent, dryRun: true }));
 
-    expect(run).toMatchObject({ status: 'dry-run', model: null });
+    expect(run).toMatchObject({ status: 'dry-run', model: 'haiku' });
     expect(run.prompt).toContain('Groups of similar notes');
     expect(runAgent).not.toHaveBeenCalled();
     expect(readConsolidated(dir)).toBeNull();
@@ -1099,7 +1103,7 @@ describe('consolidation policy and sides', () => {
     expect(runAgent).toHaveBeenCalledTimes(1);
   });
 
-  test('should consolidate mixed notes on agy by default, and defer when agy is disabled', () => {
+  test('should consolidate mixed notes on agy when opted in and defer by default', () => {
     seed('normal');
     const session = 'dscc-1';
     const note = add({
@@ -1122,6 +1126,15 @@ describe('consolidation policy and sides', () => {
       KYOTEN_AGENT: 'agy',
     };
 
+    expect(consolidate(deps({ runAgent, env: agyEnv }))).toMatchObject({
+      status: 'deferred',
+      policyAgent: 'agy',
+    });
+    expect(runAgent).not.toHaveBeenCalled();
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, agy: true },
+    });
     const run = consolidate(deps({ runAgent, env: agyEnv }));
     expect(run).toMatchObject({
       status: 'consolidated',
@@ -1214,6 +1227,10 @@ describe('consolidation policy and sides', () => {
   });
 
   test('should record the agy side for a directly opened Antigravity session', () => {
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, agy: true },
+    });
     seed('agy');
     const runAgent = agentReturning({ profile: [], ops: [] });
 
@@ -1277,10 +1294,10 @@ describe('consolidation policy and sides', () => {
 
     const run = consolidate(deps());
 
-    expect(run).toMatchObject({ model: null, side: 'normal' });
+    expect(run).toMatchObject({ model: 'haiku', side: 'normal' });
   });
 
-  test('should reuse a dscc run model on a dscc worker when opted in', () => {
+  test('should use Haiku on a dscc worker when opted in', () => {
     seed('dscc');
     writeConfig(dir, {
       ...DEFAULT_CONFIG,
@@ -1295,7 +1312,7 @@ describe('consolidation policy and sides', () => {
 
     const run = consolidate(deps({ env: { KYOTEN_AGENT: 'dscc' } }));
 
-    expect(run).toMatchObject({ model: 'deepseek-v4', side: 'dscc' });
+    expect(run).toMatchObject({ model: 'haiku', side: 'dscc' });
   });
 
   test('should still run a dsh consolidation on a dscc worker, but defer agy', () => {
@@ -1325,6 +1342,10 @@ describe('consolidation policy and sides', () => {
   });
 
   test('should fall back to KYOTEN_CALLER_HARNESS for detached workers without session env vars', () => {
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, agy: true },
+    });
     seed('agy');
     const runAgent = vi.fn(({ command }) => {
       if (command.args.includes('mcp')) {
@@ -1445,6 +1466,10 @@ describe('consolidation policy and sides', () => {
   });
 
   test('should record the provider side on skipped off and nothing runs', () => {
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, agy: true },
+    });
     const nothingRun = consolidate(
       deps({ env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1' } })
     );
@@ -1497,6 +1522,10 @@ describe('consolidateLocked', () => {
   });
 
   test('should record the agent side when a directly opened agy consolidation fails', () => {
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, agy: true },
+    });
     seed('agy');
     const runAgent = agentReturning('', { code: 1, output: 'boom' });
 
@@ -1515,6 +1544,10 @@ describe('consolidateLocked', () => {
   });
 
   test('should record the explicit --agent side when a manual consolidation fails', () => {
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, agy: true },
+    });
     seed('agy');
     const runAgent = agentReturning('', { code: 1, output: 'boom' });
 

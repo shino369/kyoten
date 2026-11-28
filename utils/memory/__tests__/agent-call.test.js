@@ -108,9 +108,13 @@ describe('headlessCommand', () => {
         deny: [
           'command(*)',
           'write_file(*)',
+          'edit_file(*)',
           'read_file(*)',
+          'view_file(*)',
           'read_url(*)',
           'execute_url(*)',
+          'search_web(*)',
+          'invoke_subagent(*)',
           'mcp(*)',
         ],
       },
@@ -137,7 +141,7 @@ describe('headlessCommand', () => {
 
   test('should refuse an agent memory jobs cannot call', () => {
     expect(() => headlessCommand({ agent: 'gemini', rootDir: root })).toThrow(
-      `Memory jobs run on claude, codex, dsh, agy (got gemini).\n${CALL_AGENTS.map((name) => `Fix: use --agent ${name}`).join('\n')}`
+      `Memory jobs run on claude, codex, dsh, agy, dscc (got gemini).\n${CALL_AGENTS.map((name) => `Fix: use --agent ${name}`).join('\n')}`
     );
   });
 });
@@ -214,6 +218,38 @@ describe('callAgent', () => {
     ).toBe('answer');
   });
 
+  test('should scrub overwritten and selected provider credentials from memory prompts', () => {
+    const inherited = 'fixture-old-provider-credential';
+    const selected = 'fixture-new-provider-credential';
+    const profile = path.join(root, 'fixture-profile');
+    fs.writeFileSync(
+      profile,
+      `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic\nANTHROPIC_AUTH_TOKEN=${selected}\n`
+    );
+    const dscc = headlessCommand({
+      agent: 'dscc',
+      model: 'haiku',
+      rootDir: root,
+    });
+    const runAgent = agentReturning();
+
+    callAgent(
+      {
+        ...deps(runAgent),
+        env: { DSCC_PROFILE: profile, ANTHROPIC_AUTH_TOKEN: inherited },
+      },
+      dscc,
+      `Original ${inherited}, selected ${selected}`
+    );
+
+    expect(runAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: 'Original [REDACTED], selected [REDACTED]',
+        env: expect.objectContaining({ ANTHROPIC_AUTH_TOKEN: selected }),
+      })
+    );
+  });
+
   test('should check for Codex MCP servers before handing it any persona text', () => {
     const codex = headlessCommand({ agent: 'codex', rootDir: root });
     const runAgent = agentReturning();
@@ -267,11 +303,11 @@ describe('callAgent', () => {
   test.each([
     [
       'persona-audit',
-      'Fix: use --agent claude\nFix: use --agent dsh\nFix: use --agent agy',
+      'Fix: use --agent claude\nFix: use --agent dsh\nFix: use --agent agy\nFix: use --agent dscc',
     ],
     [
       'extraction',
-      'Fix: pnpm memory set --extract-agent claude\nFix: pnpm memory set --extract-agent dsh\nFix: pnpm memory set --extract-agent agy',
+      'Fix: pnpm memory set --extract-agent claude\nFix: pnpm memory set --extract-agent dsh\nFix: pnpm memory set --extract-agent agy\nFix: pnpm memory set --extract-agent dscc',
     ],
   ])('should point a failed Codex check of %s at another agent', (job, fix) => {
     const codex = headlessCommand({ agent: 'codex', rootDir: root });
@@ -312,7 +348,7 @@ describe('callAgent', () => {
     });
 
     expect(() => callAgent(deps(runAgent), command, 'P')).toThrow(
-      /Fix: install\nFix: pnpm memory set --extract-agent codex\nFix: pnpm memory set --extract-agent dsh\nFix: pnpm memory set --extract-agent agy$/
+      /Fix: install\nFix: pnpm memory set --extract-agent codex\nFix: pnpm memory set --extract-agent dsh\nFix: pnpm memory set --extract-agent agy\nFix: pnpm memory set --extract-agent dscc$/
     );
   });
 
@@ -381,9 +417,13 @@ describe('callAgent', () => {
         deny: [
           'command(*)',
           'write_file(*)',
+          'edit_file(*)',
           'read_file(*)',
+          'view_file(*)',
           'read_url(*)',
           'execute_url(*)',
+          'search_web(*)',
+          'invoke_subagent(*)',
           'mcp(*)',
         ],
       },

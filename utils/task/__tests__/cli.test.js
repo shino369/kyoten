@@ -1108,6 +1108,548 @@ describe('check', () => {
 });
 
 describe('review', () => {
+  test('should require provider selection when Antigravity and Codex markers conflict', () => {
+    newTask(['--verify', 'pnpm test']);
+    const runAgent = vi.fn();
+    expect(() =>
+      run(['review', 'run', '--force'], {
+        env: {
+          CODEX_THREAD_ID: 'fixture',
+          ANTIGRAVITY_CONVERSATION_ID: 'fixture',
+        },
+        runAgent,
+      })
+    ).toThrow(/select a provider explicitly/);
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+  test('should run a private folder review from a self-contained pack and skip triage on zero findings', () => {
+    newTask(['--verify', 'pnpm test']);
+    const dir = path.join(tasksRoot(root), NAME);
+    fs.writeFileSync(
+      path.join(dir, 'scripts', 'source.js'),
+      'export const evidence = 42;\n'
+    );
+    const runAgent = vi.fn(
+      (
+        /** @type {Parameters<typeof import('../../loop/adapters.js').runAgent>[0]} */ opts
+      ) => {
+        expect(opts.prompt).toContain('export const evidence = 42;');
+        expect(opts.command.args).toContain('--tools');
+        expect(opts.cwd).not.toBe(root);
+        return {
+          code: 0,
+          signal: null,
+          durationMs: 5,
+          stdout: 'BEGIN FINDINGS\nEND FINDINGS',
+          output: '',
+        };
+      }
+    );
+
+    const result = run(['review', 'run', '--folder', '--force', '--json'], {
+      runAgent,
+    });
+
+    expect(result.code).toBe(0);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(result.out)).toMatchObject({
+      findings: 0,
+      recorded: true,
+    });
+    expect(read('reviews/PACK_demo-261117-r1.md')).toContain(
+      'export const evidence = 42;'
+    );
+    expect(read('reviews/RUN_demo-261117-r1.md')).toContain('claude');
+  });
+
+  test.each([true, false])(
+    'should dispatch Codex oneshot evidence only when the effective MCP check passes (%s)',
+    (empty) => {
+      newTask(['--verify', 'pnpm test']);
+      fs.writeFileSync(
+        path.join(tasksRoot(root), NAME, 'scripts', 'source.js'),
+        'export const evidence = 42;\n'
+      );
+      const reply = { code: 0, signal: null, durationMs: 5, output: '' };
+      const runAgent = vi.fn(
+        /** @type {typeof import('../../loop/adapters.js').runAgent} */ (
+          () => ({
+            ...reply,
+            stdout: 'BEGIN FINDINGS\nEND FINDINGS',
+          })
+        )
+      );
+      runAgent.mockReturnValueOnce({
+        ...reply,
+        code: empty ? 0 : 1,
+        stdout: empty
+          ? 'No active MCP servers outside user configuration.'
+          : '',
+      });
+
+      const result = run(
+        [
+          'review',
+          'run',
+          '--folder',
+          '--force',
+          '--reviewer',
+          'codex',
+          '--json',
+        ],
+        { runAgent }
+      );
+
+      const probe = runAgent.mock.calls[0][0].command;
+      expect(probe.bin).toBe(process.execPath);
+      expect(path.basename(probe.args[0])).toBe('codex-mcp-check.js');
+      expect(probe.args).toContain('app-server');
+      expect(runAgent.mock.calls[0][0].prompt).toBe('');
+      expect(runAgent).toHaveBeenCalledTimes(empty ? 2 : 1);
+      expect(result.code).toBe(empty ? 0 : 1);
+      if (empty) {
+        expect(runAgent.mock.calls[1][0].command.args).toContain(
+          '--ignore-user-config'
+        );
+        expect(runAgent.mock.calls[1][0].prompt).toContain(
+          'export const evidence = 42;'
+        );
+      } else {
+        expect(JSON.parse(result.out)).toMatchObject({
+          recorded: false,
+          failure: { stage: 'reviewer' },
+        });
+      }
+    }
+  );
+
+  test('should prefer round two changes since the prior snapshot', () => {
+    newTask(['--verify', 'pnpm test']);
+    const dir = path.join(tasksRoot(root), NAME, 'scripts');
+    fs.writeFileSync(path.join(dir, 'update.js'), 'export const update = 1;\n');
+    fs.writeFileSync(
+      path.join(dir, 'other.js'),
+      'export const firstRoundOnly = 5;\n'
+    );
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      durationMs: 5,
+      stdout: 'BEGIN FINDINGS\nEND FINDINGS',
+      output: '',
+    }));
+    run(['review', 'run', '--folder', '--force'], { runAgent });
+    fs.writeFileSync(path.join(dir, 'update.js'), 'export const update = 2;\n');
+
+    const result = run(['review', 'run', '--force', '--json'], { runAgent });
+
+    expect(JSON.parse(result.out)).toMatchObject({ round: 2, recorded: true });
+    const pack = read('reviews/PACK_demo-261117-r2.md');
+    expect(pack).toContain('Incremental diff since the previous round');
+    expect(pack).toContain('+export const update = 2;');
+    expect(pack).not.toContain('firstRoundOnly');
+  });
+
+  test('should inline round two folder evidence when the incremental patch fails', () => {
+    newTask(['--verify', 'pnpm test']);
+    const file = path.join(tasksRoot(root), NAME, 'scripts', 'source.js');
+    fs.writeFileSync(file, 'export const before = 1;\n');
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      durationMs: 5,
+      stdout: 'BEGIN FINDINGS\nEND FINDINGS',
+      output: '',
+    }));
+    run(['review', 'run', '--folder', '--force'], { runAgent });
+    fs.writeFileSync(file, 'export const after = 2;\n');
+
+    run(['review', 'run', '--force'], {
+      runAgent,
+      runGitStatus: () => ({ status: null, stdout: '' }),
+    });
+
+    const pack = read('reviews/PACK_demo-261117-r2.md');
+    expect(pack).toContain('## Task files');
+    expect(pack).toContain('export const after = 2;');
+  });
+
+  test.each([1, 2])(
+    'should deliver multibyte git evidence in review round %d',
+    (round) => {
+      expect(spawnSync('git', ['init', '-q', root]).status).toBe(0);
+      expect(
+        spawnSync('git', [
+          '-C',
+          root,
+          '-c',
+          'user.name=Test',
+          '-c',
+          'user.email=test@example.invalid',
+          '-c',
+          'commit.gpgSign=false',
+          'commit',
+          '--allow-empty',
+          '-qm',
+          'base',
+        ]).status
+      ).toBe(0);
+      newTask(['--verify', 'pnpm test']);
+      const files = Array.from({ length: 6 }, (_, i) =>
+        path.join(root, `sample-${i}.js`)
+      );
+      const runAgent = vi.fn(
+        /** @type {typeof import('../../loop/adapters.js').runAgent} */ (
+          () => ({
+            code: 0,
+            signal: null,
+            durationMs: 5,
+            output: '',
+            stdout: 'BEGIN FINDINGS\nEND FINDINGS',
+          })
+        )
+      );
+      const review = () =>
+        run(['review', 'run', '--base', 'HEAD', '--force', '--json'], {
+          runAgent,
+        });
+      if (round === 2) {
+        for (const file of files) fs.writeFileSync(file, '// before\n');
+        review();
+      }
+      for (const file of files) {
+        fs.writeFileSync(
+          file,
+          `// Review evidence\n${`// ${'界'.repeat(1000)}\n`.repeat(16)}`
+        );
+      }
+
+      const result = review();
+
+      expect(JSON.parse(result.out)).toMatchObject({ round, recorded: true });
+      expect(runAgent.mock.lastCall?.[0].prompt).toContain(
+        '+// Review evidence'
+      );
+      expect(runAgent.mock.lastCall?.[0].prompt).toContain('界'.repeat(1000));
+    }
+  );
+
+  test('should retry a malformed response once and leave findings open with no triage', () => {
+    newTask(['--verify', 'pnpm test']);
+    fs.writeFileSync(
+      path.join(tasksRoot(root), NAME, 'scripts', 'source.js'),
+      'export {};\n'
+    );
+    const reply = { code: 0, signal: null, durationMs: 5, output: '' };
+    const runAgent = vi
+      .fn()
+      .mockReturnValueOnce({
+        ...reply,
+        stdout: 'BEGIN FINDINGS\nIndeterminate output\nEND FINDINGS',
+      })
+      .mockReturnValueOnce({
+        ...reply,
+        stdout:
+          'BEGIN FINDINGS\n| | source.js:1 | low | Claim | Scenario | | |\nEND FINDINGS',
+      });
+    const result = run(
+      ['review', 'run', '--folder', '--force', '--triage', 'none', '--json'],
+      { runAgent }
+    );
+    expect(runAgent).toHaveBeenCalledTimes(2);
+    expect(runAgent.mock.calls[1][0].prompt).toContain('## Retry note');
+    expect(runAgent.mock.calls[1][0].prompt).toContain(
+      'printed no BEGIN FINDINGS … END FINDINGS block'
+    );
+    expect(JSON.parse(result.out)).toMatchObject({
+      findings: 1,
+      recorded: false,
+    });
+    expect(state().quality?.phase).toBe('review');
+    expect(read('reviews/REVIEW_demo-261117-r1.md')).toContain(
+      '| low | Claim | Scenario | | |'
+    );
+  });
+
+  test.each([
+    ['oneshot', '| |'],
+    ['read', '| -- |'],
+    ['oneshot', '| | source.js:0 | low | Claim | Scenario | | |'],
+    ['oneshot', '| | `` | low | Claim | Scenario | | |'],
+  ])(
+    'should retry %s review after a malformed table body: %s',
+    (mode, malformed) => {
+      newTask(['--verify', 'pnpm test']);
+      fs.writeFileSync(
+        path.join(tasksRoot(root), NAME, 'scripts', 'source.js'),
+        'export {};\n'
+      );
+      const reply = { code: 0, signal: null, durationMs: 5, output: '' };
+      const runAgent = vi
+        .fn()
+        .mockReturnValueOnce({
+          ...reply,
+          stdout: `BEGIN FINDINGS\n${malformed}\nEND FINDINGS`,
+        })
+        .mockReturnValueOnce({
+          ...reply,
+          stdout:
+            'BEGIN FINDINGS\n| | source.js:1 | low | Claim | Scenario | | |\nEND FINDINGS',
+        })
+        .mockReturnValueOnce({
+          ...reply,
+          stdout:
+            'BEGIN FINDINGS\n| | source.js:1 | low | Claim | Scenario | CONFIRMED | Checked it |\nEND FINDINGS',
+        });
+
+      const result = run(
+        ['review', 'run', '--folder', '--force', '--mode', mode, '--json'],
+        { runAgent }
+      );
+
+      expect(runAgent).toHaveBeenCalledTimes(3);
+      expect(JSON.parse(result.out)).toMatchObject({
+        findings: 1,
+        recorded: true,
+      });
+      expect(state().quality?.findings).toMatchObject([
+        { file: 'source.js', line: 1 },
+      ]);
+    }
+  );
+
+  test('should report confirmed/refuted counts, fix steps, medium/low IDs, and log path from review run', () => {
+    newTask(['--verify', 'pnpm test']);
+    fs.writeFileSync(
+      path.join(tasksRoot(root), NAME, 'scripts', 'source.js'),
+      'export {};\n'
+    );
+    const reply = { code: 0, signal: null, durationMs: 5, output: '' };
+    const runAgent = vi
+      .fn()
+      .mockReturnValueOnce({
+        ...reply,
+        stdout: [
+          'BEGIN FINDINGS',
+          '| | source.js:1 | high | Race condition | Concurrent writes collide | | |',
+          '| | source.js | low | Naming | Nitpick | | |',
+          '| | source.js:2 | medium | Dead branch | Never hits | | |',
+          'END FINDINGS',
+        ].join('\n'),
+      })
+      .mockReturnValueOnce({
+        ...reply,
+        stdout: [
+          'BEGIN FINDINGS',
+          '| | source.js:1 | high | Race condition | Concurrent writes collide | CONFIRMED | Verified race |',
+          '| | source.js | low | Naming | Nitpick | CONFIRMED | Confirmed nit |',
+          '| | source.js:2 | medium | Dead branch | Never hits | REFUTED | Branch is reachable |',
+          'END FINDINGS',
+        ].join('\n'),
+      });
+
+    const textResult = run(['review', 'run', '--folder', '--force'], {
+      runAgent,
+    });
+    expect(textResult.code).toBe(0);
+    expect(textResult.out).toContain(
+      `Recorded: 2 confirmed, 1 refuted; 1 fix step(s); telemetry: tasks/${NAME}/reviews/RUN_${NAME}-r1.md.`
+    );
+    expect(textResult.out).toContain(
+      '  s3. fix: Race condition (source.js:1; r1-1)'
+    );
+    expect(textResult.out).toContain('Recorded (medium/low): r1-2.');
+
+    run(['step', 's1', 'done']);
+    run(['step', 's2', 'done']);
+    run(['step', 's3', 'done']);
+    run(['verify']);
+    fs.writeFileSync(
+      path.join(tasksRoot(root), NAME, 'scripts', 'source.js'),
+      'export const v = 2;\n'
+    );
+    const jsonAgent = vi.fn().mockReturnValueOnce({
+      ...reply,
+      stdout: 'BEGIN FINDINGS\nEND FINDINGS',
+    });
+    const jsonResult = run(['review', 'run', '--json'], {
+      runAgent: jsonAgent,
+    });
+    expect(JSON.parse(jsonResult.out)).toMatchObject({
+      ok: true,
+      round: 2,
+      findings: 0,
+      recorded: true,
+      confirmed: 0,
+      refuted: 0,
+      fixSteps: [],
+      mediumLow: [],
+      log: `tasks/${NAME}/reviews/RUN_${NAME}-r2.md`,
+    });
+  });
+
+  test('should run an opt-in dscc review and redact its credential from artifacts', () => {
+    const credential = 'fixture-only-profile-value';
+    newTask(['--verify', 'pnpm test', '--goal', 'Inspect ' + credential]);
+    const dir = path.join(tasksRoot(root), NAME);
+    const profile = path.join(root, 'fixture-review-profile');
+    fs.writeFileSync(
+      profile,
+      'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic\nANTHROPIC_AUTH_TOKEN=' +
+        credential +
+        '\n'
+    );
+    fs.writeFileSync(
+      path.join(dir, 'scripts', 'source.js'),
+      'export const fixture = "' + credential + '";\n'
+    );
+    const runAgent = vi.fn(
+      (
+        /** @type {Parameters<typeof import('../../loop/adapters.js').runAgent>[0]} */ opts
+      ) => {
+        expect(opts.env.KYOTEN_AGENT).toBe('dscc');
+        expect(opts.command.agent).toBe('claude');
+        expect(opts.prompt).not.toContain(credential);
+        return {
+          code: 0,
+          signal: null,
+          durationMs: 5,
+          stdout: 'BEGIN FINDINGS\nEND FINDINGS',
+          output: credential,
+        };
+      }
+    );
+    const { code } = run(
+      [
+        'review',
+        'run',
+        '--folder',
+        '--force',
+        '--reviewer',
+        'dscc',
+        '--no-record',
+      ],
+      {
+        runAgent,
+        env: { DSCC_PROFILE: profile, ANTIGRAVITY_CONVERSATION_ID: 'fixture' },
+      }
+    );
+
+    expect(code).toBe(0);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+    expect(state().quality?.phase).toBe('review');
+    const log = read('reviews/RUN_demo-261117-r1.md');
+    expect(log).toContain('dscc');
+    expect(log).not.toContain(credential);
+    expect(read('reviews/PACK_demo-261117-r1.md')).not.toContain(credential);
+    expect(read('reviews/BRIEF_demo-261117-r1.md')).not.toContain(credential);
+    const snapshot = JSON.parse(read('reviews/.snapshot-r1/manifest.json'));
+    expect(snapshot.skipped).toContain(`tasks/${NAME}/scripts/source.js`);
+  });
+
+  test('should retry an oversized oneshot reply before dispatching triage', () => {
+    newTask(['--verify', 'pnpm test']);
+    fs.writeFileSync(
+      path.join(tasksRoot(root), NAME, 'scripts', 'source.js'),
+      'export {};\n'
+    );
+    const reply = { code: 0, signal: null, durationMs: 5, output: '' };
+    const manyRows = Array.from(
+      { length: 80 },
+      (_, i) =>
+        `| | source.js:${i + 1} | low | ${'x'.repeat(650)} | Scenario | | |`
+    );
+    const runAgent = vi.fn(
+      /** @type {typeof import('../../loop/adapters.js').runAgent} */ (
+        () => replyWith('')
+      )
+    );
+    const replyWith = (/** @type {string} */ body) => ({
+      ...reply,
+      stdout: `BEGIN FINDINGS\n${body}\nEND FINDINGS`,
+    });
+    runAgent
+      .mockReturnValueOnce(replyWith(manyRows.join('\n')))
+      .mockReturnValueOnce(
+        replyWith('| | source.js:1 | low | Claim | Scenario | | |')
+      )
+      .mockReturnValueOnce(
+        replyWith(
+          '| | source.js:1 | low | Claim | Scenario | CONFIRMED | Checked it |'
+        )
+      );
+
+    const result = run(['review', 'run', '--folder', '--force', '--json'], {
+      runAgent,
+    });
+
+    expect(runAgent).toHaveBeenCalledTimes(3);
+    expect(runAgent.mock.lastCall?.[0].prompt).toContain(
+      '| low | Claim | Scenario |'
+    );
+    expect(runAgent.mock.lastCall?.[0].prompt).not.toContain('x'.repeat(650));
+    expect(JSON.parse(result.out)).toMatchObject({
+      findings: 1,
+      recorded: true,
+    });
+  });
+
+  test.each([
+    ['single-line', 'fixture-only-provider-value'],
+    ['multiline', 'fixture-only-first-line\nfixture-only-second-line'],
+  ])(
+    'should redact a known %s credential before writing a git review patch',
+    (_kind, credential) => {
+      expect(spawnSync('git', ['init', '-q', root]).status).toBe(0);
+      expect(
+        spawnSync('git', [
+          '-C',
+          root,
+          '-c',
+          'user.name=Test',
+          '-c',
+          'user.email=test@example.invalid',
+          '-c',
+          'commit.gpgSign=false',
+          'commit',
+          '--allow-empty',
+          '-qm',
+          'base',
+        ]).status
+      ).toBe(0);
+      newTask(['--verify', 'pnpm test']);
+      fs.writeFileSync(
+        path.join(root, 'example.js'),
+        'export const fixture = `' + credential + '`;\n'
+      );
+
+      const { code } = run(['review', '--base', 'HEAD', '--force'], {
+        env: { OPENAI_API_KEY: credential },
+      });
+
+      expect(code).toBe(0);
+      const diff = read('reviews/DIFF_demo-261117-r1.patch');
+      expect(diff).toContain('export const fixture = `[REDACTED]');
+      for (const line of credential.split('\n'))
+        expect(diff).not.toContain(line);
+    }
+  );
+
+  test.each(['--reviewer', '--triage'])(
+    'should reject foreign Antigravity dispatch through %s',
+    (flag) => {
+      newTask(['--verify', 'pnpm test']);
+      const runAgent = vi.fn();
+      expect(() =>
+        run(['review', 'run', flag, 'agy', '--force'], {
+          env: { CODEX_THREAD_ID: 'fixture' },
+          runAgent,
+        })
+      ).toThrow(/Antigravity Terms of Service/);
+      expect(runAgent).not.toHaveBeenCalled();
+      expect(state().quality?.reviewRounds).toBe(0);
+    }
+  );
   const finishSteps = () => {
     run(['step', 's1', 'done']);
     run(['step', 's2', 'done']);

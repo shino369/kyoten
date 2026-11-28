@@ -6,12 +6,13 @@
 
 Everything above (AGENTS.md) applies. These notes cover only what is specific to Claude Code.
 
-- **Subagents:** always inherit the main session's model (do not pick a cheaper one).
+- **Subagents:** use the model tiers declared in `.claude/agents/*.md`. The test runner uses
+  Haiku, and the other five workspace roles use Sonnet.
 - **Context:** quality degrades at 20–40% usage, long before the window is full. The
   `UserPromptSubmit` hook `.claude/hooks/context_monitor.js` injects `[Context Monitor]` warnings
-  at 20/40/60% of the window (1M by default; set `CLAUDE_CONTEXT_WINDOW` to override), naming the
-  task this session works on. Act on them: run `pnpm task note --done "…" --next "…"` (AGENTS.md §4.2), delegate
-  independent work to subagents, and suggest `/compact` or `/clear` at the URGENT level.
+  once per crossing of 20/40/60% of the window (1M by default; set `CLAUDE_CONTEXT_WINDOW` to
+  override). Finish the current unit or save progress with `pnpm task note --done "…" --next "…"`
+  and use `/compact`. Avoid inherited-model subagents for routine work.
 - **Resume:** the `SessionStart` hook (`session_start.js`, on startup/resume/clear/compact)
   binds the session to the default task (dormant until a `pnpm task` command changes it; a
   resumed or compacted session keeps its task) and injects that task's brief plus a `Tools:` line
@@ -27,8 +28,8 @@ Everything above (AGENTS.md) applies. These notes cover only what is specific to
   never reset the count; only a pass or a prompt you type does. Turn it off with
   `pnpm task set --loop off`.
 - **Quality loop (code tasks, AGENTS.md §4.5):** once verify is green, the same hook moves you
-  through the review: it blocks once per situation with the next action (run `pnpm task review`,
-  finish the open round, fix the confirmed findings). Run the reviewer as an Agent subagent of type
+  through the review: it blocks once per situation with the next action (run `pnpm task review run`,
+  finish the open round, fix the confirmed findings). For a native round, run the reviewer as an Agent subagent of type
   `reviewer` and the triage as a `verifier` subagent in triage mode, each given only the brief
   path, never your own summary of the change. If subagents are not available, say so and stop; the
   reminder is not repeated. While a round is open, the hook stays silent as long as a background

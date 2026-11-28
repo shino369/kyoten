@@ -268,6 +268,213 @@ describe('pnpm harness check', () => {
   });
 });
 
+describe('pnpm harness level', () => {
+  const claudeRole = '.claude/agents/reviewer.md';
+  const codexRole = '.codex/agents/reviewer.toml';
+  const reviewerRole =
+    '---\nname: reviewer\ndescription: Reviews code\ntools: Read, Edit\nmodel: sonnet\n---\n\nRole prompt with model: sonnet in the body.\n';
+
+  function createReviewer() {
+    fs.mkdirSync(path.join(root, '.claude/agents'));
+    fs.writeFileSync(path.join(root, claudeRole), reviewerRole);
+    run(['sync']);
+  }
+
+  test('should apply and persist high for the named native roles and restore the defaults', () => {
+    const files = {
+      claude: claudeRole,
+      codex: codexRole,
+      agy: '.agents/agents/reviewer.md',
+      testRunner: '.claude/agents/test-runner.md',
+    };
+    const testRunner =
+      '---\nname: test-runner\ndescription: Runs tests\nmodel: haiku\n---\n\nRun tests.\n';
+    createReviewer();
+    fs.writeFileSync(path.join(root, files.testRunner), testRunner);
+    run(['sync']);
+
+    expect(run(['level', 'high'])).toBe(0);
+    expect(read(files.claude)).toBe(
+      reviewerRole.replace('\nmodel: sonnet\n', '\nmodel: inherit\n')
+    );
+    expect(read(files.codex)).not.toMatch(/^model(?:_reasoning_effort)?\s*=/m);
+    expect(read(files.agy)).toContain('model: inherit\n');
+    expect(read(files.testRunner)).toBe(testRunner);
+    expect(read('.codex/agents/test-runner.toml')).toContain(
+      'model_reasoning_effort = "low"\n'
+    );
+    expect(read('.agents/agents/test-runner.md')).toContain('model: flash\n');
+    expect(run(['check'])).toBe(0);
+    expect(run(['level'])).toBe(0);
+    expect(lines.at(-1)).toBe('high');
+
+    fs.writeFileSync(path.join(root, files.claude), reviewerRole);
+    expect(run(['check'])).toBe(1);
+    expect(run(['sync'])).toBe(0);
+    expect(read(files.claude)).toContain('\nmodel: inherit\n');
+
+    expect(run(['level', 'default'])).toBe(0);
+    expect(read(files.claude)).toBe(reviewerRole);
+    expect(read(files.codex)).toContain('model_reasoning_effort = "medium"\n');
+    expect(run(['check'])).toBe(0);
+  });
+
+  test('should reject an invalid level or trailing arguments before changing anything', () => {
+    expect(() => run(['level', 'medium'])).toThrow('default|high');
+    expect(() => run(['level', 'high', 'extra'])).toThrow('default|high');
+    expect(run(['level'])).toBe(0);
+    expect(lines.at(-1)).toBe('default');
+  });
+
+  test('should preserve an editor save after the Claude role was read', () => {
+    createReviewer();
+    const file = path.join(root, claudeRole);
+    const updated = `${reviewerRole}\nNew instructions.\n`;
+    const originalRead = fs.readFileSync;
+    const spy = vi
+      .spyOn(fs, 'readFileSync')
+      .mockImplementation((name, options) => {
+        const result = originalRead(name, options);
+        if (name === file) {
+          spy.mockRestore();
+          fs.writeFileSync(file, updated);
+        }
+        return result;
+      });
+
+    try {
+      expect(() => run(['level', 'high'])).toThrow('changed during');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(read(claudeRole)).toBe(updated);
+    run(['level']);
+    expect(lines.at(-1)).toBe('default');
+  });
+
+  test('should preserve an editor save while staging the replacement file', () => {
+    createReviewer();
+    const role = path.join(root, claudeRole);
+    const updated = `${reviewerRole}\nNew instructions.\n`;
+    const originalWrite = fs.writeFileSync;
+    const spy = vi
+      .spyOn(fs, 'writeFileSync')
+      .mockImplementation((name, content, options) => {
+        originalWrite(name, content, options);
+        if (
+          String(name).startsWith(`${role}.`) &&
+          String(name).endsWith('.tmp')
+        ) {
+          originalWrite(role, updated);
+        }
+      });
+
+    try {
+      expect(() => run(['level', 'high'])).toThrow('changed during');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(read(claudeRole)).toBe(updated);
+  });
+
+  test.each(['', '\nNew instructions.\n'])(
+    'should restore the previous model and preserve a prompt edit %j when a later write fails',
+    (edit) => {
+      createReviewer();
+      const previousCodex = read(codexRole);
+      const originalRename = fs.renameSync;
+      const spy = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        if (to === path.join(root, codexRole)) {
+          if (edit) fs.appendFileSync(path.join(root, claudeRole), edit);
+          throw new Error('write failed');
+        }
+        originalRename(from, to);
+      });
+
+      try {
+        expect(() => run(['level', 'high'])).toThrow('write failed');
+      } finally {
+        spy.mockRestore();
+      }
+      expect(read(claudeRole)).toBe(reviewerRole + edit);
+      expect(read(codexRole)).toBe(previousCodex);
+      expect(run(['check'])).toBe(edit ? 1 : 0);
+      expect(run(['sync'])).toBe(0);
+      expect(run(['check'])).toBe(0);
+      run(['level']);
+      expect(lines.at(-1)).toBe('default');
+    }
+  );
+
+  test('should replace a quoted model key without adding a duplicate', () => {
+    createReviewer();
+    const file = path.join(root, claudeRole);
+    fs.writeFileSync(file, reviewerRole.replace('\nmodel:', '\n"model":'));
+
+    expect(run(['level', 'high'])).toBe(0);
+    expect(read(claudeRole)).toBe(
+      reviewerRole.replace('\nmodel: sonnet', '\nmodel: inherit')
+    );
+  });
+
+  test.each(['>-\n  sonnet', '\n  sonnet'])(
+    'should report a multiline model %j before updating any role files',
+    (multiline) => {
+      createReviewer();
+      const file = path.join(root, claudeRole);
+      const folded = reviewerRole.replace(
+        '\nmodel: sonnet',
+        `\nmodel: ${multiline}`
+      );
+      fs.writeFileSync(file, folded);
+
+      expect(() => run(['level', 'high'])).toThrow('single-line model');
+      expect(read(claudeRole)).toBe(folded);
+      run(['level']);
+      expect(lines.at(-1)).toBe('default');
+    }
+  );
+
+  test.each(['  model: sonnet\n', ''])(
+    'should preserve frontmatter indentation with model line %j',
+    (model) => {
+      const file = '.claude/agents/planner.md';
+      const fields = '  name: planner\n  description: Plans\n';
+      fs.mkdirSync(path.join(root, '.claude/agents'));
+      fs.writeFileSync(
+        path.join(root, file),
+        `---\n${model}${fields}---\nPrompt.\n`
+      );
+
+      expect(run(['level', 'high'])).toBe(0);
+      expect(read(file)).toBe(`---\n  model: inherit\n${fields}---\nPrompt.\n`);
+    }
+  );
+
+  test('should add a missing model field without changing Windows line endings', () => {
+    const file = '.claude/agents/planner.md';
+    fs.mkdirSync(path.join(root, '.claude/agents'));
+    const planner =
+      '---\r\nname: planner\r\ndescription: Plans\r\n---\r\nPrompt.\r\n';
+    fs.writeFileSync(path.join(root, file), planner);
+
+    expect(run(['level', 'high'])).toBe(0);
+    expect(read(file)).toBe(
+      planner.replace('name: planner', 'model: inherit\r\nname: planner')
+    );
+  });
+
+  test('should report an invalid saved level and allow resetting it', () => {
+    const directory = path.join(root, '.kyoten/harness');
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(directory, 'level'), 'unknown\n');
+
+    expect(() => run(['sync'])).toThrow('Fix: pnpm harness level default');
+    expect(run(['level', 'default'])).toBe(0);
+    expect(run(['sync'])).toBe(0);
+  });
+});
+
 describe('main', () => {
   test('should print help', () => {
     expect(run(['help'])).toBe(0);

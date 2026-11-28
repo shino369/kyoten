@@ -319,7 +319,15 @@ describe('main', () => {
         'Review: reviewer + triage: claude -p --permission-mode plan'
       );
       expect(
-        run(['--agent', 'dsh', '--review', '--bin', 'mydsh', '--dry-run']).out
+        run([
+          '--agent',
+          'dsh',
+          '--review',
+          '--no-oneshot-review',
+          '--bin',
+          'mydsh',
+          '--dry-run',
+        ]).out
       ).toContain(
         'reviewer + triage: mydsh --profile headless --patch .dsh/workspace.patch.yml --permission-mode read-only'
       );
@@ -359,6 +367,13 @@ describe('main', () => {
         stdout: 'BEGIN FINDINGS\nEND FINDINGS',
         durationMs: 1,
       }));
+      runAgent.mockReturnValueOnce({
+        code: 0,
+        signal: null,
+        output: '',
+        stdout: 'No active MCP servers outside user configuration.',
+        durationMs: 1,
+      });
 
       const { code, out } = run([NAME, '--agent', 'codex', '--review'], {
         rootDir: linked,
@@ -372,7 +387,7 @@ describe('main', () => {
         `✓ ${NAME}: quality loop complete — nothing changed since the last review.`
       );
       expect(out).toContain('(findings: reviews/, summary: NOTES.md)');
-      expect(runAgent).toHaveBeenCalledTimes(1);
+      expect(runAgent).toHaveBeenCalledTimes(2);
     });
 
     test('should exit 1 when the quality loop stops', () => {

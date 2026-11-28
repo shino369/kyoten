@@ -499,6 +499,23 @@ describe('session bindings', () => {
     expect(fs.existsSync(path.join(dir, 'notes.txt'))).toBe(true);
   });
 
+  test('should prune stale context state without removing a recent binding or context state', () => {
+    writeSession(root, 'work.context', { task: 'a-task', engaged: true });
+    const dir = path.join(tasksRoot(root), '.sessions', '.context');
+    fs.mkdirSync(dir);
+    const stale = path.join(dir, 'work.json');
+    const recent = path.join(dir, 'active.json');
+    fs.writeFileSync(stale, '{"lastTier":"warn"}');
+    fs.writeFileSync(recent, '{"lastTier":"note"}');
+    const old = new Date(Date.now() - 20 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(stale, old, old);
+
+    expect(pruneSessions(root)).toBe(1);
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.existsSync(recent)).toBe(true);
+    expect(readSession(root, 'work.context')).toMatchObject({ task: 'a-task' });
+  });
+
   test('should refresh the time of an existing binding only', () => {
     writeSession(root, 'live', { task: 'a-task', engaged: true });
     const file = path.join(tasksRoot(root), '.sessions', 'live.json');

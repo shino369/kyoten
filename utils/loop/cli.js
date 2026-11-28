@@ -24,6 +24,7 @@ import {
   runAgent,
 } from './adapters.js';
 import { fingerprint, runLoop } from './driver.js';
+import { resolveReviewExecution } from '../task/review-run.js';
 import { runReviewLoop } from './review-loop.js';
 import {
   assertWorkspaceRepo,
@@ -44,8 +45,14 @@ Options
                               fresh agents), fix confirmed must-fix/high
                               findings, at most 2 rounds (AGENTS.md §4.5);
                               needs every step done before the first round
-  --reviewer <name>           Agent for the reviewer and the triage (default:
-                              --agent; a different one gives a second opinion)
+  --reviewer <name>           Reviewer (claude|codex|dsh|agy|dscc; default: --agent)
+  --triage <name>             Triage agent (default: reviewer; none leaves findings open)
+  --reviewer-model <model>    Override the reviewer's model
+  --triage-model <model>      Override the triage model
+  --reviewer-effort <effort>  low|medium|high|xhigh|max (Codex or Antigravity)
+  --triage-effort <effort>    low|medium|high|xhigh|max (Codex or Antigravity)
+  --oneshot-review            Use self-contained, zero-tool prompts (default)
+  --no-oneshot-review         Allow review agents to read review files
   --max <n>                   Agent iterations at most (default 5; with
                               --review, per build or fix phase)
   --stall <n>                 Stop after n iterations in a row with no progress
@@ -66,14 +73,20 @@ rounds: run-*-review/rN-reviewer.md, rN-triage.md)`;
 /**
  * @typedef {{
  *   task?: string, agent?: string, bin?: string, review: boolean, reviewer?: string,
+ *   oneshotReview?: boolean,
  *   max: number, stall: number, timeoutMin: number, iterationTimeoutMin: number,
  *   maxBudgetUsd?: number, dryRun: boolean, help: boolean,
- * }} LoopOptions
+ * } & Omit<import('../task/review-run.js').ReviewOptions, 'timeoutMin'>} LoopOptions
  */
 
 const VALUE_FLAGS = {
   '--agent': 'agent',
   '--reviewer': 'reviewer',
+  '--reviewer-model': 'reviewerModel',
+  '--reviewer-effort': 'reviewerEffort',
+  '--triage': 'triage',
+  '--triage-model': 'triageModel',
+  '--triage-effort': 'triageEffort',
   '--max': 'max',
   '--stall': 'stall',
   '--timeout-min': 'timeoutMin',
@@ -107,6 +120,7 @@ export function parseArgs(argv) {
   let dryRun = false;
   let help = false;
   let review = false;
+  let oneshotReview;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -119,6 +133,8 @@ export function parseArgs(argv) {
         value;
     } else if (flag === '--review') {
       review = true;
+    } else if (flag === '--oneshot-review' || flag === '--no-oneshot-review') {
+      oneshotReview = flag === '--oneshot-review';
     } else if (flag === '--dry-run') {
       dryRun = true;
     } else if (flag === '--help' || flag === '-h') {
@@ -141,6 +157,20 @@ export function parseArgs(argv) {
     bin: values.bin,
     review,
     reviewer: values.reviewer,
+    ...(values.reviewerModel !== undefined
+      ? { reviewerModel: values.reviewerModel }
+      : {}),
+    ...(values.reviewerEffort !== undefined
+      ? { reviewerEffort: values.reviewerEffort }
+      : {}),
+    ...(values.triage !== undefined ? { triage: values.triage } : {}),
+    ...(values.triageModel !== undefined
+      ? { triageModel: values.triageModel }
+      : {}),
+    ...(values.triageEffort !== undefined
+      ? { triageEffort: values.triageEffort }
+      : {}),
+    ...(oneshotReview !== undefined ? { oneshotReview } : {}),
     max: values.max === undefined ? 5 : parseMax(values.max, '--max'),
     stall: values.stall === undefined ? 2 : parseMax(values.stall, '--stall'),
     timeoutMin:
@@ -240,27 +270,33 @@ export function main({ argv = process.argv.slice(2), deps = {} } = {}) {
       `--review needs a code task (${name} is not one).\nFix: pnpm task set --task ${name} --kind code`
     );
   }
-  const reviewerName = options.reviewer ?? options.agent;
-  if (options.review && reviewerName === 'agy') {
-    if (options.agent !== 'agy') {
-      throw new Error(
-        `Refusing --reviewer agy with --agent ${options.agent}: Google Antigravity Terms of Service prohibit invoking agy from another agent workflow.\nFix: use --reviewer claude|codex|dsh`
-      );
-    }
-    assertAgyAllowed(reviewerName, d.env, 'pnpm loop --review --reviewer agy');
+  if (
+    !options.review &&
+    (options.triage ||
+      options.reviewerModel ||
+      options.triageModel ||
+      options.reviewerEffort ||
+      options.triageEffort ||
+      options.oneshotReview !== undefined)
+  ) {
+    throw new Error('Review options require --review.');
   }
-  const reviewer = options.review
-    ? buildCommand({
-        agent: reviewerName,
-        mode: 'read',
-        bin: reviewerName === options.agent ? options.bin : undefined,
-        argv:
-          options.bin && reviewerName === options.agent
-            ? null
-            : commandFor(d.rootDir, reviewerName),
-      })
+  const selection = options.review
+    ? resolveReviewExecution(
+        {
+          ...options,
+          timeoutMin: String(options.iterationTimeoutMin),
+          mode: options.oneshotReview === false ? 'read' : 'oneshot',
+        },
+        {
+          rootDir: d.rootDir,
+          env: d.env,
+          defaultAgent: options.agent,
+          bin: options.bin,
+        }
+      )
     : null;
-
+  const reviewer = selection?.reviewer.command;
   if (options.dryRun) {
     d.log(
       [
@@ -269,7 +305,7 @@ export function main({ argv = process.argv.slice(2), deps = {} } = {}) {
         `Verify: ${state.verify.join(' && ')}`,
         ...(reviewer
           ? [
-              `Review: reviewer + triage: ${[reviewer.bin, ...reviewer.args].join(' ')} (read-only)`,
+              `Review: reviewer + triage: ${[reviewer.bin, ...reviewer.args].join(' ')} (${selection?.mode})`,
             ]
           : []),
         `Caps: max ${options.max} iteration(s), stall ${options.stall}, ${options.timeoutMin} min total, ${options.iterationTimeoutMin} min per agent run`,
@@ -318,10 +354,11 @@ export function main({ argv = process.argv.slice(2), deps = {} } = {}) {
     ? 'Review the diff here (git diff), then commit it yourself.'
     : `Review: cd ${worktree.dir} && git diff — commit there, then merge branch loop/${name}.`;
 
-  if (reviewer) {
+  if (reviewer && selection) {
     const outcome = runReviewLoop({
       ...run,
       reviewer,
+      selection,
       deps: {
         ...loopDeps,
         runTask: (argv) => {
@@ -332,6 +369,7 @@ export function main({ argv = process.argv.slice(2), deps = {} } = {}) {
             deps: {
               rootDir: worktree.dir,
               env: d.env,
+              reviewSecrets: selection.reviewer.secrets,
               now: d.date,
               log: (message) => out.push(message),
               runCommands: d.runCommands,

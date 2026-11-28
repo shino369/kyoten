@@ -1,6 +1,6 @@
 {
   "name": "kyoten",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
   "description": "kyoten (拠点): a home base for coding agents (Claude Code, Codex, DeepSeek, Antigravity) with shared rules, tasks, memory, skills, hooks, and quality gates",
   "repository": {

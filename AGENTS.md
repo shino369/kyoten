@@ -63,7 +63,7 @@ outputs. Layout, `utils/` modules, scripts, and doc scopes: `docs/repo-map.md`.
 | Tools on this machine         | `pnpm tools list` · `pnpm tools show <name>` · `pnpm tools scan`                     |
 | Ask another agent (read-only) | `pnpm agent ask --agent claude\|codex\|dsh\|dscc "…"`                                |
 | Fix until verify passes       | `pnpm loop <task> --agent claude\|codex\|dsh\|agy` (`--help`)                        |
-| Review round (code task)      | `pnpm task review` · `pnpm task review record` (§4.5)                                |
+| Review round (code task)      | `pnpm task review run` (§4.5)                                                        |
 | Run a plan with N workers     | `pnpm swarm <task> --agent claude\|codex\|dsh\|agy --workers 2`                      |
 | Set up / verify the workspace | `pnpm workspace:setup` / `pnpm workspace:check`                                      |
 | Sync / check harness configs  | `pnpm harness sync` / `pnpm harness check` (`docs/harness.md`)                       |
@@ -151,18 +151,17 @@ steps into `swarm/<task>`. Review and merge those branches yourself (`docs/harne
 2. **Build test-first.** Failing test → code → `pnpm task verify` green → `pnpm task step <id> done`.
 3. **E2E** when required: add the e2e command to verify (`pnpm task set --verify …`).
 4. **Review in a clean context.** Once all steps are done and verify is green, run
-   `pnpm task review` to generate `reviews/BRIEF_<task>-r<N>.md` and `reviews/REVIEW_<task>-r<N>.md`.
-   A **different, fresh** agent reviews from the brief only (role: `.claude/agents/reviewer.md`;
-   subagent in Claude Code / Codex / Antigravity, else `pnpm agent ask --agent <other>`). Never
-   review your own code. To keep the primary model's quota free, delegate cross-model with
-   `pnpm agent ask --agent dscc - < <brief>` (DeepSeek via `dscc`, read-only — paste its Markdown
-   rows into the findings table) or `--agent dsh`; a lighter model (an Antigravity flash subagent)
-   is fine for the triage.
-5. **Triage.** Another fresh agent tries to refute each finding ("Triage mode" in
-   `.claude/agents/verifier.md`) and marks CONFIRMED or REFUTED (unsure = REFUTED; triage may lower
-   severity, never raise it).
-6. **Record and fix.** `pnpm task review record` turns CONFIRMED must-fix/high findings into `fix:`
-   steps. Fix test-first, verify green, mark done. List medium/low under `--open` in your last note.
+   `pnpm task review run`. It opens the round and sends a self-contained review pack to a fresh
+   agent in zero-tool mode. It uses the caller's provider by default. Select another provider
+   explicitly with `--reviewer <agent>` or `KYOTEN_REVIEWER`. For a native review, open the brief
+   with `pnpm task review` and give only the brief path to a fresh reviewer subagent
+   (`.claude/agents/reviewer.md`). Never review your own code.
+5. **Triage.** Zero findings skips triage. Otherwise a separate fresh session tries to refute each
+   finding (`.claude/agents/verifier.md`, Triage mode) and marks CONFIRMED or REFUTED. Unsure means
+   REFUTED. Triage may lower severity only. Select a different provider with `--triage`.
+6. **Record and fix.** `review run` records by default. After a native review, use
+   `pnpm task review record`. CONFIRMED must-fix/high findings become `fix:` steps. Fix test-first,
+   verify green, mark done. List medium/low under `--open` in your last note.
 7. **At most 2 review rounds.** After round 2's fixes or a clean round, the loop is done.
    `pnpm task done` enforces ≥1 recorded round, no open round, all confirmed must-fix/high fixed,
    and e2e verify when `e2e: required` (`--force` only if the user agrees).
@@ -174,7 +173,7 @@ steps into `swarm/<task>`. Review and merge those branches yourself (`docs/harne
 | medium   | A real but local problem                                                     | no     |
 | low      | Cleanup, naming, style                                                       | no     |
 
-Unattended: `pnpm loop <task> --agent <a> --review [--reviewer <b>]` runs steps 4–7 headless.
+Unattended: `pnpm loop <task> --agent <a> --review [--reviewer <b>]` uses the same review packs.
 `pnpm swarm` refuses task-folder code (`tasks/` is git-ignored); use git-tracked paths or `pnpm loop`.
 
 ## 5. Git conventions

@@ -2,10 +2,10 @@
 /**
  * pnpm harness — keep each harness's config in step with one manifest.
  *
- *   pnpm harness sync    write the generated files (Codex, DSH) from
- *                        utils/harness/hooks.js; never touches .claude/
+ *   pnpm harness sync    write the generated configs and apply the role level
  *   pnpm harness check   fail when a generated file is stale, or when
  *                        .claude/settings.json hooks differ from the manifest
+ *   pnpm harness level   show or change the native subagent role level
  *
  * `.claude/settings.json` is hand-written (Claude Code is first-class), so
  * sync only reports a difference there. Generated files are compared by
@@ -14,6 +14,7 @@
 import fs from 'fs';
 import path from 'path';
 import { runIfMain } from '../module-runner.js';
+import { readIfExists, withLock, writeFileAtomic } from '../task/store.js';
 import { ROOT_DIR } from '../workspace-config.js';
 import {
   HOOKS,
@@ -24,11 +25,15 @@ import {
   renderHooksConfig,
 } from './hooks.js';
 import { readPermissions, renderCodexRules } from './permissions.js';
-import { agyRoleFiles, codexRoleFiles } from './roles.js';
+import { roleFiles } from './roles.js';
 import { DSH_BRIDGE_INSTALL, DSH_PATCH } from '../loop/adapters.js';
 
 const MANIFEST = 'utils/harness/hooks.js';
 const CLAUDE_SETTINGS = '.claude/settings.json';
+const LEVEL_DIR = '.kyoten/harness';
+const LEVEL_FILE = `${LEVEL_DIR}/level`;
+
+/** @typedef {import('./roles.js').HarnessLevel} HarnessLevel */
 /**
  * The DSH overlay that runs the workspace's hooks through DSH's Claude hooks
  * bridge. DSH has no project config, so it is passed on launch
@@ -60,7 +65,8 @@ const CODEX_HOOKS_DESCRIPTION =
 
 /**
  * @typedef {{ rootDir: string, log: (line: string) => void }} Deps
- * @typedef {{ file: string, content: string, json?: boolean, changedHint?: { text: string, when: (previous: string | null) => boolean } }} GeneratedFile
+ * @typedef {{ file: string, content: string, json?: boolean, sourceContent?: string, restoreModel?: (current: string) => string | undefined, changedHint?: { text: string, when: (previous: string | null) => boolean } }} GeneratedFile
+ *   sourceContent: the original Claude role before changing only its model
  *   changedHint: printed after sync rewrote the file, when `when` says the
  *   change matters (given the previous content, null for a new file)
  */
@@ -126,7 +132,7 @@ export function generatedFiles({ specs = HOOKS, rootDir = ROOT_DIR } = {}) {
       json: true,
     });
   }
-  files.push(...codexRoleFiles(rootDir), ...agyRoleFiles(rootDir));
+  files.push(...roleFiles(rootDir, readLevel(rootDir)));
   const settings = readSettings(rootDir);
   if (settings) {
     files.push({
@@ -139,6 +145,23 @@ export function generatedFiles({ specs = HOOKS, rootDir = ROOT_DIR } = {}) {
     });
   }
   return files;
+}
+
+/** @param {string} rootDir @returns {HarnessLevel} */
+function readLevel(rootDir) {
+  const value =
+    readIfExists(path.join(rootDir, LEVEL_FILE))?.trim() ?? 'default';
+  if (value === 'default' || value === 'high') return value;
+  throw new Error(
+    `Invalid harness level in ${LEVEL_FILE}.\nFix: pnpm harness level default`
+  );
+}
+
+/** @template T @param {string} rootDir @param {() => T} update */
+function withHarnessLock(rootDir, update) {
+  const dir = path.join(rootDir, LEVEL_DIR);
+  fs.mkdirSync(dir, { recursive: true });
+  return withLock(dir, update, { label: 'Harness configuration' });
 }
 
 /**
@@ -158,14 +181,12 @@ function readSettings(rootDir) {
 /**
  * Whether a generated file on disk already has its content.
  *
- * @param {string} rootDir
+ * @param {string | null} actual
  * @param {GeneratedFile} generated
  * @returns {'current' | 'stale' | 'missing'}
  */
-function fileState(rootDir, generated) {
-  const file = path.join(rootDir, generated.file);
-  if (!fs.existsSync(file)) return 'missing';
-  const actual = fs.readFileSync(file, 'utf-8');
+function fileState(actual, generated) {
+  if (actual === null) return 'missing';
   if (!generated.json)
     return actual === generated.content ? 'current' : 'stale';
   try {
@@ -217,34 +238,113 @@ function checkClaude({ rootDir, log }) {
   return false;
 }
 
+/** @param {string} file @param {string} next @param {string} expected */
+function replaceRole(file, next, expected) {
+  writeFileAtomic(file, next, {
+    beforeReplace() {
+      if (readIfExists(file) !== expected) {
+        throw new Error(
+          `${file} changed during harness sync. Retry after saving your edits.`
+        );
+      }
+    },
+  });
+}
+
+/** @param {Deps} deps @param {GeneratedFile[]} files */
+function writeGenerated({ rootDir, log }, files) {
+  /** @type {{ file: string, generated: GeneratedFile, previous: string | null }[]} */
+  const written = [];
+  try {
+    for (const generated of files) {
+      const file = path.join(rootDir, generated.file);
+      const previous = readIfExists(file);
+      if (fileState(previous, generated) === 'current') continue;
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      if (generated.sourceContent !== undefined) {
+        replaceRole(file, generated.content, generated.sourceContent);
+      } else {
+        writeFileAtomic(file, generated.content);
+      }
+      written.push({ file, generated, previous });
+    }
+  } catch (error) {
+    const failures = [];
+    for (const { file, generated, previous } of written.reverse()) {
+      try {
+        const current = readIfExists(file);
+        if (current === null) continue;
+        const restore =
+          current === generated.content
+            ? previous
+            : generated.restoreModel?.(current);
+        if (restore === null) fs.unlinkSync(file);
+        else if (restore !== undefined) replaceRole(file, restore, current);
+      } catch (restoreError) {
+        failures.push(restoreError);
+      }
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(
+        [error, ...failures],
+        `${error}\nCould not restore every harness file.\nFix: pnpm harness sync`
+      );
+    }
+    throw error;
+  }
+
+  for (const { generated, previous } of written) {
+    log(`Wrote ${generated.file}`);
+    if (generated.changedHint?.when(previous)) {
+      log(generated.changedHint.text);
+    }
+  }
+  if (written.length === 0) log('✓ generated files are up to date');
+}
+
 const COMMANDS = {
   /** @param {Deps} deps */
   sync(deps) {
-    const written = [];
-    for (const generated of generatedFiles({ rootDir: deps.rootDir })) {
-      const state = fileState(deps.rootDir, generated);
-      if (state === 'current') continue;
-      const file = path.join(deps.rootDir, generated.file);
-      const previous =
-        state === 'missing' ? null : fs.readFileSync(file, 'utf-8');
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, generated.content);
-      deps.log(`Wrote ${generated.file}`);
-      if (generated.changedHint?.when(previous)) {
-        deps.log(generated.changedHint.text);
-      }
-      written.push(generated.file);
-    }
-    if (written.length === 0) deps.log('✓ generated files are up to date');
+    const { rootDir } = deps;
+    withHarnessLock(rootDir, () =>
+      writeGenerated(deps, generatedFiles({ rootDir }))
+    );
     // sync never edits Claude's settings; it reports a difference instead.
     return checkClaudeQuietly(deps) ? 0 : 1;
+  },
+
+  /** @param {Deps} deps @param {string[]} args */
+  level(deps, args) {
+    const { rootDir, log } = deps;
+    const [requested] = args;
+    if (args.length === 0) {
+      log(readLevel(rootDir));
+      return 0;
+    }
+    if (
+      args.length !== 1 ||
+      (requested !== 'default' && requested !== 'high')
+    ) {
+      throw new Error('Usage: pnpm harness level [default|high]');
+    }
+    withHarnessLock(rootDir, () => {
+      writeGenerated(deps, [
+        ...roleFiles(rootDir, requested),
+        { file: LEVEL_FILE, content: `${requested}\n` },
+      ]);
+    });
+    log(
+      `Harness level: ${requested}. Start a new harness session to apply it.`
+    );
+    return 0;
   },
 
   /** @param {Deps} deps */
   check(deps) {
     let ok = checkClaude(deps);
     for (const generated of generatedFiles({ rootDir: deps.rootDir })) {
-      const state = fileState(deps.rootDir, generated);
+      const actual = readIfExists(path.join(deps.rootDir, generated.file));
+      const state = fileState(actual, generated);
       if (state === 'current') {
         deps.log(`✓ ${generated.file}`);
         continue;
@@ -265,6 +365,7 @@ const COMMANDS = {
         'Usage:',
         `  pnpm harness sync    write the Codex/DSH/Antigravity files generated from ${MANIFEST}`,
         `  pnpm harness check   fail when a generated file or ${CLAUDE_SETTINGS} hooks differ from it`,
+        "  pnpm harness level [default|high]  show or set this checkout's native subagent level",
         '  pnpm harness help    show this help (the default)',
       ].join('\n')
     );
@@ -300,7 +401,10 @@ export function main({ argv = process.argv.slice(2), deps = {} } = {}) {
   if (!Object.hasOwn(COMMANDS, command)) {
     throw new Error(`Unknown command "${command}". Run: pnpm harness help`);
   }
-  return COMMANDS[/** @type {keyof typeof COMMANDS} */ (command)](resolved);
+  return COMMANDS[/** @type {keyof typeof COMMANDS} */ (command)](
+    resolved,
+    argv.slice(1)
+  );
 }
 
 /* c8 ignore next 8 - CLI entry point */

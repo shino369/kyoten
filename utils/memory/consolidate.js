@@ -24,7 +24,7 @@ import {
   writeFileAtomic,
 } from '../task/store.js';
 import { CALL_AGENTS, callAgent } from './agent-call.js';
-import { readConfig, savingOff } from './config.js';
+import { memoryPolicyKey, readConfig, savingOff } from './config.js';
 import { looksLikeInstruction } from './instructions.js';
 import { kindLabel, refreshAfterWrite, shorten } from './context.js';
 import {
@@ -493,19 +493,7 @@ export function consolidationAgent(config, env) {
   return sessions[0] ?? 'claude';
 }
 
-/**
- * The auto-consolidation policy key for `agent` in `env`: `dscc` when the
- * `claude` CLI runs under the dscc profile, otherwise the agent name itself.
- *
- * @param {string} agent
- * @param {NodeJS.ProcessEnv} env
- * @returns {import('./config.js').ConsolidateAgent}
- */
-export function consolidationPolicyKey(agent, env) {
-  return agent === 'claude' && env.KYOTEN_AGENT === DSCC_AGENT
-    ? 'dscc'
-    : /** @type {import('./config.js').ConsolidateAgent} */ (agent);
-}
+export { memoryPolicyKey as consolidationPolicyKey } from './config.js';
 
 /**
  * Validate an explicit `--agent` override for manual consolidation, refusing
@@ -566,12 +554,12 @@ export function consolidate(deps) {
     if (tos) return tos;
   }
   const { input, foreign } = prepareConsolidation(deps.rootDir, side, now);
-  const policyAgent = consolidationPolicyKey(agent, deps.env);
+  const policyAgent = memoryPolicyKey(agent, deps.env);
   const autoAllowed = config.autoConsolidate[policyAgent];
   const { shown, cursor, archiveIds, scopeHints } = input;
-  // Per-agent automatic consolidation policy: claude, codex, dsh, and agy
-  // default on (consolidating mixed notes automatically); dscc defaults off
-  // (opt-in via `pnpm memory set --auto-consolidate dscc=on` or one-shot
+  // Per-agent automatic consolidation policy: claude, codex, and dsh default on.
+  // Antigravity and dscc default off
+  // (opt in via `pnpm memory set --auto-consolidate <agent>=on` or one-shot
   // `--allow-cross-side` / `--force`). `--dry-run` sends nothing so it is
   // always allowed to preview the prompt.
   if (!deps.dryRun && !autoAllowed && !deps.allowCrossSide && !deps.force) {

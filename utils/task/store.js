@@ -86,18 +86,19 @@ function isWindowsBusy(error, platform) {
  *
  * @param {string} file
  * @param {string | Buffer} content
- * @param {{ platform?: NodeJS.Platform, retryMs?: number }} [options]
+ * @param {{ platform?: NodeJS.Platform, retryMs?: number, beforeReplace?: () => void }} [options]
  */
 export function writeFileAtomic(
   file,
   content,
-  { platform = process.platform, retryMs = 2000 } = {}
+  { platform = process.platform, retryMs = 2000, beforeReplace } = {}
 ) {
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   const deadline = Date.now() + retryMs;
   try {
     fs.writeFileSync(tmp, content, 'utf-8');
     for (;;) {
+      beforeReplace?.();
       try {
         fs.renameSync(tmp, file);
         return;
@@ -270,9 +271,13 @@ export function writeActive(rootDir, name) {
  */
 
 export const SESSIONS_DIR = '.sessions';
+/** @param {string} rootDir */
+export const sessionContextDir = (rootDir) =>
+  path.join(tasksRoot(rootDir), SESSIONS_DIR, '.context');
+
 /** Session ids become file names: letters, digits, dot, dash, underscore. */
 export const SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-/** Bindings untouched this long are removed (SessionStart prunes them). */
+/** Session records untouched this long are removed (SessionStart prunes them). */
 export const SESSION_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 /**
@@ -409,7 +414,7 @@ export function touchSession(rootDir, session, now = new Date()) {
 }
 
 /**
- * Remove bindings not written or touched for `maxAgeMs`.
+ * Remove bindings and context state not written or touched for `maxAgeMs`.
  *
  * @param {string} rootDir
  * @param {{ now?: number, maxAgeMs?: number }} [options]
@@ -419,15 +424,24 @@ export function pruneSessions(
   rootDir,
   { now = Date.now(), maxAgeMs = SESSION_MAX_AGE_MS } = {}
 ) {
-  const dir = path.join(tasksRoot(rootDir), SESSIONS_DIR);
-  if (!fs.existsSync(dir)) return 0;
+  const bindings = path.join(tasksRoot(rootDir), SESSIONS_DIR);
+  if (!fs.lstatSync(bindings, { throwIfNoEntry: false })?.isDirectory())
+    return 0;
+  const dirs = [bindings];
+  const context = sessionContextDir(rootDir);
+  if (fs.lstatSync(context, { throwIfNoEntry: false })?.isDirectory()) {
+    dirs.push(context);
+  }
   let removed = 0;
-  for (const entry of fs.readdirSync(dir)) {
-    if (!entry.endsWith('.json')) continue;
-    const file = path.join(dir, entry);
-    if (now - fs.statSync(file).mtimeMs > maxAgeMs) {
-      fs.rmSync(file, { force: true });
-      removed++;
+  for (const dir of dirs) {
+    for (const entry of fs.readdirSync(dir)) {
+      if (!entry.endsWith('.json')) continue;
+      const file = path.join(dir, entry);
+      const stat = fs.lstatSync(file, { throwIfNoEntry: false });
+      if (stat?.isFile() && now - stat.mtimeMs > maxAgeMs) {
+        fs.rmSync(file, { force: true });
+        removed++;
+      }
     }
   }
   return removed;

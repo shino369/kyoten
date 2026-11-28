@@ -6,6 +6,7 @@ import { main as taskMain } from '../../task/cli.js';
 import { scopeFingerprint } from '../../task/loop.js';
 import { createState, makeSteps } from '../../task/state.js';
 import { loadTask, saveState, tasksRoot } from '../../task/store.js';
+import { resolveReviewExecution } from '../../task/review-run.js';
 import { buildCommand } from '../adapters.js';
 import {
   BEGIN,
@@ -204,17 +205,23 @@ describe('extractRows', () => {
       '| old | x | low | a | b | | |',
       END,
       'text',
-      BEGIN,
       '```',
+      BEGIN,
       HEADER,
       SEP,
       '| | | | | | | |',
       `  ${HIGH}  `,
-      'not a row',
-      '```',
       END,
+      '```',
     ].join('\n');
     expect(extractRows(output)).toEqual([HIGH]);
+  });
+
+  test('should require the findings block to stand alone in oneshot mode', () => {
+    const output = [BEGIN, HIGH, END].join('\n');
+    expect(extractRows(output, 'oneshot')).toEqual([HIGH]);
+    expect(extractRows('Finished.\n' + output, 'oneshot')).toBeNull();
+    expect(extractRows(output + '\nFinished.', 'oneshot')).toBeNull();
   });
 
   test('should return [] for an empty block and null without one', () => {
@@ -252,6 +259,38 @@ describe('tableRows / replaceRows', () => {
     expect(replaceRows('# R\n', [HIGH])).toBe(
       `# R\n\n${HEADER}\n${SEP}\n${HIGH}\n`
     );
+  });
+});
+
+describe('resolveReviewExecution', () => {
+  test.each(['codex', 'dsh'])(
+    'should keep a %s launcher on its own provider without a session marker',
+    (agent) => {
+      const selection = resolveReviewExecution(
+        {},
+        { rootDir: root, env: { KYOTEN_AGENT: agent } }
+      );
+      expect(selection.reviewer.agent).toBe(agent);
+    }
+  );
+
+  test('should resolve matching session and launcher markers to one provider', () => {
+    const env = { KYOTEN_AGENT: 'codex', CODEX_THREAD_ID: 'fixture' };
+    const selection = resolveReviewExecution({}, { rootDir: root, env });
+
+    expect(selection.reviewer.agent).toBe('codex');
+  });
+
+  test('should require a reviewer choice when session markers disagree', () => {
+    const env = { KYOTEN_AGENT: 'claude', CODEX_THREAD_ID: 'fixture' };
+    expect(() => resolveReviewExecution({}, { rootDir: root, env })).toThrow(
+      'select a provider explicitly with --reviewer'
+    );
+
+    expect(
+      resolveReviewExecution({ reviewer: 'codex' }, { rootDir: root, env })
+        .reviewer.agent
+    ).toBe('codex');
   });
 });
 
@@ -294,7 +333,7 @@ describe('triageProblems', () => {
     expect(
       triageProblems([HIGH, LOW], [triaged(LOW, 'CONFIRMED'), LOW])
     ).toEqual([
-      'row 1: the triage changed the finding (file:line or claim)',
+      'row 1: the triage changed the finding (id, file:line, claim, or scenario)',
       'row 2: no verdict or no reason',
     ]);
   });
@@ -602,7 +641,7 @@ describe('runReviewLoop', () => {
     const failing = fakeAgents({ codes: { reviewer: 1 } });
     expect(review(makeDeps(failing.runAgent))).toMatchObject({
       reason: 'reviewer',
-      detail: 'the reviewer exited 1; round 1 stays open.',
+      detail: 'The reviewer failed: exited 1; round 1 stays open.',
     });
     expect(state().quality?.phase).toBe('review');
     const silent = vi.fn(() => ({
@@ -613,7 +652,7 @@ describe('runReviewLoop', () => {
       durationMs: 1,
     }));
     expect(review(makeDeps(silent)).detail).toBe(
-      `the reviewer printed no ${BEGIN} … ${END} block; round 1 stays open.`
+      `The reviewer failed: printed no ${BEGIN} … ${END} block; round 1 stays open.`
     );
   });
 
@@ -628,11 +667,11 @@ describe('runReviewLoop', () => {
     }));
     const result = review(makeDeps(killed));
     expect(result.detail).toBe(
-      'the reviewer exited SIGTERM; round 1 stays open.'
+      'The reviewer failed: exited SIGTERM; round 1 stays open.'
     );
     expect(
       fs.readFileSync(path.join(result.logDir, 'r1-reviewer.md'), 'utf-8')
-    ).toContain('- Exit: stopped by SIGTERM');
+    ).toContain('exit SIGTERM');
   });
 
   test('should run on an older code state without quality', () => {
@@ -644,16 +683,183 @@ describe('runReviewLoop', () => {
     });
   });
 
+  test('should complete a clean review without loading an unused triage profile', () => {
+    seedTask();
+    const env = { DSCC_PROFILE: path.join(root, 'missing-dscc-profile') };
+    const { runAgent, calls } = fakeAgents({});
+    const selection = resolveReviewExecution(
+      { mode: 'read', reviewer: 'claude', triage: 'dscc' },
+      { rootDir: root, env }
+    );
+
+    const result = review(makeDeps(runAgent, { env }), { selection });
+
+    expect(result).toMatchObject({ ok: true, rounds: 1 });
+    expect(calls).toMatchObject({ reviewer: 1, triage: 0 });
+  });
+
+  test('should dispatch explicitly selected Claude roles outside the inherited dscc profile', () => {
+    seedTask();
+    const credential = 'fixture-inherited-auth-value';
+    const env = {
+      KYOTEN_AGENT: 'dscc',
+      ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic',
+      ANTHROPIC_AUTH_TOKEN: credential,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-flash',
+    };
+    const selection = resolveReviewExecution(
+      { mode: 'read', reviewer: 'claude' },
+      { rootDir: root, env }
+    );
+    const { runAgent: scripted } = fakeAgents({
+      reviewer: [[LOW]],
+      triage: [[triaged(LOW, 'CONFIRMED')]],
+    });
+    const runAgent = vi.fn(
+      /** @type {import('../driver.js').LoopDeps['runAgent']} */
+      ((options) => scripted(options))
+    );
+
+    const result = review(makeDeps(runAgent, { env }), { selection });
+
+    expect(result).toMatchObject({ ok: true, rounds: 1 });
+    expect(runAgent).toHaveBeenCalledTimes(2);
+    for (const [options] of runAgent.mock.calls) {
+      expect(options.command.agent).toBe('claude');
+      expect(options.env).not.toHaveProperty('KYOTEN_AGENT');
+      expect(options.env).not.toHaveProperty('ANTHROPIC_BASE_URL');
+      expect(options.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
+      expect(options.env).not.toHaveProperty('ANTHROPIC_DEFAULT_SONNET_MODEL');
+    }
+    expect(selection.reviewer.secrets).toContain(credential);
+  });
+
+  test('should omit inherited and selected credentials from the launched dscc packs', () => {
+    const inherited = 'fixture-inherited-provider-value';
+    const selected = 'fixture-selected-provider-value';
+    seedTask({
+      goal: `Review the synthetic examples ${inherited} and ${selected}`,
+    });
+    const profile = path.join(root, 'fixture-profile');
+    fs.writeFileSync(
+      profile,
+      [
+        'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic',
+        `ANTHROPIC_AUTH_TOKEN=${selected}`,
+      ].join('\n')
+    );
+    const env = { DSCC_PROFILE: profile, ANTHROPIC_API_KEY: inherited };
+    const selection = resolveReviewExecution(
+      { reviewer: 'dscc' },
+      { rootDir: root, env }
+    );
+    const runAgent = vi.fn(
+      /** @type {import('../driver.js').LoopDeps['runAgent']} */
+      (() => ({ code: 0, signal: null, output: '', stdout: '', durationMs: 1 }))
+    );
+    runAgent
+      .mockReturnValueOnce({
+        code: 0,
+        signal: null,
+        output: '',
+        stdout: [BEGIN, LOW, END].join('\n'),
+        durationMs: 1,
+      })
+      .mockReturnValueOnce({
+        code: 0,
+        signal: null,
+        output: '',
+        stdout: [BEGIN, triaged(LOW, 'CONFIRMED'), END].join('\n'),
+        durationMs: 1,
+      });
+
+    const result = review(makeDeps(runAgent, { env }), { selection });
+
+    expect(result).toMatchObject({ ok: true, rounds: 1 });
+    expect(runAgent).toHaveBeenCalledTimes(2);
+    for (const [options] of runAgent.mock.calls) {
+      expect(options.env).not.toHaveProperty('ANTHROPIC_API_KEY');
+      expect(options.env.ANTHROPIC_AUTH_TOKEN).toBe(selected);
+      expect(options.prompt).toContain('Review the synthetic examples');
+      expect(options.prompt).not.toContain(inherited);
+      expect(options.prompt).not.toContain(selected);
+    }
+    const pack = path.join(taskDir(), 'reviews', `PACK_${NAME}-r1.md`);
+    expect(fs.readFileSync(pack, 'utf8')).toBe(
+      runAgent.mock.calls[0][0].prompt
+    );
+  });
+
+  test('should keep the structured Antigravity reply out of review loop logs', () => {
+    seedTask();
+    const credential = 'fixture-private-first\nfixture-private-second';
+    const env = { KYOTEN_AGENT: 'agy', FIXTURE_TOKEN: credential };
+    const selection = resolveReviewExecution({}, { rootDir: root, env });
+    const stdout = [BEGIN, END].join('\n');
+    const output = JSON.stringify({
+      event: 'result',
+      result: { response: stdout, diagnostic: credential },
+    });
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      output,
+      stdout,
+      durationMs: 1,
+    }));
+
+    const result = review(makeDeps(runAgent, { env }), { selection });
+
+    expect(result.ok).toBe(true);
+    const log = fs.readFileSync(
+      path.join(result.logDir, 'r1-reviewer.md'),
+      'utf8'
+    );
+    expect(log).toContain('reviewer attempt 1: agy; exit 0');
+    expect(log).not.toContain('fixture-private-first');
+    expect(log).not.toContain('fixture-private-second');
+  });
+
+  test('should keep findings open when the needed triage profile cannot load', () => {
+    seedTask();
+    const env = { DSCC_PROFILE: path.join(root, 'missing-dscc-profile') };
+    const { runAgent, calls } = fakeAgents({ reviewer: [[LOW]] });
+    const selection = resolveReviewExecution(
+      { mode: 'read', reviewer: 'claude', triage: 'dscc' },
+      { rootDir: root, env }
+    );
+
+    const result = review(makeDeps(runAgent, { env }), { selection });
+
+    expect(result).toMatchObject({ ok: false, reason: 'triage' });
+    expect(result.detail).toContain('no dscc profile');
+    expect(calls).toMatchObject({ reviewer: 1, triage: 0 });
+    const findings = path.join(taskDir(), 'reviews', `REVIEW_${NAME}-r1.md`);
+    expect(tableRows(fs.readFileSync(findings, 'utf8'))).toEqual([LOW]);
+  });
+
+  test('should validate triage options before a reviewer can run', () => {
+    const env = { DSCC_PROFILE: path.join(root, 'missing-dscc-profile') };
+    expect(() =>
+      resolveReviewExecution(
+        { reviewer: 'claude', triage: 'dscc', triageEffort: 'xhigh' },
+        { rootDir: root, env }
+      )
+    ).toThrow('--effort is only supported');
+  });
+
   test('should keep the round open when the triage fails or tampers', () => {
     seedTask();
     const crashed = fakeAgents({ reviewer: [[HIGH]], codes: { triage: 2 } });
     expect(review(makeDeps(crashed.runAgent))).toMatchObject({
       reason: 'triage',
-      detail: 'the triage failed: exited 2; round 1 stays open.',
+      detail: 'The triage failed: exited 2; round 1 stays open.',
     });
-    const tampered = fakeAgents({ triage: [[triaged(LOW, 'REFUTED')]] });
+    const tampered = fakeAgents({
+      triage: Array.from({ length: 2 }, () => [triaged(LOW, 'REFUTED')]),
+    });
     expect(review(makeDeps(tampered.runAgent)).detail).toBe(
-      'the triage failed: row 1: the triage changed the finding (file:line or claim); round 1 stays open.'
+      'The triage failed: row 1: the triage changed the finding (id, file:line, claim, or scenario); round 1 stays open.'
     );
     const silent = vi.fn(() => ({
       code: 0,
@@ -663,34 +869,101 @@ describe('runReviewLoop', () => {
       durationMs: 1,
     }));
     expect(review(makeDeps(silent)).detail).toBe(
-      `the triage failed: printed no ${BEGIN} … ${END} block; round 1 stays open.`
+      `The triage failed: printed no ${BEGIN} … ${END} block; round 1 stays open.`
     );
   });
 
   test('should refuse malformed reviewer rows without writing them', () => {
     seedTask();
     const { runAgent, calls } = fakeAgents({
-      reviewer: [[HIGH.replace('| high |', '| severe |')]],
+      reviewer: Array.from({ length: 2 }, () => [
+        HIGH.replace('| high |', '| severe |'),
+      ]),
     });
     const result = review(makeDeps(runAgent));
     expect(result).toMatchObject({ ok: false, reason: 'reviewer' });
     expect(result.detail).toContain('severity "severe"');
-    expect(result.detail).toContain('nothing was written, round 1 stays open.');
+    expect(result.detail).toContain('round 1 stays open.');
+    expect(calls.reviewer).toBe(2);
     expect(calls.triage).toBe(0);
     const file = path.join(taskDir(), 'reviews', `REVIEW_${NAME}-r1.md`);
     expect(tableRows(fs.readFileSync(file, 'utf-8'))).toEqual([]);
   });
 
-  test('should report a findings table that record rejects', () => {
+  test('should retry prose inside a read-mode block and accept prose around the valid retry', () => {
+    seedTask();
+    const invalid = [BEGIN, 'Indeterminate output', END].join('\n');
+    const valid = ['Review finished.', BEGIN, END, 'End of reply.'].join('\n');
+    const runAgent = vi.fn(
+      /** @type {import('../driver.js').LoopDeps['runAgent']} */
+      (
+        () => ({
+          code: 0,
+          signal: null,
+          output: '',
+          stdout: valid,
+          durationMs: 1,
+        })
+      )
+    );
+    runAgent.mockReturnValueOnce({
+      code: 0,
+      signal: null,
+      output: '',
+      stdout: invalid,
+      durationMs: 1,
+    });
+
+    const result = review(makeDeps(runAgent));
+
+    expect(result).toMatchObject({ ok: true, rounds: 1 });
+    expect(runAgent).toHaveBeenCalledTimes(2);
+  });
+
+  test('should leave a round open after two malformed read-mode blocks', () => {
+    seedTask();
+    const stdout = [BEGIN, 'Indeterminate output', END].join('\n');
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      output: '',
+      stdout,
+      durationMs: 1,
+    }));
+
+    const result = review(makeDeps(runAgent));
+
+    expect(result).toMatchObject({ ok: false, reason: 'reviewer', rounds: 0 });
+    expect(runAgent).toHaveBeenCalledTimes(2);
+    expect(state().quality?.phase).toBe('review');
+  });
+
+  test('should retry reviewer output with assigned IDs before writing findings', () => {
+    seedTask();
+    const { runAgent, calls } = fakeAgents({
+      reviewer: [
+        [HIGH, LOW].map((row) => row.replace('|  |', '| duplicate |')),
+        [LOW],
+      ],
+      triage: [[triaged(LOW, 'CONFIRMED')]],
+    });
+
+    const result = review(makeDeps(runAgent));
+
+    expect(result).toMatchObject({ ok: true, rounds: 1 });
+    expect(calls).toMatchObject({ reviewer: 2, triage: 1 });
+    expect(state().quality?.findings).toMatchObject([{ claim: 'Odd name' }]);
+  });
+
+  test('should reject invalid verdicts before recording', () => {
     seedTask();
     const { runAgent } = fakeAgents({
       reviewer: [[HIGH]],
-      triage: [[triaged(HIGH, 'MAYBE')]],
+      triage: Array.from({ length: 2 }, () => [triaged(HIGH, 'MAYBE')]),
     });
     const result = review(makeDeps(runAgent));
-    expect(result.reason).toBe('record');
-    expect(result.detail).toContain('pnpm task review record failed:');
-    expect(result.detail).toContain('verdict "MAYBE"');
+    expect(result.reason).toBe('triage');
+    expect(result.detail).toContain('verdict must be CONFIRMED or REFUTED');
   });
 
   test('should stop at the wall-clock cap', () => {
@@ -703,4 +976,36 @@ describe('runReviewLoop', () => {
       reason: 'timeout',
     });
   });
+
+  test.each([
+    [60, 20],
+    [22, 3],
+  ])(
+    'should give triage its own cap within a %i-minute loop budget',
+    (loopMinutes, triageMinutes) => {
+      seedTask();
+      const minute = 60_000;
+      let time = 0;
+      /** @type {number[]} */
+      const budgets = [];
+      const { runAgent: scripted } = fakeAgents({
+        reviewer: [[LOW]],
+        triage: [[triaged(LOW, 'CONFIRMED')]],
+      });
+      /** @type {import('../driver.js').LoopDeps['runAgent']} */
+      const runAgent = (options) => {
+        budgets.push(options.timeoutMs);
+        if (budgets.length === 1) time += 19 * minute;
+        return scripted(options);
+      };
+
+      const result = review(makeDeps(runAgent, { clock: () => time }), {
+        timeoutMs: loopMinutes * minute,
+        iterationTimeoutMs: 20 * minute,
+      });
+
+      expect(result).toMatchObject({ ok: true, rounds: 1 });
+      expect(budgets).toEqual([20 * minute, triageMinutes * minute]);
+    }
+  );
 });

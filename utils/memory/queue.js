@@ -141,13 +141,15 @@ export const memorySide = (kyotenAgent) =>
  * @returns {'dscc' | 'agy' | 'normal' | null}
  */
 export const agentSide = (agent, env) =>
-  agent === AGY_AGENT
-    ? 'agy'
-    : agent === 'claude'
-      ? env.KYOTEN_AGENT === DSCC_AGENT
-        ? 'dscc'
-        : 'normal'
-      : null;
+  agent === DSCC_AGENT
+    ? 'dscc'
+    : agent === AGY_AGENT
+      ? 'agy'
+      : agent === 'claude'
+        ? env.KYOTEN_AGENT === DSCC_AGENT
+          ? 'dscc'
+          : 'normal'
+        : null;
 
 /**
  * The recipient side of a journal run. DSH and Codex are normal providers,

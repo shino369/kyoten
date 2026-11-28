@@ -13,6 +13,12 @@ import {
   SNAPSHOT_MAX_FILE_BYTES,
   SEVERITY_RUBRIC,
   STATIC_PROTECTED_EXCLUDES,
+  PACK_MAX_TOTAL_BYTES,
+  PACK_MAX_FILE_BYTES,
+  buildReviewPack,
+  buildTriagePack,
+  classifyDiffFile,
+  sortReviewFiles,
   defaultRunGit,
   defaultRunGitStatus,
   diffStats,
@@ -53,6 +59,236 @@ const GREEN = {
   failed: null,
   summary: 'ok',
 };
+
+test('should review production before config, tests, and docs with tiered context', () => {
+  const files = [
+    'README.md',
+    'a.test.js',
+    '.claude/agents/reviewer.md',
+    'z.js',
+    'a.yml',
+  ];
+  expect(sortReviewFiles(files)).toEqual([
+    'z.js',
+    '.claude/agents/reviewer.md',
+    'a.yml',
+    'a.test.js',
+    'README.md',
+  ]);
+  expect(files.map((file) => classifyDiffFile(file).contextLines)).toEqual([
+    3, 3, 5, 8, 5,
+  ]);
+});
+
+test('should build a capped round 2 review pack from incremental evidence and the plan', () => {
+  const input = {
+    state: codeState(),
+    round: 2,
+    repoDir: '/unused',
+    scope: { base: 'main', since: 'base', files: ['app.js', 'docs/note.md'] },
+    planText:
+      'Goal: Fix this\nAcceptance: new test passes\n\n## Notes\nPrivate history\n',
+    diff: 'FULL ONLY',
+    incrementalDiff:
+      'diff --git a/app.js b/app.js\n@@ -1 +1 @@\n+incremental proof\ndiff --git a/docs/note.md b/docs/note.md\n+' +
+      'あ'.repeat(PACK_MAX_TOTAL_BYTES),
+  };
+  const pack = buildReviewPack(input);
+  expect(pack).toContain('BEGIN FINDINGS');
+  expect(pack).toContain('new test passes');
+  expect(pack).toContain('incremental proof');
+  expect(pack).not.toContain('FULL ONLY');
+  expect(pack).not.toContain('Private history');
+  expect(Buffer.byteLength(pack)).toBeLessThanOrEqual(PACK_MAX_TOTAL_BYTES);
+});
+
+test('should inline safe task code and deduplicate triage windows', () => {
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-pack-'));
+  try {
+    fs.writeFileSync(
+      path.join(repoDir, 'app.js'),
+      'export const evidence = 42;\n'
+    );
+    fs.writeFileSync(
+      path.join(repoDir, 'credentials.json'),
+      'protected payload'
+    );
+    const input = {
+      state: codeState(),
+      round: 1,
+      repoDir,
+      scope: { base: null, since: null, files: ['app.js', 'credentials.json'] },
+      planText: 'Acceptance: Evidence appears.',
+    };
+    const review = buildReviewPack(input);
+    expect(review).toContain('export const evidence = 42;');
+    expect(review).not.toContain('protected payload');
+    const rows = [
+      '| | app.js:1 | high | claim | scenario | | |',
+      '| | app.js:1 | medium | second claim | second scenario | | |',
+      '| | ../outside.js:1 | high | outside | scenario | | |',
+    ];
+    const triage = buildTriagePack({ ...input, rows });
+    expect(triage).toContain('Evidence appears.');
+    expect(triage.match(/export const evidence/g)).toHaveLength(1);
+    expect(triage).toContain('second claim');
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('should include diff hunks and initial source lines for file-level findings without :line, deleted hunks, and null-line earlier findings', () => {
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-noline-'));
+  try {
+    fs.writeFileSync(
+      path.join(repoDir, 'app.js'),
+      Array.from(
+        { length: 80 },
+        (_, i) => `const line${i + 1} = ${i + 1};`
+      ).join('\n') + '\n'
+    );
+    const input = {
+      state: codeState({
+        quality: {
+          ...freshQuality(),
+          findings: [
+            finding({ line: null, verdict: 'REFUTED', claim: 'Missing guard' }),
+          ],
+        },
+      }),
+      round: 2,
+      repoDir,
+      scope: { base: 'main', since: 'base', files: ['app.js', 'deleted.js'] },
+      planText: 'Goal: Ship it.',
+      diff:
+        'diff --git a/app.js b/app.js\n@@ -1,2 +1,2 @@\n-old\n+new\n' +
+        'diff --git a/deleted.js b/deleted.js\n@@ -40,5 +0,0 @@\n-removed\n',
+    };
+    const pack = buildReviewPack(input);
+    expect(pack).toContain('Refuted app/a.js Missing guard');
+    expect(pack).not.toContain('app/a.js:null');
+    const triage = buildTriagePack({
+      ...input,
+      rows: [
+        '| | app.js | high | File-level issue | Fails across file | | |',
+        '| | deleted.js:42 | high | Deleted code | Missing fallback | | |',
+      ],
+    });
+    expect(triage).toContain('### app.js (diff)');
+    expect(triage).toContain('+new');
+    expect(triage).toContain('### app.js (working source)');
+    expect(triage).toContain('60  const line60 = 60;');
+    expect(triage).not.toContain('61  const line61 = 61;');
+    expect(triage).toContain('### deleted.js (diff)');
+    expect(triage).toContain('-removed');
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+test('should redact a known credential before capping plan and triage evidence', () => {
+  const secretStart = 'distinctive-credential-prefix-';
+  const secret = secretStart + 'x'.repeat(256);
+  const intro = 'Acceptance: ';
+  const hunk = '@@ -1 +1 @@\n+';
+  const input = {
+    state: codeState(),
+    round: 1,
+    repoDir: '/unused',
+    scope: { base: 'main', since: 'base', files: ['file.js'] },
+    planText: intro + 'a'.repeat(16 * 1024 - intro.length - 50) + secret,
+    diff:
+      'diff --git a/file.js b/file.js\n' +
+      hunk +
+      'b'.repeat(PACK_MAX_FILE_BYTES - hunk.length - 160) +
+      secret +
+      '\n',
+    scrub: (/** @type {string} */ text) =>
+      text.replaceAll(secret, '[REDACTED]'),
+  };
+  const review = buildReviewPack(input);
+  const triage = buildTriagePack({
+    ...input,
+    rows: ['| | file.js:1 | low | Claim | Scenario | | |'],
+  });
+  expect(review).not.toContain(secretStart);
+  expect(triage).not.toContain(secretStart);
+});
+
+test('should fall back to the full git patch when there is no incremental evidence', () => {
+  const pack = buildReviewPack({
+    state: codeState(),
+    round: 2,
+    repoDir: '/unused',
+    scope: { base: 'main', since: 'base', files: ['file.js'] },
+    planText: 'Goal: Review the full change.',
+    diff: 'diff --git a/file.js b/file.js\n@@ -1 +1 @@\n+usable evidence\n',
+    incrementalDiff: null,
+  });
+  expect(pack).toContain('## Diff against the review base');
+  expect(pack).toContain('+usable evidence');
+});
+
+test.each([
+  '... [omitted from previous round snapshot (binary, oversized, or secret); inspect the full DIFF patch]',
+  'deleted file (was omitted from previous round snapshot as binary, oversized, or secret)',
+])(
+  'should use full evidence for an omitted incremental file alongside usable hunks (%s)',
+  (omission) => {
+    const patch = (/** @type {string} */ file, /** @type {string} */ change) =>
+      `diff --git a/${file} b/${file}\n@@ -1 +1 @@\n+${change}\n`;
+    const input = {
+      state: codeState(),
+      round: 2,
+      repoDir: '/unused',
+      scope: {
+        base: 'main',
+        since: 'base',
+        files: ['previously-omitted.js', 'has-incremental.js'],
+      },
+      planText: 'Goal: Review the fixes.',
+      diff:
+        patch('previously-omitted.js', 'fix from available full diff') +
+        patch('has-incremental.js', 'superseded full evidence'),
+      incrementalDiff:
+        'diff --git a/previously-omitted.js b/previously-omitted.js\n' +
+        `${omission}\n` +
+        patch('has-incremental.js', 'focused incremental evidence'),
+    };
+    const review = buildReviewPack(input);
+    const triage = buildTriagePack({
+      ...input,
+      rows: ['| | previously-omitted.js:1 | high | Claim | Scenario | | |'],
+    });
+    expect(review).toContain('fix from available full diff');
+    expect(triage).toContain('fix from available full diff');
+    expect(review).toContain('focused incremental evidence');
+    expect(review).not.toContain('superseded full evidence');
+  }
+);
+
+test('should inline a safe task file omitted from the previous snapshot', () => {
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-omitted-'));
+  try {
+    fs.writeFileSync(
+      path.join(repoDir, 'file.js'),
+      'export const fixed = 42;\n'
+    );
+    const pack = buildReviewPack({
+      state: codeState(),
+      round: 2,
+      repoDir,
+      scope: { base: null, since: null, files: ['file.js'] },
+      planText: 'Goal: Show the updated file.',
+      incrementalDiff:
+        'diff --git a/file.js b/file.js\n' +
+        '... [omitted from previous round snapshot (binary, oversized, or secret); inspect targeted line ranges]\n',
+    });
+    expect(pack).toContain('export const fixed = 42;');
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
 
 /** @param {Partial<import('../state.js').TaskState>} [overrides] */
 function codeState(overrides = {}) {
@@ -132,12 +368,16 @@ describe('reviewFiles', () => {
       brief: `reviews/BRIEF_${NAME}-r2.md`,
       findings: `reviews/REVIEW_${NAME}-r2.md`,
       diff: `reviews/DIFF_${NAME}-r2.patch`,
+      pack: `reviews/PACK_${NAME}-r2.md`,
+      runLog: `reviews/RUN_${NAME}-r2.md`,
       incrementalDiff: `reviews/DIFF_${NAME}-r1-to-r2.patch`,
     });
     expect(reviewFiles(NAME, 1)).toEqual({
       brief: `reviews/BRIEF_${NAME}-r1.md`,
       findings: `reviews/REVIEW_${NAME}-r1.md`,
       diff: `reviews/DIFF_${NAME}-r1.patch`,
+      pack: `reviews/PACK_${NAME}-r1.md`,
+      runLog: `reviews/RUN_${NAME}-r1.md`,
     });
   });
 
@@ -1122,7 +1362,7 @@ describe('parseFindings', () => {
     expect(result.findings).toEqual([]);
     expect(result.errors).toEqual([
       'row 1: 2 cells, expected 7 (escape | inside a cell as \\|)',
-      'row 2 (r1-1): severity "huge" is not one of must-fix, high, medium, low; no verdict yet — run the triage first; claim is empty; failure scenario is empty; file:line is empty',
+      'row 2 (r1-1): severity "huge" is not one of must-fix, high, medium, low; no verdict yet — run the triage first; claim is empty; failure scenario is empty; file:line must contain a path and a positive line number if given',
       'row 3 (r1-2): verdict "MAYBE" is not CONFIRMED or REFUTED',
       'row 4 (r1-3): the verdict needs a reason',
       'row 5 (r9): id r9 is already used',
@@ -1488,20 +1728,23 @@ describe('generateReviewDiff', () => {
     expect(patch).toContain('huge.js (+1/-1)');
   });
 
-  test('should omit protected secret files from review diffs without reading them', () => {
-    fs.writeFileSync(path.join(root, '.env'), 'API_KEY=plain-secret-value\n');
-    const runGit = runGitFor({}, []);
+  test.each(['.env', '.env-local'])(
+    'should omit protected %s from review diffs without reading it',
+    (file) => {
+      fs.writeFileSync(path.join(root, file), 'fixture-protected-content\n');
+      const runGit = runGitFor({}, [], [file]);
 
-    const patch = generateReviewDiff({
-      repoDir: root,
-      scope: gitScope(['.env']),
-      runGit,
-    });
+      const patch = generateReviewDiff({
+        repoDir: root,
+        scope: gitScope([file]),
+        runGit,
+      });
 
-    expect(patch).toContain('diff --git a/.env b/.env');
-    expect(patch).toContain('protected secret path');
-    expect(patch).not.toContain('plain-secret-value');
-  });
+      expect(patch).toContain(`diff --git a/${file} b/${file}`);
+      expect(patch).toContain('protected secret path');
+      expect(patch).not.toContain('fixture-protected-content');
+    }
+  );
 
   test('should never pass protected paths to git content, stat, or rename queries', () => {
     fs.mkdirSync(path.join(root, 'src'), { recursive: true });

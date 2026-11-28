@@ -47,14 +47,14 @@ import {
 } from '../task/store.js';
 import { ROOT_DIR } from '../workspace-config.js';
 import { CALL_AGENTS } from './agent-call.js';
-import { readConfig, savingOff } from './config.js';
+import { memoryPolicyKey, readConfig, savingOff } from './config.js';
 import {
   consolidationAgent,
   consolidationDue,
   consolidationPolicyKey,
 } from './consolidate.js';
 import { taskContext } from './context.js';
-import { announcement } from './extract.js';
+import { announcement, deferredRun } from './extract.js';
 import { quietRun } from './extract-env.js';
 import {
   catchUp,
@@ -535,8 +535,21 @@ export function handleHook(
     kyotenAgent: env[AGENT_ENV] ?? null,
   };
   const workerEnv = { ...env, [CALLER_HARNESS_ENV]: harness };
-  const startWorker = (/** @type {boolean} */ shouldConsolidate) => {
-    const work = readQueue(dir).length > 0 || shouldConsolidate;
+  const startWorker = (
+    /** @type {import('./config.js').MemoryConfig} */ config,
+    /** @type {boolean} */ shouldConsolidate
+  ) => {
+    const work =
+      shouldConsolidate ||
+      readQueue(dir).some((queued) => {
+        // A paused session still needs its queued range discarded locally.
+        if (savingOff(config, queued.session)) return true;
+        const agent = config.extractAgent ?? queued.harness;
+        return (
+          config.autoExtract[memoryPolicyKey(agent, workerEnv)] &&
+          !deferredRun(agent, queued.kyotenAgent, workerEnv, {})
+        );
+      });
     if (work && !workerRunning(dir)) {
       kick({
         rootDir: home,
@@ -549,7 +562,17 @@ export function handleHook(
     // Headless runs (--no-session-persistence) leave no transcript to read.
     const saved =
       typeof entry.transcript === 'string' && fs.existsSync(entry.transcript);
-    if (saved && enqueue(dir, entry)) startWorker(false);
+    if (saved && enqueue(dir, entry)) {
+      const config = readConfig(dir);
+      const due = consolidationDue(home, { now });
+      startWorker(
+        config,
+        due !== null &&
+          !savingOff(config, session) &&
+          consolidationAgent(config, workerEnv) !== null &&
+          consolidationNotice(due, config, workerEnv) === null
+      );
+    }
     return null;
   }
   if (event === 'SessionStart') {
@@ -565,7 +588,13 @@ export function handleHook(
     const due = consolidationDue(home, { now });
     const config = readConfig(dir);
     const notice = consolidationNotice(due, config, workerEnv);
-    startWorker(due !== null && notice === null);
+    startWorker(
+      config,
+      due !== null &&
+        notice === null &&
+        !savingOff(config, session) &&
+        consolidationAgent(config, workerEnv) !== null
+    );
     const news = announcement(dir);
     const off = savingOff(config, session);
     const parts = [

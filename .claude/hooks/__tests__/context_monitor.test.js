@@ -5,7 +5,7 @@ import fs from 'fs';
 import { vi } from 'vitest';
 import os from 'os';
 import path from 'path';
-import { writeSession } from '#utils/task/store.js';
+import { readSession, writeSession } from '#utils/task/store.js';
 import {
   DEFAULT_CONTEXT_WINDOW,
   THRESHOLDS,
@@ -257,6 +257,56 @@ describe('context_monitor', () => {
   });
 
   describe('processHookInput', () => {
+    test('keeps threshold state when a session with a .context suffix binds a task', () => {
+      const file = transcript([
+        { type: 'assistant', message: { usage: { input_tokens: 500_000 } } },
+      ]);
+      const rootDir = path.dirname(file);
+      const input = { transcript_path: file, session_id: 'work' };
+      const binding = { task: 'demo-261117', engaged: true };
+
+      expect(processHookInput(input, {}, { rootDir })?.systemMessage).toContain(
+        '[WARNING]'
+      );
+      writeSession(rootDir, 'work.context', binding);
+
+      expect(processHookInput(input, {}, { rootDir })).toBeNull();
+      expect(readSession(rootDir, 'work.context')).toMatchObject(binding);
+    });
+
+    test('warns only on a higher threshold and re-arms after compaction', () => {
+      const file = transcript([]);
+      const rootDir = path.dirname(file);
+      const check = (/** @type {number} */ tokens) => {
+        fs.writeFileSync(
+          file,
+          JSON.stringify({
+            type: 'assistant',
+            message: { usage: { input_tokens: tokens } },
+          }) + '\n'
+        );
+        return processHookInput(
+          { transcript_path: file, session_id: 'threshold-test' },
+          {},
+          { rootDir }
+        );
+      };
+
+      expect(check(200_000)?.hookSpecificOutput.additionalContext).toContain(
+        '20.0%'
+      );
+      expect(check(280_000)).toBeNull();
+      expect(check(400_000)?.systemMessage).toContain(
+        'inherited-model subagents'
+      );
+      expect(check(600_000)?.systemMessage).toContain('[URGENT]');
+      expect(check(300_000)).toBeNull();
+      expect(check(420_000)?.systemMessage).toContain('[WARNING]');
+      expect(check(100_000)).toBeNull();
+      expect(check(250_000)?.hookSpecificOutput.additionalContext).toContain(
+        '25.0%'
+      );
+    });
     test('returns null for missing input', () => {
       expect(processHookInput(undefined, {})).toBeNull();
       expect(processHookInput({}, {})).toBeNull();
@@ -293,6 +343,7 @@ describe('context_monitor', () => {
           cache_read_tokens: 200_000,
         },
       ]);
+      const rootDir = path.dirname(noteFile);
       expect(
         processHookInput(
           {
@@ -301,14 +352,14 @@ describe('context_monitor', () => {
             invocationNum: 1,
           },
           {},
-          { harness: 'agy' }
+          { harness: 'agy', rootDir }
         )
       ).toBeNull();
 
       const noteOut = processHookInput(
         { transcriptPath: noteFile, conversationId: 'agy-1', invocationNum: 0 },
         {},
-        { harness: 'agy' }
+        { harness: 'agy', rootDir }
       );
       expect(noteOut).toEqual({
         injectSteps: [
@@ -331,7 +382,7 @@ describe('context_monitor', () => {
       const warnOut = processHookInput(
         { transcriptPath: warnFile, conversationId: 'agy-1', invocationNum: 0 },
         {},
-        { harness: 'agy', activeTask }
+        { harness: 'agy', activeTask, rootDir }
       );
       expect(activeTask).toHaveBeenCalledWith('agy-1');
       expect(warnOut).toEqual({
@@ -345,6 +396,9 @@ describe('context_monitor', () => {
       });
       expect(warnOut?.injectSteps[0].systemMessage.systemMessage).toContain(
         '[WARNING]'
+      );
+      expect(warnOut?.injectSteps[0].systemMessage.systemMessage).toContain(
+        'prefix cache is warm'
       );
     });
 
@@ -423,7 +477,7 @@ describe('context_monitor', () => {
       processHookInput(
         { transcript_path: warn, session_id: 'sess-1' },
         {},
-        { activeTask }
+        { activeTask, rootDir: path.dirname(warn) }
       );
       expect(activeTask).toHaveBeenLastCalledWith('sess-1');
     });

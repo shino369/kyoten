@@ -34,6 +34,17 @@ afterEach(() => {
 });
 
 describe('normalizeConfig', () => {
+  test('should default Antigravity extraction and consolidation to off while dscc extraction is enabled', () => {
+    const config = normalizeConfig({ extractAgent: 'dscc' });
+    expect(config.autoExtract).toEqual({
+      claude: true,
+      codex: true,
+      dsh: true,
+      agy: false,
+      dscc: true,
+    });
+    expect(config.autoConsolidate.agy).toBe(false);
+  });
   test('should fill in the defaults for an empty object', () => {
     expect(normalizeConfig({})).toEqual(DEFAULT_CONFIG);
   });
@@ -46,6 +57,7 @@ describe('normalizeConfig', () => {
       extractAgent: 'codex',
       budget: 4000,
       personalizationEnabled: false,
+      autoExtract: { ...DEFAULT_CONFIG.autoExtract, agy: true },
       autoConsolidate: {
         claude: true,
         codex: false,
@@ -58,7 +70,7 @@ describe('normalizeConfig', () => {
     expect(normalizeConfig(config)).toEqual(config);
   });
 
-  test('should default autoConsolidate on for claude/codex/dsh/agy and off for dscc', () => {
+  test('should default autoConsolidate on for claude/codex/dsh and off for agy/dscc', () => {
     expect(CONSOLIDATE_AGENTS).toEqual([
       'claude',
       'codex',
@@ -70,7 +82,7 @@ describe('normalizeConfig', () => {
       claude: true,
       codex: true,
       dsh: true,
-      agy: true,
+      agy: false,
       dscc: false,
     });
     expect(

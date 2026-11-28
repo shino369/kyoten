@@ -1007,7 +1007,7 @@ describe('extractCommand', () => {
   test('should refuse an agent without memory-job support', () => {
     expect(() =>
       extractCommand({ agent: 'gemini', model: null, rootDir: root })
-    ).toThrow(/claude, codex, dsh, agy \(got gemini\)/);
+    ).toThrow(/claude, codex, dsh, agy, dscc \(got gemini\)/);
   });
 });
 
@@ -1070,7 +1070,7 @@ describe('extractEntry', () => {
     expect(run).toMatchObject({
       status: 'applied',
       session: SESSION,
-      model: 'us.anthropic.claude-opus-5-5',
+      model: 'haiku',
       from: 0,
       to: fs.statSync(transcript).size,
       changes: [
@@ -1088,10 +1088,7 @@ describe('extractEntry', () => {
     expect(call.timeoutMs).toBe(EXTRACT_TIMEOUT_MS);
     expect(call.cwd.startsWith(root)).toBe(true);
     expect(fs.existsSync(call.cwd)).toBe(false);
-    expect(call.command.args.slice(-2)).toEqual([
-      '--model',
-      'us.anthropic.claude-opus-5-5',
-    ]);
+    expect(call.command.args.slice(-2)).toEqual(['--model', 'haiku']);
   });
 
   test('should record the run, the offset, and re-render the core block', () => {
@@ -1231,7 +1228,7 @@ describe('extractEntry', () => {
       const call = lastCall(runAgent);
       expect(call.command.bin).toBe('codex');
       expect(call.prompt).toContain('[user] From now on use pnpm');
-      expect(call.command.args.slice(-2)).toEqual(['--model', 'gpt-5.5']);
+      expect(call.command.args.slice(-3)).toEqual(['--model', 'gpt-5.5', '-']);
     });
 
     test('should record claude as the agent of a Claude session', () => {
@@ -1241,11 +1238,15 @@ describe('extractEntry', () => {
 
       expect(run).toMatchObject({
         agent: 'claude',
-        model: 'us.anthropic.claude-opus-5-5',
+        model: 'haiku',
       });
     });
 
     test('should record the provider side on skipped missing, off, and trivial runs', () => {
+      writeConfig(dir, {
+        ...DEFAULT_CONFIG,
+        autoExtract: { ...DEFAULT_CONFIG.autoExtract, agy: true },
+      });
       const missingRun = extractEntry(
         queued({ harness: 'agy', kyotenAgent: null }),
         deps()
@@ -1305,6 +1306,7 @@ describe('extractEntry', () => {
         richSession();
         writeConfig(dir, {
           ...DEFAULT_CONFIG,
+          autoExtract: { ...DEFAULT_CONFIG.autoExtract, agy: true },
           extractAgent: /** @type {any} */ (agent),
         });
         const runAgent = answering();
@@ -1316,6 +1318,74 @@ describe('extractEntry', () => {
         expect(lastCall(runAgent).command.args).not.toContain('--model');
       }
     );
+
+    test('should keep agy sessions queued by default and allow a forced run from agy', () => {
+      writeTranscript([
+        {
+          type: 'USER_INPUT',
+          content: 'Explain how to run workspace checks. '.repeat(24),
+        },
+        {
+          type: 'PLANNER_RESPONSE',
+          content: 'The workspace checks run with pnpm check.',
+        },
+      ]);
+      const entry = queued({ harness: 'agy', kyotenAgent: 'agy' });
+      enqueue(dir, entry);
+      const runAgent = answering();
+      const env = { KYOTEN_CALLER_HARNESS: 'agy' };
+
+      expect(extractEntry(entry, deps({ runAgent, env }))).toMatchObject({
+        status: 'deferred',
+        policy: 'disabled',
+        policyAgent: 'agy',
+        side: 'agy',
+      });
+      expect(runAgent).not.toHaveBeenCalled();
+      expect(readQueue(dir)).toHaveLength(1);
+      expect(
+        extractEntry(entry, deps({ runAgent, env, force: true }))
+      ).toMatchObject({
+        status: 'applied',
+        agent: 'agy',
+      });
+      expect(runAgent).toHaveBeenCalledTimes(1);
+      expect(readQueue(dir)).toHaveLength(0);
+    });
+
+    test('should route an explicitly configured dscc extraction to the dscc profile with haiku', () => {
+      richSession();
+      const profile = path.join(path.dirname(dir), 'test-profile');
+      fs.writeFileSync(
+        profile,
+        'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic\nANTHROPIC_AUTH_TOKEN=fixture-access-secret\n'
+      );
+      const entry = queued({ kyotenAgent: 'dscc' });
+      enqueue(dir, entry);
+      writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'dscc' });
+      const runAgent = answering();
+
+      const run = extractEntry(
+        entry,
+        deps({ runAgent, env: { DSCC_PROFILE: profile } })
+      );
+
+      expect(run).toMatchObject({
+        status: 'applied',
+        agent: 'dscc',
+        model: 'haiku',
+        side: 'dscc',
+      });
+      expect(readQueue(dir)).toHaveLength(0);
+      expect(lastCall(runAgent)).toMatchObject({
+        command: { agent: 'claude' },
+        env: { KYOTEN_AGENT: 'dscc' },
+      });
+      expect(lastCall(runAgent).command.args.slice(-2)).toEqual([
+        '--model',
+        'haiku',
+      ]);
+    });
 
     test('should defer agy extraction when triggered from another agent harness, while allowing agy -> others', () => {
       richSession();
@@ -1367,9 +1437,10 @@ describe('extractEntry', () => {
       const run = extractEntry(queued(), deps({ runAgent }));
 
       expect(run).toMatchObject({ agent: 'codex', model: 'gpt-5.5-mini' });
-      expect(lastCall(runAgent).command.args.slice(-2)).toEqual([
+      expect(lastCall(runAgent).command.args.slice(-3)).toEqual([
         '--model',
         'gpt-5.5-mini',
+        '-',
       ]);
     });
 
@@ -1392,7 +1463,7 @@ describe('extractEntry', () => {
       });
     });
 
-    test('should pass no model to claude for a Codex session', () => {
+    test('should use the Claude default model for a Codex session', () => {
       writeCodexSession();
       writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'claude' });
 
@@ -1401,7 +1472,7 @@ describe('extractEntry', () => {
         deps({ runAgent: answering() })
       );
 
-      expect(run).toMatchObject({ agent: 'claude', model: null });
+      expect(run).toMatchObject({ agent: 'claude', model: 'haiku' });
     });
 
     test('should name a replacement agent when the CLI is missing', () => {
@@ -1413,7 +1484,7 @@ describe('extractEntry', () => {
       expect(() =>
         extractEntry(queued({ harness: 'codex' }), deps({ runAgent }))
       ).toThrow(
-        /Fix: pnpm memory set --extract-agent claude\nFix: pnpm memory set --extract-agent dsh\nFix: pnpm memory set --extract-agent agy$/
+        /Fix: pnpm memory set --extract-agent claude\nFix: pnpm memory set --extract-agent dsh\nFix: pnpm memory set --extract-agent agy\nFix: pnpm memory set --extract-agent dscc$/
       );
     });
 
@@ -1447,7 +1518,7 @@ describe('extractEntry', () => {
       expect(() =>
         extractEntry(queued({ harness: 'codex' }), deps({ runAgent }))
       ).toThrow(
-        /Cannot verify Codex persona isolation[\s\S]*Fix: pnpm memory set --extract-agent claude\nFix: pnpm memory set --extract-agent dsh\nFix: pnpm memory set --extract-agent agy$/
+        /Cannot verify Codex persona isolation[\s\S]*Fix: pnpm memory set --extract-agent claude\nFix: pnpm memory set --extract-agent dsh\nFix: pnpm memory set --extract-agent agy\nFix: pnpm memory set --extract-agent dscc$/
       );
     });
 
@@ -1484,7 +1555,7 @@ describe('extractEntry', () => {
     expect(run.changes[0]).toMatchObject({ scope: 'repo', repo: 'web' });
   });
 
-  test('should work without any known folder or model', () => {
+  test('should use Haiku without any known folder or model', () => {
     writeTranscript([
       {
         type: 'user',
@@ -1498,7 +1569,7 @@ describe('extractEntry', () => {
 
     const call = /** @type {any} */ (runAgent.mock.calls[0])[0];
     expect(call.prompt).toContain('outside a repository');
-    expect(run.model).toBeNull();
+    expect(run.model).toBe('haiku');
   });
 
   test('should send the inbox the ops it held back, and count refusals', () => {
@@ -1623,7 +1694,7 @@ describe('extractEntry', () => {
 
     expect(run).toMatchObject({
       status: 'dry-run',
-      model: 'us.anthropic.claude-opus-5-5',
+      model: 'haiku',
     });
     expect(run.prompt).toContain('[user] From now on use pnpm');
     expect(runAgent).not.toHaveBeenCalled();
@@ -1720,7 +1791,11 @@ describe('provider sides', () => {
 
   test('should record the side of the agent that ran, not the session', () => {
     richSession();
-    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'agy' });
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      extractAgent: 'agy',
+      autoExtract: { ...DEFAULT_CONFIG.autoExtract, agy: true },
+    });
 
     const run = extractEntry(
       queued(),
