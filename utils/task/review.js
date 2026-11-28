@@ -2132,10 +2132,27 @@ export function extractFileWindow(repoDir, file, line, scrub = redactSecrets) {
 
 /** @param {ReviewPackInput} input */
 function packDiff(input) {
-  return (
-    (hasIncrementalEvidence(input) ? input.incrementalDiff : input.diff) ?? ''
+  const full = input.diff ?? '';
+  if (!hasIncrementalEvidence(input)) return full;
+  const incremental = input.incrementalDiff ?? '';
+  if (!snapshotOmitted(incremental)) return incremental;
+  const fullByPath = new Map(
+    diffBlocks(full).map((block) => [diffPathOf(block), block])
   );
+  return diffBlocks(incremental)
+    .map((block) => {
+      if (!snapshotOmitted(block)) return block;
+      const fallback = fullByPath.get(diffPathOf(block));
+      return fallback === undefined
+        ? block
+        : `${fallback.trimEnd()}\n... [file patch against the review base: previous snapshot omitted source]\n`;
+    })
+    .join('');
 }
+
+/** @param {string} patch */
+const snapshotOmitted = (patch) =>
+  patch.includes('\n... [omitted from previous round snapshot (');
 
 /** @param {ReviewPackInput} input */
 function hasIncrementalEvidence(input) {
@@ -2221,10 +2238,23 @@ export function buildReviewPack(input) {
         const text = readReviewText(repoDir, file);
         return text === null ? [] : [{ file, text: `### ${file}\n${text}\n` }];
       })
-    : diffBlocks(packDiff(input)).map((text) => ({
-        file: diffPathOf(text),
-        text,
-      }));
+    : diffBlocks(packDiff(input)).map((text) => {
+        const file = diffPathOf(text);
+        if (
+          scope.base === null &&
+          snapshotOmitted(text) &&
+          files.includes(file)
+        ) {
+          const source = readReviewText(repoDir, file);
+          if (source !== null) {
+            return {
+              file,
+              text: `### ${file} (working source; previous snapshot omitted it)\n${source}\n`,
+            };
+          }
+        }
+        return { file, text };
+      });
   blocks = blocks
     .filter(({ file }) => !isSecretFile(file))
     .map(({ file, text }) => ({

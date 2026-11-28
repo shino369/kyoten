@@ -1305,40 +1305,46 @@ describe('review', () => {
     expect(snapshot.skipped).toContain(`tasks/${NAME}/scripts/source.js`);
   });
 
-  test('should redact a known environment credential before writing a git review patch', () => {
-    const credential = 'fixture-only-provider-value';
-    expect(spawnSync('git', ['init', '-q', root]).status).toBe(0);
-    expect(
-      spawnSync('git', [
-        '-C',
-        root,
-        '-c',
-        'user.name=Test',
-        '-c',
-        'user.email=test@example.invalid',
-        '-c',
-        'commit.gpgSign=false',
-        'commit',
-        '--allow-empty',
-        '-qm',
-        'base',
-      ]).status
-    ).toBe(0);
-    newTask(['--verify', 'pnpm test']);
-    fs.writeFileSync(
-      path.join(root, 'example.js'),
-      'export const fixture = "' + credential + '";\n'
-    );
+  test.each([
+    ['single-line', 'fixture-only-provider-value'],
+    ['multiline', 'fixture-only-first-line\nfixture-only-second-line'],
+  ])(
+    'should redact a known %s credential before writing a git review patch',
+    (_kind, credential) => {
+      expect(spawnSync('git', ['init', '-q', root]).status).toBe(0);
+      expect(
+        spawnSync('git', [
+          '-C',
+          root,
+          '-c',
+          'user.name=Test',
+          '-c',
+          'user.email=test@example.invalid',
+          '-c',
+          'commit.gpgSign=false',
+          'commit',
+          '--allow-empty',
+          '-qm',
+          'base',
+        ]).status
+      ).toBe(0);
+      newTask(['--verify', 'pnpm test']);
+      fs.writeFileSync(
+        path.join(root, 'example.js'),
+        'export const fixture = `' + credential + '`;\n'
+      );
 
-    const { code } = run(['review', '--base', 'HEAD', '--force'], {
-      env: { OPENAI_API_KEY: credential },
-    });
+      const { code } = run(['review', '--base', 'HEAD', '--force'], {
+        env: { OPENAI_API_KEY: credential },
+      });
 
-    expect(code).toBe(0);
-    const diff = read('reviews/DIFF_demo-261117-r1.patch');
-    expect(diff).toContain('export const fixture = "[REDACTED]"');
-    expect(diff).not.toContain(credential);
-  });
+      expect(code).toBe(0);
+      const diff = read('reviews/DIFF_demo-261117-r1.patch');
+      expect(diff).toContain('export const fixture = `[REDACTED]');
+      for (const line of credential.split('\n'))
+        expect(diff).not.toContain(line);
+    }
+  );
 
   test.each(['--reviewer', '--triage'])(
     'should reject foreign Antigravity dispatch through %s',

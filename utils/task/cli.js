@@ -1560,6 +1560,23 @@ function openReviewArtifacts(options, deps) {
     ...new Set([...envSecrets(deps.env), ...(deps.reviewSecrets ?? [])]),
   ].sort((a, b) => b.length - a.length);
   const scrub = (/** @type {string} */ text) => scrubSecrets(text, secrets);
+  const fragments = [
+    ...new Set(
+      secrets.flatMap((secret) => {
+        const lines = secret.split(/\r\n?|\n/);
+        return lines.length > 1 ? lines.filter(Boolean) : [];
+      })
+    ),
+  ].sort((a, b) => b.length - a.length);
+  const scrubPatch = (/** @type {string} */ text) => {
+    const redacted = scrub(text);
+    // Unified diff prefixes split multiline values across separate lines.
+    if (fragments.length === 0) return redacted;
+    return redacted.replace(
+      /^[ +\-]([^\r\n]*)/gm,
+      (line, contents) => line[0] + scrubSecrets(contents, fragments)
+    );
+  };
   const scope = taskReviewScope({
     rootDir: deps.rootDir,
     taskDir: task.dir,
@@ -1575,7 +1592,7 @@ function openReviewArtifacts(options, deps) {
     state: task.state,
     scope,
     runGitStatus: deps.runGitStatus,
-    scrub,
+    scrub: scrubPatch,
   });
   if (!preflight.eligible) {
     if (scope.base === null) {
@@ -1636,7 +1653,7 @@ function openReviewArtifacts(options, deps) {
     repoDir: scopeDir,
     scope,
     runGit: deps.runGit,
-    scrub,
+    scrub: scrubPatch,
   });
   if (patch !== null) {
     writePrivate(path.join(task.dir, files.diff), scrub(patch));
@@ -1654,7 +1671,7 @@ function openReviewArtifacts(options, deps) {
           ...new Set([...scope.files, ...listSnapshotScope(previousSnapshot)]),
         ].sort(),
         runGitStatus: deps.runGitStatus,
-        scrub,
+        scrub: scrubPatch,
       });
     if (incremental !== null) {
       writePrivate(

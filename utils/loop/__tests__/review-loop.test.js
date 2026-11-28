@@ -205,17 +205,23 @@ describe('extractRows', () => {
       '| old | x | low | a | b | | |',
       END,
       'text',
-      BEGIN,
       '```',
+      BEGIN,
       HEADER,
       SEP,
       '| | | | | | | |',
       `  ${HIGH}  `,
-      'not a row',
-      '```',
       END,
+      '```',
     ].join('\n');
     expect(extractRows(output)).toEqual([HIGH]);
+  });
+
+  test('should require the findings block to stand alone in oneshot mode', () => {
+    const output = [BEGIN, HIGH, END].join('\n');
+    expect(extractRows(output, 'oneshot')).toEqual([HIGH]);
+    expect(extractRows('Finished.\n' + output, 'oneshot')).toBeNull();
+    expect(extractRows(output + '\nFinished.', 'oneshot')).toBeNull();
   });
 
   test('should return [] for an empty block and null without one', () => {
@@ -728,6 +734,62 @@ describe('runReviewLoop', () => {
     expect(selection.reviewer.secrets).toContain(credential);
   });
 
+  test('should omit inherited and selected credentials from the launched dscc packs', () => {
+    const inherited = 'fixture-inherited-provider-value';
+    const selected = 'fixture-selected-provider-value';
+    seedTask({
+      goal: `Review the synthetic examples ${inherited} and ${selected}`,
+    });
+    const profile = path.join(root, 'fixture-profile');
+    fs.writeFileSync(
+      profile,
+      [
+        'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic',
+        `ANTHROPIC_AUTH_TOKEN=${selected}`,
+      ].join('\n')
+    );
+    const env = { DSCC_PROFILE: profile, ANTHROPIC_API_KEY: inherited };
+    const selection = resolveReviewExecution(
+      { reviewer: 'dscc' },
+      { rootDir: root, env }
+    );
+    const runAgent = vi.fn(
+      /** @type {import('../driver.js').LoopDeps['runAgent']} */
+      (() => ({ code: 0, signal: null, output: '', stdout: '', durationMs: 1 }))
+    );
+    runAgent
+      .mockReturnValueOnce({
+        code: 0,
+        signal: null,
+        output: '',
+        stdout: [BEGIN, LOW, END].join('\n'),
+        durationMs: 1,
+      })
+      .mockReturnValueOnce({
+        code: 0,
+        signal: null,
+        output: '',
+        stdout: [BEGIN, triaged(LOW, 'CONFIRMED'), END].join('\n'),
+        durationMs: 1,
+      });
+
+    const result = review(makeDeps(runAgent, { env }), { selection });
+
+    expect(result).toMatchObject({ ok: true, rounds: 1 });
+    expect(runAgent).toHaveBeenCalledTimes(2);
+    for (const [options] of runAgent.mock.calls) {
+      expect(options.env).not.toHaveProperty('ANTHROPIC_API_KEY');
+      expect(options.env.ANTHROPIC_AUTH_TOKEN).toBe(selected);
+      expect(options.prompt).toContain('Review the synthetic examples');
+      expect(options.prompt).not.toContain(inherited);
+      expect(options.prompt).not.toContain(selected);
+    }
+    const pack = path.join(taskDir(), 'reviews', `PACK_${NAME}-r1.md`);
+    expect(fs.readFileSync(pack, 'utf8')).toBe(
+      runAgent.mock.calls[0][0].prompt
+    );
+  });
+
   test('should keep findings open when the needed triage profile cannot load', () => {
     seedTask();
     const env = { DSCC_PROFILE: path.join(root, 'missing-dscc-profile') };
@@ -796,6 +858,54 @@ describe('runReviewLoop', () => {
     expect(calls.triage).toBe(0);
     const file = path.join(taskDir(), 'reviews', `REVIEW_${NAME}-r1.md`);
     expect(tableRows(fs.readFileSync(file, 'utf-8'))).toEqual([]);
+  });
+
+  test('should retry prose inside a read-mode block and accept prose around the valid retry', () => {
+    seedTask();
+    const invalid = [BEGIN, 'Indeterminate output', END].join('\n');
+    const valid = ['Review finished.', BEGIN, END, 'End of reply.'].join('\n');
+    const runAgent = vi.fn(
+      /** @type {import('../driver.js').LoopDeps['runAgent']} */
+      (
+        () => ({
+          code: 0,
+          signal: null,
+          output: '',
+          stdout: valid,
+          durationMs: 1,
+        })
+      )
+    );
+    runAgent.mockReturnValueOnce({
+      code: 0,
+      signal: null,
+      output: '',
+      stdout: invalid,
+      durationMs: 1,
+    });
+
+    const result = review(makeDeps(runAgent));
+
+    expect(result).toMatchObject({ ok: true, rounds: 1 });
+    expect(runAgent).toHaveBeenCalledTimes(2);
+  });
+
+  test('should leave a round open after two malformed read-mode blocks', () => {
+    seedTask();
+    const stdout = [BEGIN, 'Indeterminate output', END].join('\n');
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      output: '',
+      stdout,
+      durationMs: 1,
+    }));
+
+    const result = review(makeDeps(runAgent));
+
+    expect(result).toMatchObject({ ok: false, reason: 'reviewer', rounds: 0 });
+    expect(runAgent).toHaveBeenCalledTimes(2);
+    expect(state().quality?.phase).toBe('review');
   });
 
   test('should retry reviewer output with assigned IDs before writing findings', () => {

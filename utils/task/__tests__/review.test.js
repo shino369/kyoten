@@ -180,6 +180,61 @@ test('should fall back to the full git patch when there is no incremental eviden
   expect(pack).toContain('+usable evidence');
 });
 
+test('should use full evidence for an omitted incremental file alongside usable hunks', () => {
+  const patch = (/** @type {string} */ file, /** @type {string} */ change) =>
+    `diff --git a/${file} b/${file}\n@@ -1 +1 @@\n+${change}\n`;
+  const input = {
+    state: codeState(),
+    round: 2,
+    repoDir: '/unused',
+    scope: {
+      base: 'main',
+      since: 'base',
+      files: ['previously-omitted.js', 'has-incremental.js'],
+    },
+    planText: 'Goal: Review the fixes.',
+    diff:
+      patch('previously-omitted.js', 'fix from available full diff') +
+      patch('has-incremental.js', 'superseded full evidence'),
+    incrementalDiff:
+      'diff --git a/previously-omitted.js b/previously-omitted.js\n' +
+      '... [omitted from previous round snapshot (binary, oversized, or secret); inspect the full DIFF patch]\n' +
+      patch('has-incremental.js', 'focused incremental evidence'),
+  };
+  const review = buildReviewPack(input);
+  const triage = buildTriagePack({
+    ...input,
+    rows: ['| | previously-omitted.js:1 | high | Claim | Scenario | | |'],
+  });
+  expect(review).toContain('fix from available full diff');
+  expect(triage).toContain('fix from available full diff');
+  expect(review).toContain('focused incremental evidence');
+  expect(review).not.toContain('superseded full evidence');
+});
+
+test('should inline a safe task file omitted from the previous snapshot', () => {
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-omitted-'));
+  try {
+    fs.writeFileSync(
+      path.join(repoDir, 'file.js'),
+      'export const fixed = 42;\n'
+    );
+    const pack = buildReviewPack({
+      state: codeState(),
+      round: 2,
+      repoDir,
+      scope: { base: null, since: null, files: ['file.js'] },
+      planText: 'Goal: Show the updated file.',
+      incrementalDiff:
+        'diff --git a/file.js b/file.js\n' +
+        '... [omitted from previous round snapshot (binary, oversized, or secret); inspect targeted line ranges]\n',
+    });
+    expect(pack).toContain('export const fixed = 42;');
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
 /** @param {Partial<import('../state.js').TaskState>} [overrides] */
 function codeState(overrides = {}) {
   return {

@@ -44,26 +44,31 @@ const isSeparator = (line) => /^\|[\s|:-]+$/.test(line);
 const isBlank = (line) => splitRow(line).every((cell) => cell === '');
 
 /**
- * The findings rows an agent printed in its last BEGIN/END block, without
- * the header, separator, and empty rows. Null when there is no block.
+ * The findings rows in the last validly formatted BEGIN/END block. Read
+ * mode permits surrounding prose. Oneshot mode requires a standalone block.
  *
  * @param {string} output
+ * @param {'read' | 'oneshot'} [mode]
  * @returns {string[] | null}
  */
-export function extractRows(output) {
-  const lines = output.split(/\r?\n/).map((line) => line.trim());
+export function extractRows(output, mode = 'read') {
+  const lines = output
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.trim());
   const end = lines.lastIndexOf(END);
   const begin = end === -1 ? -1 : lines.slice(0, end).lastIndexOf(BEGIN);
-  if (begin === -1) return null;
-  return lines
-    .slice(begin + 1, end)
-    .filter(
-      (line) =>
-        line.startsWith('|') &&
-        !isHeader(line) &&
-        !isSeparator(line) &&
-        !isBlank(line)
-    );
+  if (
+    begin === -1 ||
+    (mode === 'oneshot' && (begin !== 0 || end !== lines.length - 1))
+  ) {
+    return null;
+  }
+  const block = lines.slice(begin + 1, end).filter(Boolean);
+  if (block.some((line) => !line.startsWith('|'))) return null;
+  return block.filter(
+    (line) => !isHeader(line) && !isSeparator(line) && !isBlank(line)
+  );
 }
 
 /**
@@ -245,6 +250,13 @@ export function triagePrompt({ name, round, brief, rows }) {
 
 export const REVIEW_AGENTS = [...AGENTS, 'dscc'];
 
+/** @param {string[]} inherited @param {string[]} selected */
+function mergeSecrets(inherited, selected) {
+  return [...new Set([...inherited, ...selected])].sort(
+    (a, b) => b.length - a.length
+  );
+}
+
 /**
  * @typedef {{ reviewer?: string, reviewerModel?: string, reviewerEffort?: string,
  *   triage?: string, triageModel?: string, triageEffort?: string,
@@ -316,6 +328,7 @@ export function resolveReviewExecution(
     defaultAgent && defaultAgent !== 'agy'
       ? { ...env, [CALLER_HARNESS_ENV]: defaultAgent }
       : env;
+  const inheritedSecrets = envSecrets(env);
   /**
    * @param {'reviewer' | 'triage'} role
    * @param {string} agent
@@ -355,7 +368,7 @@ export function resolveReviewExecution(
         return {
           ...execution,
           ...settings,
-          secrets: nativeClaude ? envSecrets(env) : execution.secrets,
+          secrets: mergeSecrets(inheritedSecrets, execution.secrets),
         };
       },
     };
@@ -579,14 +592,7 @@ export function runReviewAgents({
         problem = 'used tools in oneshot mode';
         break;
       }
-      const answer = scrub(result.stdout).trim();
-      const lines = answer.split(/\r?\n/).map((line) => line.trim());
-      const validBlock =
-        lines[0] === BEGIN &&
-        lines.at(-1) === END &&
-        lines.slice(1, -1).every((line) => !line || line.startsWith('|'));
-      const printed =
-        mode === 'oneshot' && !validBlock ? null : extractRows(answer);
+      const printed = extractRows(scrub(result.stdout), mode);
       const problems =
         printed === null
           ? [`printed no ${BEGIN} … ${END} block`]
@@ -633,9 +639,7 @@ export function runReviewAgents({
         });
         return { rows, failure: { stage: 'triage', message } };
       }
-      secrets = [...new Set([...secrets, ...execution.secrets])].sort(
-        (a, b) => b.length - a.length
-      );
+      secrets = mergeSecrets(secrets, execution.secrets);
       const safeRows = rows.map(scrub);
       if (safeRows.some((row, i) => row !== rows[i])) {
         rows = safeRows;
