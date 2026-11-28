@@ -238,9 +238,9 @@ const HEADER_SCHEME_RE = /^(?:Bearer|Basic|Token)\s+(\S+)$/i;
  *
  * @param {Set<string>} values
  * @param {string} raw
- * @param {number} [minLength]
+ * @param {{ minLength?: number, literal?: boolean }} [options]
  */
-function addSecretValue(values, raw, minLength = 1) {
+function addSecretValue(values, raw, { minLength = 1, literal = false } = {}) {
   const trimmed = raw.trim();
   if (!trimmed) return;
   const unquoted = /^(["']).*\1$/s.test(trimmed)
@@ -249,7 +249,7 @@ function addSecretValue(values, raw, minLength = 1) {
   for (const candidate of [trimmed, unquoted]) {
     if (
       candidate.length >= minLength &&
-      !/^(?:\$|\[REDACTED|<[^>]*>$)/i.test(candidate)
+      (literal || !/^(?:\$|\[REDACTED|<[^>]*>$)/i.test(candidate))
     ) {
       values.add(candidate);
     }
@@ -263,8 +263,9 @@ function addSecretValue(values, raw, minLength = 1) {
  *
  * @param {Set<string>} values
  * @param {string} raw
+ * @param {boolean} [literal] values from an accepted profile are literal
  */
-function addHeaderSecrets(values, raw) {
+function addHeaderSecrets(values, raw, literal = false) {
   const unquoted = /^(["']).*\1$/s.test(raw.trim())
     ? raw.trim().slice(1, -1)
     : raw;
@@ -273,9 +274,9 @@ function addHeaderSecrets(values, raw) {
     if (colon === -1) continue;
     const headerValue = line.slice(colon + 1).trim();
     if (!headerValue) continue;
-    addSecretValue(values, headerValue);
+    addSecretValue(values, headerValue, { literal });
     const scheme = HEADER_SCHEME_RE.exec(headerValue)?.[1];
-    if (scheme) addSecretValue(values, scheme);
+    if (scheme) addSecretValue(values, scheme, { literal });
   }
 }
 
@@ -301,8 +302,9 @@ function decodeOrRaw(value) {
  *
  * @param {Set<string>} values
  * @param {string} raw
+ * @param {boolean} [literal] the URL was accepted in an explicit profile
  */
-function addUrlSecrets(values, raw) {
+function addUrlSecrets(values, raw, literal = false) {
   /** @type {URL} */
   let parsed;
   try {
@@ -313,20 +315,18 @@ function addUrlSecrets(values, raw) {
   const user = parsed.username;
   const pass = parsed.password;
   if (user || pass) {
-    if (user) addSecretValue(values, user);
-    if (pass) addSecretValue(values, pass);
-    if (user && pass) addSecretValue(values, `${user}:${pass}`);
-    const decodedUser = user ? decodeOrRaw(user) : '';
-    const decodedPass = pass ? decodeOrRaw(pass) : '';
-    if (decodedUser) addSecretValue(values, decodedUser);
-    if (decodedPass) addSecretValue(values, decodedPass);
-    if (decodedUser) {
-      addSecretValue(
-        values,
-        decodedPass ? `${decodedUser}:${decodedPass}` : decodedUser
-      );
+    for (const [username, password] of [
+      [user, pass],
+      [decodeOrRaw(user), decodeOrRaw(pass)],
+    ]) {
+      addSecretValue(values, username, { literal });
+      addSecretValue(values, password, { literal });
+      if (username && password) {
+        addSecretValue(values, `${username}:${password}`, { literal });
+      }
     }
   }
+  const queryOptions = { literal, minLength: literal ? 1 : 4 };
   // Raw (still percent-encoded) query values, which the decoded searchParams
   // would miss.
   for (const pair of parsed.search.replace(/^\?/, '').split('&')) {
@@ -335,10 +335,11 @@ function addUrlSecrets(values, raw) {
     const name = decodeOrRaw(eq === -1 ? pair : pair.slice(0, eq));
     const value = eq === -1 ? '' : pair.slice(eq + 1);
     if (value && URL_SECRET_PARAM_RE.test(name))
-      addSecretValue(values, value, 4);
+      addSecretValue(values, value, queryOptions);
   }
   for (const [param, val] of parsed.searchParams.entries()) {
-    if (URL_SECRET_PARAM_RE.test(param)) addSecretValue(values, val, 4);
+    if (URL_SECRET_PARAM_RE.test(param))
+      addSecretValue(values, val, queryOptions);
   }
 }
 
@@ -361,10 +362,10 @@ export function profileSecrets(set) {
       isSecretKey(key) ||
       ENV_SECRET_NAME_RE.test(key)
     ) {
-      addSecretValue(values, value);
-      if (/HEADERS/i.test(key)) addHeaderSecrets(values, value);
+      addSecretValue(values, value, { literal: true });
+      if (/HEADERS/i.test(key)) addHeaderSecrets(values, value, true);
     }
-    addUrlSecrets(values, value);
+    addUrlSecrets(values, value, true);
   }
   return [...values].sort((a, b) => b.length - a.length);
 }
@@ -382,9 +383,9 @@ function envSecrets(env) {
   /** @type {Set<string>} */
   const values = new Set();
   for (const [key, value] of Object.entries(env)) {
-    if (!value) continue;
+    if (!value || key.toUpperCase() === 'PWD') continue;
     if (ENV_SECRET_NAME_RE.test(key)) {
-      addSecretValue(values, value, 8);
+      addSecretValue(values, value, { minLength: 8 });
       if (/HEADERS/i.test(key)) addHeaderSecrets(values, value);
     }
     addUrlSecrets(values, value);

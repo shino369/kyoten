@@ -647,6 +647,88 @@ describe('dscc', () => {
   const PROFILED =
     'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic\nANTHROPIC_AUTH_TOKEN=sk-test-secret\n';
 
+  test('should preserve working directory paths in answers and call records', () => {
+    const file = profile(PROFILED);
+    const filename = path.join(root, 'utils', 'file.js');
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      stdout: `See ${filename}\n`,
+      output: `See ${filename}\n`,
+      durationMs: 1,
+    }));
+
+    const { out } = run(['ask', '--agent', 'dscc', '--json', 'review'], {
+      env: { DSCC_PROFILE: file, PWD: root },
+      runAgent,
+    });
+
+    const parsed = JSON.parse(out);
+    for (const text of [parsed.answer, parsed.output, read(parsed.record)]) {
+      expect(text).toContain(filename);
+    }
+  });
+
+  test('should scrub accepted literal profile credentials regardless of their shape', () => {
+    const token = '$fixture-token';
+    const apiKey = '<fixture-key>';
+    const header = '[REDACTED-fixture-header';
+    const file = profile(
+      [
+        'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic',
+        `ANTHROPIC_AUTH_TOKEN=${token}`,
+        `ANTHROPIC_API_KEY=${apiKey}`,
+        `ANTHROPIC_CUSTOM_HEADERS=X-Example: ${header}`,
+      ].join('\n')
+    );
+    const output = `Credentials: ${token} ${apiKey} ${header}\n`;
+    const deps = {
+      env: { DSCC_PROFILE: file },
+      runAgent: vi.fn(() => ({
+        code: 0,
+        signal: null,
+        stdout: output,
+        output,
+        durationMs: 1,
+      })),
+    };
+
+    const { out } = run(['ask', '--agent', 'dscc', '--json', 'review'], deps);
+    const plain = run(['ask', '--agent', 'dscc', 'review'], deps);
+
+    const parsed = JSON.parse(out);
+    for (const text of [
+      parsed.answer,
+      parsed.output,
+      read(parsed.record),
+      plain.out,
+    ]) {
+      expect(text).toContain('Credentials: [REDACTED] [REDACTED] [REDACTED]');
+    }
+  });
+
+  test('should scrub literal URL credentials from the accepted profile', () => {
+    const file = profile(
+      'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic?token=%24xy\nANTHROPIC_AUTH_TOKEN=fixture-auth\n'
+    );
+    const output = 'Credentials: $xy %24xy\n';
+    const { out } = run(['ask', '--agent', 'dscc', '--json', 'review'], {
+      env: { DSCC_PROFILE: file },
+      runAgent: vi.fn(() => ({
+        code: 0,
+        signal: null,
+        stdout: output,
+        output,
+        durationMs: 1,
+      })),
+    });
+
+    const parsed = JSON.parse(out);
+    for (const text of [parsed.answer, parsed.output, read(parsed.record)]) {
+      expect(text).toContain('Credentials: [REDACTED] [REDACTED]');
+    }
+  });
+
   test('should run the claude adapter with the dscc profile environment', () => {
     const file = profile(PROFILED);
 

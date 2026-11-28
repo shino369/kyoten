@@ -70,6 +70,7 @@ import {
   toFix,
 } from './quality.js';
 import {
+  assertReviewPath,
   diffStats,
   findingsTemplate,
   formatReviewBrief,
@@ -1223,97 +1224,139 @@ export const COMMANDS = {
     const print = /** @type {string} */ (preflight.fingerprint);
     const now = deps.now();
     const agent = detectAgent(options, deps.env);
-    let round = 0;
-    let reopened = false;
-    const state = updateState(
-      deps.rootDir,
-      name,
-      (current) => {
-        const result = openRound(current, {
-          fingerprint: print,
-          // The base actually used (the start commit when the work is on main;
-          // FOLDER_BASE when the folder was chosen)
-          base: roundBase(
-            scope,
-            current.quality ?? freshQuality(),
-            options.folder
-          ),
-          force: options.force,
-        });
-        round = result.round;
-        reopened = result.reopened;
-        return result.state;
-      },
-      { now, agent }
-    );
+    const initial = task.state;
+    const roundOptions = {
+      fingerprint: print,
+      base: roundBase(scope, quality, options.folder),
+      force: options.force,
+    };
+    const { round, reopened } = openRound(initial, roundOptions);
     const files = reviewFiles(name, round);
-    ensurePrivateDir(reviewsDir);
-    const scopeDir = scopeRoot(deps.rootDir, state, scope);
-    const stats = diffStats({ repoDir: scopeDir, scope, runGit: deps.runGit });
-    // The snapshot lets the next round show only what changed since this one;
-    // reopening an open round keeps it (the reviewed code must not move).
     const snapshotDir = snapshotDirFor(reviewsDir, round);
-    if (!reopened && scope.files.length > 0) {
-      saveSnapshot({ repoDir: scopeDir, dir: snapshotDir, files: scope.files });
-    }
+    const validatePaths = () => {
+      assertReviewPath(task.dir, 'directory');
+      assertReviewPath(reviewsDir, 'directory');
+      assertReviewPath(snapshotDir, 'directory');
+      for (const artifact of Object.values(files)) {
+        assertReviewPath(path.join(task.dir, artifact), 'file');
+      }
+    };
+    validatePaths();
+
+    // Generate Git output and stage the snapshot before taking the task lock.
+    const scopeDir = scopeRoot(deps.rootDir, initial, scope);
+    const stats = diffStats({ repoDir: scopeDir, scope, runGit: deps.runGit });
     const patch = generateReviewDiff({
       repoDir: scopeDir,
       scope,
       runGit: deps.runGit,
     });
-    if (patch !== null) {
-      writePrivate(path.join(task.dir, files.diff), patch);
-    }
     const previousSnapshot =
       round > 1 ? previousSnapshotDir(reviewsDir, round - 1) : null;
-    let incremental = null;
-    if (round > 1 && files.incrementalDiff && previousSnapshot !== null) {
-      incremental =
-        preflight.incremental ??
-        generateIncrementalDiff({
-          repoDir: scopeDir,
-          snapshotDir: previousSnapshot,
-          files: [
-            ...new Set([
-              ...scope.files,
-              ...listSnapshotScope(previousSnapshot, reviewsDir),
-            ]),
-          ].sort(),
-          runGitStatus: deps.runGitStatus,
-          trustedReviewsDir: reviewsDir,
-        });
-      if (incremental !== null) {
-        writePrivate(path.join(task.dir, files.incrementalDiff), incremental);
-      }
-    }
+    const incremental =
+      previousSnapshot === null
+        ? null
+        : (preflight.incremental ??
+          generateIncrementalDiff({
+            repoDir: scopeDir,
+            snapshotDir: previousSnapshot,
+            files: [
+              ...new Set([
+                ...scope.files,
+                ...listSnapshotScope(previousSnapshot, reviewsDir),
+              ]),
+            ],
+            runGitStatus: deps.runGitStatus,
+            trustedReviewsDir: reviewsDir,
+            protectedPaths: scope.protectedPaths,
+          }));
     const diffPath = patch === null ? null : `${taskRel}/${files.diff}`;
     const incrementalPath =
       incremental === null || !files.incrementalDiff
         ? null
         : `${taskRel}/${files.incrementalDiff}`;
-    writePrivate(
-      path.join(task.dir, files.brief),
-      formatReviewBrief({
-        state,
-        round,
-        scope,
-        taskRel,
-        diffPath,
-        incrementalDiffPath: incrementalPath,
-        stats,
-        folder: taskFolderNotes({
-          rootDir: deps.rootDir,
-          taskDir: task.dir,
-          scope,
-        }),
-      })
-    );
-    const findingsPath = path.join(task.dir, files.findings);
-    if (!fs.existsSync(findingsPath)) {
-      writePrivate(
-        findingsPath,
-        findingsTemplate({ name, round, brief: `${taskRel}/${files.brief}` })
+    const folder = taskFolderNotes({
+      rootDir: deps.rootDir,
+      taskDir: task.dir,
+      scope,
+    });
+    const brief = `${taskRel}/${files.brief}`;
+    const findings = `${taskRel}/${files.findings}`;
+
+    validatePaths();
+    ensurePrivateDir(reviewsDir);
+    const staging = reopened
+      ? null
+      : fs.mkdtempSync(path.join(reviewsDir, '.pending-review-'));
+    try {
+      const stagedSnapshot =
+        staging === null ? null : path.join(staging, 'snapshot');
+      if (stagedSnapshot !== null) {
+        saveSnapshot({
+          repoDir: scopeDir,
+          dir: stagedSnapshot,
+          files: scope.files,
+          protectedPaths: scope.protectedPaths,
+        });
+      }
+      updateState(
+        deps.rootDir,
+        name,
+        (current) => {
+          const result = openRound(current, roundOptions);
+          if (
+            result.round !== round ||
+            result.reopened !== reopened ||
+            current.repo !== initial.repo ||
+            current.startCommit !== initial.startCommit ||
+            current.quality?.base !== initial.quality?.base
+          ) {
+            throw new Error(
+              'Task review scope changed during preparation.\nFix: rerun pnpm task review'
+            );
+          }
+          validatePaths();
+          if (patch !== null)
+            writePrivate(path.join(task.dir, files.diff), patch);
+          if (incremental !== null && files.incrementalDiff) {
+            writePrivate(
+              path.join(task.dir, files.incrementalDiff),
+              incremental
+            );
+          }
+          writePrivate(
+            path.join(task.dir, files.brief),
+            formatReviewBrief({
+              state: result.state,
+              round,
+              scope,
+              taskRel,
+              diffPath,
+              incrementalDiffPath: incrementalPath,
+              stats,
+              folder,
+            })
+          );
+          const findingsPath = path.join(task.dir, files.findings);
+          if (!fs.existsSync(findingsPath)) {
+            writePrivate(
+              findingsPath,
+              findingsTemplate({ name, round, brief })
+            );
+          }
+          if (staging !== null && stagedSnapshot !== null) {
+            if (fs.existsSync(snapshotDir)) {
+              fs.renameSync(snapshotDir, path.join(staging, 'previous'));
+            }
+            fs.renameSync(stagedSnapshot, snapshotDir);
+          }
+          return result.state;
+        },
+        { now, agent }
       );
+    } finally {
+      if (staging !== null)
+        fs.rmSync(staging, { recursive: true, force: true });
     }
     if (!reopened) {
       writeNote(deps, task, {
@@ -1323,8 +1366,6 @@ export const COMMANDS = {
         message: `Review round ${round}/${quality.maxRounds} opened: ${scope.files.length} file(s), fingerprint ${print}.`,
       });
     }
-    const brief = `${taskRel}/${files.brief}`;
-    const findings = `${taskRel}/${files.findings}`;
     output(
       deps,
       options,
@@ -1448,26 +1489,6 @@ export const COMMANDS = {
         `${name} has no ${STATE_FILE}.\nFix: pnpm task init ${name}`
       );
     }
-    const verify = task.state.lastVerify;
-    if (task.state.verify.length > 0 && !verify?.ok && !options.force) {
-      throw new Error(
-        `The last verify did not pass (${verify ? `\`${verify.failed}\` failed` : 'not run'}).\nFix: pnpm task verify — or, if the user agrees, pnpm task done --force`
-      );
-    }
-    const blockers = doneBlockers(task.state);
-    if (blockers.length > 0 && !options.force) {
-      throw new Error(
-        [
-          `${name} is not finished:`,
-          ...blockers.map((b) => `- ${b}`),
-          'Fix: the lines above — or, if the user agrees, pnpm task done --force',
-        ].join('\n')
-      );
-    }
-    const forced =
-      blockers.length > 0
-        ? ` Forced past: ${blockers.map((b) => b.split('. Fix:')[0]).join('; ')}.`
-        : '';
     // Refuse a bad --learn line before the task is closed.
     const learned = learnedNotes(options.learn, {
       env: deps.env,
@@ -1477,10 +1498,32 @@ export const COMMANDS = {
     });
     const now = deps.now();
     const agent = detectAgent(options, deps.env);
-    updateState(
+    let forced = '';
+    const closed = updateState(
       deps.rootDir,
       name,
-      (state) => ({ ...state, status: 'done', next: null }),
+      (state) => {
+        const verify = state.lastVerify;
+        if (state.verify.length > 0 && !verify?.ok && !options.force) {
+          throw new Error(
+            `The last verify did not pass (${verify ? `\`${verify.failed}\` failed` : 'not run'}).\nFix: pnpm task verify — or, if the user agrees, pnpm task done --force`
+          );
+        }
+        const blockers = doneBlockers(state);
+        if (blockers.length > 0) {
+          if (!options.force) {
+            throw new Error(
+              [
+                `${name} is not finished:`,
+                ...blockers.map((b) => `- ${b}`),
+                'Fix: the lines above — or, if the user agrees, pnpm task done --force',
+              ].join('\n')
+            );
+          }
+          forced = ` Forced past: ${blockers.map((b) => b.split('. Fix:')[0]).join('; ')}.`;
+        }
+        return { ...state, status: 'done', next: null };
+      },
       { now, agent }
     );
     writeNote(deps, task, {
@@ -1506,8 +1549,8 @@ export const COMMANDS = {
       task: name,
       learned,
       digest: {
-        goal: task.state.goal,
-        repoDir: task.state.repo ?? null,
+        goal: closed.goal,
+        repoDir: closed.repo ?? null,
         notes: task.notes,
         outcome: options.message,
       },

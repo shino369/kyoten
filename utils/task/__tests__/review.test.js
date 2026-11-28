@@ -1363,7 +1363,7 @@ describe('generateReviewDiff', () => {
       '-c',
       'core.quotePath=false',
       'diff',
-      '-M',
+      '--no-renames',
       '--unified=8',
       '--no-ext-diff',
       '--no-textconv',
@@ -1765,13 +1765,14 @@ describe('generateReviewDiff', () => {
       expect(scope.files).toEqual(['config', 'config/.env', 'config/app.js']);
 
       const stats = diffStats({ repoDir: repo, scope });
-      expect(stats.get('config')).toEqual({ added: 0, deleted: 1 });
+      expect(stats.has('config')).toBe(false);
       expect(stats.get('config/app.js')).toEqual({ added: 1, deleted: 0 });
       expect(stats.has('config/.env')).toBe(false);
 
       const patch = generateReviewDiff({ repoDir: repo, scope }) ?? '';
-      expect(patch).toContain('diff --git a/config b/config');
-      expect(patch).toContain('deleted file mode 100644');
+      expect(patch).toContain(
+        'diff --git a/config b/config\n... [omitted: protected secret path]'
+      );
       expect(patch).toContain('diff --git a/config/app.js b/config/app.js');
       expect(patch).toContain('+app');
       expect(patch).toContain('diff --git a/config/.env b/config/.env');

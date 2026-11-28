@@ -1130,6 +1130,351 @@ describe('review', () => {
   const LOW =
     '| | app/a.js | low | Odd name | reading it | CONFIRMED | agreed |';
 
+  /** @param {string} file @param {string} content */
+  const gitReviewTask = (file, content) => {
+    const repo = path.join(root, 'repo');
+    fs.mkdirSync(repo);
+    const git = (/** @type {string[]} */ args) => {
+      const result = spawnSync('git', args, { cwd: repo, encoding: 'utf-8' });
+      if (result.status !== 0) throw new Error(result.stderr);
+      return result.stdout.trim();
+    };
+    git(['init', '-b', 'main']);
+    git(['config', 'user.email', 'test@example.com']);
+    git(['config', 'user.name', 'Test']);
+    fs.writeFileSync(path.join(repo, file), content);
+    git(['add', '--', file]);
+    git(['commit', '-m', 'init']);
+    newTask(['--verify', 'pnpm test', '--repo', repo]);
+    finishSteps();
+    run(['verify']);
+    return {
+      repo,
+      git,
+      base: git(['rev-parse', 'HEAD']),
+      deps: { runGit: defaultRunGit, runGitStatus: defaultRunGitStatus },
+    };
+  };
+
+  test.each(['exact', 'edited', 'unstaged'])(
+    'should keep a protected move out of review snapshots and patches (%s)',
+    (kind) => {
+      const original = 'synthetic fixture line\n';
+      const { repo, git, base, deps } = gitReviewTask('sample.key', original);
+      const destination = path.join(repo, 'moved.txt');
+      fs.renameSync(path.join(repo, 'sample.key'), destination);
+      if (kind !== 'exact') fs.appendFileSync(destination, 'one more line\n');
+      if (kind !== 'unstaged') git(['add', '-A']);
+
+      run(['review', '--base', base], deps);
+      expect(read(`reviews/DIFF_${NAME}-r1.patch`)).toContain(
+        'omitted: protected secret path'
+      );
+      expect(read(`reviews/DIFF_${NAME}-r1.patch`)).not.toContain(original);
+      expect(
+        fs.readdirSync(
+          path.join(taskDir(), 'reviews', '.snapshot-v2-r1', 'files')
+        )
+      ).toEqual([]);
+
+      addRows(1, [LOW]);
+      run(['review', 'record']);
+      git(['restore', '--source=HEAD', '--staged', '--worktree', 'sample.key']);
+      fs.appendFileSync(destination, 'second round\n');
+      run(['review'], deps);
+
+      for (const round of ['r2', 'r1-to-r2']) {
+        const patch = read(`reviews/DIFF_${NAME}-${round}.patch`);
+        expect(patch).toContain('omitted: protected secret path');
+        expect(patch).not.toContain('second round');
+      }
+    }
+  );
+
+  test('should stop before opening a round when its review directory is linked', () => {
+    greenCodeTask();
+    const reviews = path.join(taskDir(), 'reviews');
+    const other = path.join(root, 'other');
+    fs.renameSync(reviews, other);
+    fs.symlinkSync(other, reviews, 'junction');
+    const before = state();
+
+    expect(() => run(['review'])).toThrow(/review path.*reviews/i);
+
+    expect(state()).toEqual(before);
+    expect(fs.readdirSync(other)).toEqual([]);
+  });
+
+  test.each(['edited', 'unstaged'])(
+    'should withhold the old path of a possible move into a protected path (%s)',
+    (kind) => {
+      const original = 'synthetic fixture line\n';
+      const { repo, git, base, deps } = gitReviewTask('source.txt', original);
+      const destination = path.join(repo, 'sample.key');
+      fs.renameSync(path.join(repo, 'source.txt'), destination);
+      fs.appendFileSync(destination, 'one more line\n');
+      if (kind === 'edited') git(['add', '-A']);
+
+      run(['review', '--base', base], deps);
+
+      const patch = read(`reviews/DIFF_${NAME}-r1.patch`);
+      expect(patch).toContain('diff --git a/source.txt b/source.txt');
+      expect(patch).not.toContain(original);
+    }
+  );
+
+  test.each([{ backup: false }, { backup: true }])(
+    'should withhold a tracked overwrite even with a staged backup ($backup)',
+    ({ backup }) => {
+      const original = 'synthetic fixture line\n';
+      const { repo, git, deps } = gitReviewTask('sample.key', original);
+      const destination = path.join(repo, 'published.txt');
+      fs.writeFileSync(destination, 'regular text\n');
+      git(['add', 'published.txt']);
+      git(['commit', '-m', 'track destination']);
+      const base = git(['rev-parse', 'HEAD']);
+      if (backup) {
+        fs.writeFileSync(path.join(repo, 'backup.txt'), original);
+        git(['add', 'backup.txt']);
+      }
+      fs.renameSync(path.join(repo, 'sample.key'), destination);
+      if (backup) fs.appendFileSync(destination, 'one more line\n');
+
+      run(['review', '--base', base], deps);
+
+      const patch = read(`reviews/DIFF_${NAME}-r1.patch`);
+      expect(patch).toContain('omitted: protected secret path');
+      expect(patch).not.toContain(original);
+      expect(
+        fs.readdirSync(
+          path.join(taskDir(), 'reviews', '.snapshot-v2-r1', 'files')
+        )
+      ).toEqual([]);
+    }
+  );
+
+  test.each(['moved-again.txt', 'moved.txt/child.txt'])(
+    'should withhold a second protected move to %s',
+    (file) => {
+      const original = 'synthetic fixture line\n';
+      const { repo, git, base, deps } = gitReviewTask('sample.key', original);
+      const moved = path.join(repo, 'moved.txt');
+      fs.renameSync(path.join(repo, 'sample.key'), moved);
+      git(['add', '-A']);
+      run(['review', '--base', base], deps);
+      addRows(1, [LOW]);
+      run(['review', 'record']);
+      git(['restore', '--source=HEAD', '--staged', '--worktree', 'sample.key']);
+      const renamed = path.join(repo, '.pending-rename');
+      fs.renameSync(moved, renamed);
+      fs.mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
+      fs.renameSync(renamed, path.join(repo, file));
+      git(['add', '-A']);
+
+      run(['review'], deps);
+
+      for (const round of ['r2', 'r1-to-r2']) {
+        const patch = read(`reviews/DIFF_${NAME}-${round}.patch`);
+        expect(patch).toContain(
+          `diff --git a/${file} b/${file}\n... [omitted: protected secret path]`
+        );
+        expect(patch).not.toContain(original);
+      }
+    }
+  );
+
+  test('should keep a protected untracked file private after it is renamed between rounds', () => {
+    const original = 'synthetic fixture line\n';
+    const { repo, base, deps } = gitReviewTask('first.js', 'first\n');
+    const protectedFile = path.join(repo, 'sample.key');
+    fs.writeFileSync(protectedFile, original);
+    run(['review', '--base', base], deps);
+    addRows(1, [LOW]);
+    run(['review', 'record']);
+    fs.renameSync(protectedFile, path.join(repo, 'ordinary.txt'));
+
+    run(['review'], deps);
+
+    for (const round of ['r2', 'r1-to-r2']) {
+      const patch = read(`reviews/DIFF_${NAME}-${round}.patch`);
+      expect(patch).toContain('omitted: protected secret path');
+      expect(patch).not.toContain(original);
+    }
+  });
+
+  test(
+    'should preserve task updates made during review patch generation',
+    { timeout: 10000 },
+    () => {
+      const { repo, base, deps } = gitReviewTask('first.js', 'first\n');
+      fs.writeFileSync(path.join(repo, 'first.js'), 'second\n');
+      /** @type {import('../review.js').RunGit} */
+      const runGit = (args, cwd) => {
+        if (args.includes('--unified=8')) {
+          run(['step', 'add', 'Concurrent work']);
+          run(['step', 's3', 'done']);
+        }
+        return defaultRunGit(args, cwd);
+      };
+
+      run(['review', '--base', base], { ...deps, runGit });
+
+      expect(state().steps).toContainEqual(
+        expect.objectContaining({ title: 'Concurrent work', status: 'done' })
+      );
+    }
+  );
+
+  test('should stop before opening a round when its snapshot destination is linked', () => {
+    greenCodeTask();
+    const other = path.join(root, 'other');
+    const snapshot = path.join(taskDir(), 'reviews', '.snapshot-v2-r1');
+    fs.mkdirSync(other);
+    fs.symlinkSync(other, snapshot, 'junction');
+    const before = state();
+
+    expect(() => run(['review'])).toThrow(/review path.*snapshot-v2-r1/i);
+
+    expect(state()).toEqual(before);
+    expect(fs.lstatSync(snapshot).isSymbolicLink()).toBe(true);
+  });
+
+  test('should report a previous v2 snapshot missing its files directory', () => {
+    const { repo, base, deps } = gitReviewTask('app.js', 'first\n');
+    fs.writeFileSync(path.join(repo, 'app.js'), 'second\n');
+    run(['review', '--base', base], deps);
+    addRows(1, [LOW]);
+    run(['review', 'record']);
+    const snapshot = path.join(taskDir(), 'reviews', '.snapshot-v2-r1');
+    fs.renameSync(path.join(snapshot, 'files'), path.join(root, 'backup'));
+    fs.writeFileSync(path.join(repo, 'app.js'), 'third\n');
+    const before = state();
+
+    expect(() => run(['review'], deps)).toThrow(/snapshot.*files\//i);
+
+    expect(state()).toEqual(before);
+  });
+
+  test('should stop publication if the task closes during patch generation', () => {
+    const { repo, base, deps } = gitReviewTask('first.js', 'first\n');
+    const file = path.join(repo, 'first.js');
+    fs.writeFileSync(file, 'second\n');
+    run(['review', '--base', base], deps);
+    addRows(1, [LOW]);
+    run(['review', 'record']);
+    fs.writeFileSync(file, 'third\n');
+    /** @type {import('../review.js').RunGit} */
+    const runGit = (args, cwd) => {
+      if (args.includes('--unified=8')) run(['done']);
+      return defaultRunGit(args, cwd);
+    };
+
+    expect(() => run(['review'], { ...deps, runGit })).toThrow(
+      /closed|scope changed/i
+    );
+    expect(state().status).toBe('done');
+    expect(state().quality?.reviewRounds).toBe(1);
+    expect(fs.existsSync(findingsFile(2))).toBe(false);
+  });
+
+  test('should stop task completion if a review opens before it acquires the lock', () => {
+    const { repo, base, deps } = gitReviewTask('first.js', 'first\n');
+    const file = path.join(repo, 'first.js');
+    fs.writeFileSync(file, 'second\n');
+    run(['review', '--base', base], deps);
+    addRows(1, [LOW]);
+    run(['review', 'record']);
+    fs.writeFileSync(file, 'third\n');
+
+    expect(() =>
+      run(['done'], {
+        now: () => {
+          run(['review'], deps);
+          return NOW;
+        },
+      })
+    ).toThrow(/round 2.*open/i);
+    expect(state().status).toBe('active');
+    expect(state().quality?.reviewRounds).toBe(2);
+  });
+
+  /** @type {import('../review.js').RunGit} */
+  const withoutBulkStatus = (args, cwd) =>
+    args.includes('--name-status') && args.includes('-M')
+      ? null
+      : defaultRunGit(args, cwd);
+
+  test.each([
+    { label: 'recover it from stats', failStats: false },
+    { label: 'report it unavailable', failStats: true },
+  ])('should $label when bulk rename status fails', ({ failStats }) => {
+    const { repo, git, base, deps } = gitReviewTask('topic', 'first\n');
+    fs.renameSync(path.join(repo, 'topic'), path.join(repo, 'chapter.txt'));
+    fs.mkdirSync(path.join(repo, 'topic'));
+    fs.renameSync(
+      path.join(repo, 'chapter.txt'),
+      path.join(repo, 'topic', 'chapter.txt')
+    );
+    git(['add', '-A']);
+
+    /** @type {import('../review.js').RunGit} */
+    const runGit = (args, cwd) =>
+      failStats && args.includes('--numstat')
+        ? null
+        : withoutBulkStatus(args, cwd);
+    run(['review', '--base', base], { ...deps, runGit });
+
+    const patch = read(`reviews/DIFF_${NAME}-r1.patch`);
+    expect(patch).toContain(
+      failStats
+        ? 'git diff unavailable'
+        : 'rename from topic\nrename to topic/chapter.txt'
+    );
+    expect(patch).not.toContain('new file mode');
+  });
+
+  test.each([
+    { status: 'bulk status', runGit: defaultRunGit },
+    { status: 'per-file status', runGit: withoutBulkStatus },
+  ])(
+    'should show the tracked deletion when a copy remains on disk ($status)',
+    ({ runGit }) => {
+      const { git, base, deps } = gitReviewTask('app.js', 'first\n');
+      git(['rm', '--cached', 'app.js']);
+
+      run(['review', '--base', base], { ...deps, runGit });
+
+      expect(read(`reviews/BRIEF_${NAME}-r1.md`)).toContain('app.js (+0/-1)');
+      const patch = read(`reviews/DIFF_${NAME}-r1.patch`);
+      expect(patch).toContain('deleted file mode');
+      expect(patch).not.toContain('new file mode');
+    }
+  );
+
+  test.each([
+    { status: 'bulk status', runGit: defaultRunGit },
+    { status: 'per-file status', runGit: withoutBulkStatus },
+  ])(
+    'should show one patch per path when a file becomes a directory ($status)',
+    ({ runGit }) => {
+      const { repo, git, base, deps } = gitReviewTask('topic', 'first\n');
+      git(['rm', 'topic']);
+      fs.mkdirSync(path.join(repo, 'topic'));
+      fs.writeFileSync(path.join(repo, 'topic', 'chapter.txt'), 'chapter\n');
+      git(['add', 'topic/chapter.txt']);
+
+      run(['review', '--base', base], { ...deps, runGit });
+
+      const headers = read(`reviews/DIFF_${NAME}-r1.patch`)
+        .split('\n')
+        .filter((line) => line.startsWith('diff --git '));
+      expect(headers).toEqual([
+        'diff --git a/topic b/topic',
+        'diff --git a/topic/chapter.txt b/topic/chapter.txt',
+      ]);
+    }
+  );
+
   test('should open round 1, write the brief and findings files, and log it', () => {
     greenCodeTask();
     const { code, out } = run(['review']);
