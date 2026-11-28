@@ -1201,6 +1201,12 @@ function workingPathStat(repoDir, file) {
   }
 }
 
+/** @param {string} repoDir @param {string} file */
+function workingFileExists(repoDir, file) {
+  const entry = workingPathStat(repoDir, file);
+  return entry !== undefined && (entry.isFile() || entry.isSymbolicLink());
+}
+
 /**
  * Inspect a repo-relative path without ever following symlinks or reading
  * files outside `repoDir` or secret targets.
@@ -1787,21 +1793,12 @@ export function saveSnapshot({ repoDir, dir, files, protectedPaths = [] }) {
     const target = file === null ? null : resolveInside(filesRoot, file);
     if (file === null || target === null) continue;
     inventory.push(file);
-    if (excluded.has(file)) {
-      if (workingPathStat(repoDir, file)) skipped.push(file);
-      continue;
-    }
-    const entry = inspectWorkingFile(repoDir, file);
+    /** @type {ReturnType<typeof inspectWorkingFile>} */
+    const entry = excluded.has(file)
+      ? { kind: 'secret' }
+      : inspectWorkingFile(repoDir, file);
     if (entry.kind === 'secret') {
-      const full = resolveInside(repoDir, file);
-      if (full) {
-        try {
-          fs.lstatSync(full);
-          skipped.push(file);
-        } catch {
-          // Absent in working tree; still recorded as part of the scope.
-        }
-      }
+      if (workingFileExists(repoDir, file)) skipped.push(file);
       continue;
     }
     if (entry.kind === 'symlink') {
@@ -1977,17 +1974,16 @@ export function generateIncrementalDiff({
   const omitted = [];
   let total = 0;
   for (const file of [...files].sort()) {
-    const currentPath = resolveInside(repoDir, file);
-    if (!currentPath) continue;
+    if (!resolveInside(repoDir, file)) continue;
     if (excluded.has(file) || isSecretFile(file)) {
-      let exists = false;
-      try {
-        fs.lstatSync(currentPath);
-        exists = true;
-      } catch {
-        exists = false;
+      const exists = workingFileExists(repoDir, file);
+      if (
+        !exists &&
+        !skippedInSnapshot.has(file) &&
+        !snapshotHasFile(layout, file)
+      ) {
+        continue;
       }
-      if (!exists && !skippedInSnapshot.has(file)) continue;
       chunks.push(
         [
           `diff --git a/${file} b/${file}`,
@@ -2015,6 +2011,7 @@ export function generateIncrementalDiff({
     }
     const snapshotFile = snapshot === null ? null : snapshotPath;
     const current = inspectWorkingFile(repoDir, file);
+    const removed = current.kind === 'missing' || current.kind === 'other';
     /** @type {string | null} */
     let text = null;
     if (
@@ -2032,9 +2029,9 @@ export function generateIncrementalDiff({
     } else if (snapshot === null && skippedInSnapshot.has(file)) {
       text = [
         `diff --git a/${file} b/${file}`,
-        current.kind !== 'missing'
-          ? `... [omitted from previous round snapshot (binary, >${SNAPSHOT_MAX_FILE_BYTES} bytes, or secret); inspect the full DIFF patch or targeted line ranges]`
-          : `deleted file (was omitted from previous round snapshot as binary, >${SNAPSHOT_MAX_FILE_BYTES} bytes, or secret)`,
+        removed
+          ? `deleted file (was omitted from previous round snapshot as binary, >${SNAPSHOT_MAX_FILE_BYTES} bytes, or secret)`
+          : `... [omitted from previous round snapshot (binary, >${SNAPSHOT_MAX_FILE_BYTES} bytes, or secret); inspect the full DIFF patch or targeted line ranges]`,
         '',
       ].join('\n');
     } else if (snapshot === null) {
@@ -2045,7 +2042,7 @@ export function generateIncrementalDiff({
           text = null;
         }
       }
-    } else if (current.kind === 'missing') {
+    } else if (removed) {
       text = deletedFileDiff(file, snapshot);
     } else if (current.kind === 'file' && snapshotFile !== null) {
       const result = runGitStatus(

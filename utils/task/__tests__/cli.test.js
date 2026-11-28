@@ -1280,6 +1280,9 @@ describe('review', () => {
         );
         expect(patch).not.toContain(original);
       }
+      expect(read(`reviews/DIFF_${NAME}-r1-to-r2.patch`)).toContain(
+        'diff --git a/moved.txt b/moved.txt\ndeleted file (protected secret path)'
+      );
     }
   );
 
@@ -1474,6 +1477,65 @@ describe('review', () => {
       ]);
     }
   );
+
+  test.each([
+    {
+      kind: 'snapshotted text',
+      contents: 'text from the first review\n',
+      deletion: 'deleted file mode 100644',
+    },
+    {
+      kind: 'omitted binary',
+      contents: Buffer.from([0, 1, 2]),
+      deletion: 'deleted file (was omitted from previous round snapshot',
+    },
+  ])(
+    'should show the removal of $kind when its path becomes a directory between rounds',
+    ({ contents, deletion }) => {
+      const { repo, git, base, deps } = gitReviewTask('topic', 'base\n');
+      const topic = path.join(repo, 'topic');
+      fs.writeFileSync(topic, contents);
+      run(['review', '--base', base], deps);
+      addRows(1, [LOW]);
+      run(['review', 'record']);
+      git(['rm', '-f', 'topic']);
+      fs.mkdirSync(topic);
+      fs.writeFileSync(path.join(topic, 'chapter.txt'), 'chapter\n');
+      git(['add', 'topic/chapter.txt']);
+
+      run(['review'], deps);
+
+      const patch = read(`reviews/DIFF_${NAME}-r1-to-r2.patch`);
+      expect(patch).toContain(`diff --git a/topic b/topic\n${deletion}`);
+      expect(patch).toContain(
+        'diff --git a/topic/chapter.txt b/topic/chapter.txt'
+      );
+      expect(patch).toContain('+chapter');
+    }
+  );
+
+  test('should report deletion of a previously mirrored file that becomes protected', () => {
+    const { repo, git, base, deps } = gitReviewTask('topic', 'base\n');
+    const topic = path.join(repo, 'topic');
+    fs.writeFileSync(topic, 'text from the first review\n');
+    run(['review', '--base', base], deps);
+    addRows(1, [LOW]);
+    run(['review', 'record']);
+    git(['rm', '-f', 'topic']);
+    fs.mkdirSync(topic);
+    fs.writeFileSync(path.join(topic, 'chapter.txt'), 'chapter\n');
+    fs.writeFileSync(path.join(repo, 'sample.key'), 'synthetic fixture\n');
+    git(['add', '-A']);
+
+    run(['review'], deps);
+
+    const patch = read(`reviews/DIFF_${NAME}-r1-to-r2.patch`);
+    expect(patch).toContain(
+      'diff --git a/topic b/topic\ndeleted file (protected secret path)'
+    );
+    expect(patch).not.toContain('text from the first review');
+    expect(patch).toContain('+chapter');
+  });
 
   test('should open round 1, write the brief and findings files, and log it', () => {
     greenCodeTask();
