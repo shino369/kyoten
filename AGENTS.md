@@ -6,7 +6,7 @@ live in `CLAUDE.md`; full architecture and examples: `docs/harness.md`.
 
 This is kyoten, a workspace for programming, documentation, research, translation, and
 generative-AI work. It has no app to build: the deliverables are scripts, skills, docs, and task
-outputs.
+outputs. Layout, `utils/` modules, scripts, and doc scopes: `docs/repo-map.md`.
 
 ## 1. Never
 
@@ -71,6 +71,8 @@ outputs.
 | Add a dev dependency          | `pnpm add -D <pkg> --save-catalog-name=dev`                                          |
 | E2E tests (Playwright)        | `pnpm test:e2e`                                                                      |
 | Start an agent (kyoten)       | `pnpm kyoten [<agent>]` or `npx kyoten`. See [the launcher guide](docs/kyoten.md).   |
+| Pack npm release tarball      | `pnpm kyoten:pack` (see [the launcher guide](docs/kyoten.md))                        |
+| CLI help reference            | `pnpm docs:cli` · `pnpm docs:cli --check` (`docs/cli.md`)                            |
 | Memory: status, save, search  | `pnpm memory` · `pnpm memory add "…" …` · `pnpm memory recall "…"` §13               |
 | Memory: move or back up       | `pnpm memory export` · `pnpm memory import <file> --dry-run`                         |
 
