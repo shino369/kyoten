@@ -13,7 +13,7 @@ import { ANY_LEVEL_SKIP, TASK_FILES, isCodeFile, withCheck } from './check.js';
 import { formatGit } from './git.js';
 import { appendSeparator, formatNoteEntry } from './markdown.js';
 import { decideQuality } from './quality.js';
-import { fingerprint, scopeRoot, taskReviewScope } from './review.js';
+import { fingerprint, reviewPreflight, taskReviewScope } from './review.js';
 import {
   appendNotes,
   loadTask,
@@ -298,8 +298,10 @@ export function workPrint(deps, state, taskDir) {
 
 /**
  * Fingerprint of the task's review scope now, or null when git cannot say
- * (no merge base) or nothing is in scope: the quality loop then lets the stop
- * through.
+ * (no merge base) or nothing is reviewable: the quality loop then lets the stop
+ * through. Uses the same eligibility rule as `pnpm task review`
+ * (`reviewPreflight`), so a round 2 whose git scope emptied still counts when
+ * the previous round's snapshot shows the change.
  *
  * @param {import('./deps.js').Deps} deps
  * @param {string} taskDir
@@ -314,10 +316,14 @@ export function scopeFingerprint(deps, taskDir, state) {
       state,
       runGit: deps.runGit,
     });
-    // Nothing in scope: no review to ask for (pnpm task review would refuse).
-    return scope.files.length === 0
-      ? null
-      : fingerprint(scopeRoot(deps.rootDir, state, scope), scope.files);
+    const preflight = reviewPreflight({
+      rootDir: deps.rootDir,
+      taskDir,
+      state,
+      scope,
+      runGitStatus: deps.runGitStatus,
+    });
+    return preflight.eligible ? preflight.fingerprint : null;
   } catch {
     return null;
   }

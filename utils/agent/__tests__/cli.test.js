@@ -456,6 +456,47 @@ describe('main', () => {
     expect(read('review.md')).toContain('# Agent call — codex (read)');
   });
 
+  test('should overwrite an existing record privately', () => {
+    const target = path.join(root, 'review.md');
+    fs.writeFileSync(target, 'old\n');
+    fs.chmodSync(target, 0o644);
+
+    run(['ask', '--agent', 'codex', '--out', 'review.md', 'hi']);
+
+    const text = read('review.md');
+    expect(text).toContain('# Agent call — codex (read)');
+    expect(text).not.toBe('old\n');
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(target).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  test('should preserve ordinary query emails while scrubbing child credentials', () => {
+    const query =
+      'https://calendar.example.invalid?invite=reader@example.invalid';
+    const fragment = 'https://example.invalid#contact=user@example.invalid';
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      stdout: `${query} ${fragment} child-env-secret\n`,
+      output: `${query} ${fragment} child-env-secret\n`,
+      durationMs: 1,
+    }));
+
+    const { out } = run(['ask', '--agent', 'claude', '--json', 'hi'], {
+      env: { HOME: '/home/t', OPENAI_API_KEY: 'child-env-secret' },
+      runAgent,
+    });
+
+    const parsed = JSON.parse(out);
+    const recordText = read(parsed.record);
+    for (const text of [parsed.answer, parsed.output, recordText]) {
+      expect(text).toContain(query);
+      expect(text).toContain(fragment);
+      expect(text).not.toContain('child-env-secret');
+    }
+  });
+
   test('should pass the agent exit code through, and exit 1 when it was stopped', () => {
     const failed = vi.fn(() => ({
       code: 3,
@@ -697,5 +738,82 @@ describe('dscc', () => {
       expect(parsed.answer).not.toContain(leaked);
       expect(parsed.output).not.toContain(leaked);
     }
+  });
+
+  test('should scrub raw and decoded userinfo and query credentials', () => {
+    const file = profile(
+      'ANTHROPIC_BASE_URL=https://us%40er:p%40ss@api.deepseek.com/anthropic?api_token=raw%2Fquery-secret\nANTHROPIC_AUTH_TOKEN=sk-test-secret\n'
+    );
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      stdout: 'us%40er us@er p%40ss p@ss raw%2Fquery-secret raw/query-secret\n',
+      output: 'us%40er us@er p%40ss p@ss raw%2Fquery-secret raw/query-secret\n',
+      durationMs: 1,
+    }));
+
+    const { out } = run(['ask', '--agent', 'dscc', '--json', 'hi'], {
+      env: { DSCC_PROFILE: file },
+      runAgent,
+    });
+
+    const parsed = JSON.parse(out);
+    const recordText = read(parsed.record);
+    for (const leaked of [
+      'us%40er',
+      'us@er',
+      'p%40ss',
+      'p@ss',
+      'raw%2Fquery-secret',
+      'raw/query-secret',
+    ]) {
+      expect(parsed.answer).not.toContain(leaked);
+      expect(parsed.output).not.toContain(leaked);
+      expect(recordText).not.toContain(leaked);
+    }
+  });
+
+  test('should scrub credentials with malformed percent-encoding as raw values', () => {
+    const file = profile(
+      'ANTHROPIC_BASE_URL=https://bad%zz:pass%zz@api.deepseek.com/anthropic\nANTHROPIC_AUTH_TOKEN=sk-test-secret\n'
+    );
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      stdout: 'bad%zz pass%zz\n',
+      output: 'bad%zz pass%zz\n',
+      durationMs: 1,
+    }));
+
+    const { out } = run(['ask', '--agent', 'dscc', '--json', 'hi'], {
+      env: { DSCC_PROFILE: file },
+      runAgent,
+    });
+
+    const parsed = JSON.parse(out);
+    expect(parsed.answer).not.toContain('bad%zz');
+    expect(parsed.answer).not.toContain('pass%zz');
+    expect(read(parsed.record)).not.toContain('bad%zz');
+  });
+
+  test('should not scrub inherited values the child never received', () => {
+    const file = profile(PROFILED);
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      stdout: 'dropped-parent-value stays\n',
+      output: 'dropped-parent-value stays\n',
+      durationMs: 1,
+    }));
+
+    const { out } = run(['ask', '--agent', 'dscc', '--json', 'hi'], {
+      env: { DSCC_PROFILE: file, ANTHROPIC_API_KEY: 'dropped-parent-value' },
+      runAgent,
+    });
+
+    const parsed = JSON.parse(out);
+    expect(parsed.answer).toContain('dropped-parent-value');
+    expect(parsed.output).toContain('dropped-parent-value');
+    expect(read(parsed.record)).toContain('dropped-parent-value');
   });
 });

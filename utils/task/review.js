@@ -22,9 +22,10 @@ import fs from 'fs';
 import path from 'path';
 import { isSourceFile, listCodeFiles, listReviewFiles } from './check.js';
 import { git } from './git.js';
+import { writePrivate } from '../kyoten/dscc.js';
 import { SEVERITIES, VERDICTS, freshQuality, toFix } from './quality.js';
 import { addStep } from './state.js';
-import { taskRepoDir } from './store.js';
+import { ensurePrivateDir, taskRepoDir } from './store.js';
 import { relPosix } from '../paths.js';
 import { containsSecret, redactSecrets } from '../redact.js';
 
@@ -265,8 +266,26 @@ export function reviewScope({
       runGit(['branch', '--show-current'], repoDir) ===
         base.replace(/^origin\//, ''));
   const since = fromStart ? startCommit : mergeBase;
+  const rawTracked = splitGitPaths(
+    runGit(['diff', '--name-only', '--no-renames', '-z', since], repoDir)
+  );
+  const protectedTracked = rawTracked.filter(isSecretFile);
+  const eligibleTracked = rawTracked.filter((file) => !isSecretFile(file));
+  const eligibleSet = new Set(eligibleTracked);
+  const resolvedTracked =
+    eligibleTracked.length === 0
+      ? []
+      : splitGitPaths(
+          runGit(
+            diffArgs(['--name-only', '-M', '-z'], since, eligibleTracked),
+            repoDir
+          )
+        ).filter((file) => eligibleSet.has(file));
+  const trackedFiles =
+    resolvedTracked.length > 0 ? resolvedTracked : eligibleTracked;
   const files = new Set([
-    ...splitGitPaths(runGit(['diff', '--name-only', '-z', since], repoDir)),
+    ...trackedFiles,
+    ...protectedTracked,
     ...splitGitPaths(
       runGit(['ls-files', '--others', '--exclude-standard', '-z'], repoDir)
     ),
@@ -359,6 +378,82 @@ export function taskReviewScope({
     return reviewScope({ rootDir, taskDir, base: null, runGit });
   }
   return scope;
+}
+
+/**
+ * Whether a review round can open now, and what identifies what it would
+ * review. Shared by `pnpm task review` and the automated review (the Stop
+ * hook's quality loop and `pnpm loop --review`) so both agree.
+ *
+ * A non-empty git scope is eligible. An empty scope is still eligible when a
+ * round is already open (reopening it), or when the previous round left a
+ * snapshot with changes against the working tree: deleting the only oversized
+ * untracked file from round 1, or restoring the only deleted tracked file,
+ * makes the git scope empty, but the round-2 fix is exactly that change. A
+ * genuinely empty first round is not eligible. The empty-scope fingerprint
+ * folds in the incremental diff, so the quality loop sees the change instead
+ * of comparing the constant empty-scope hash with round 1's fingerprint.
+ *
+ * @param {{ rootDir: string, taskDir: string, state: TaskState, scope: Scope, runGitStatus?: RunGitStatus }} options
+ * @returns {{ eligible: boolean, paths: string[], fingerprint: string | null, incremental: string | null }}
+ */
+export function reviewPreflight({
+  rootDir,
+  taskDir,
+  state,
+  scope,
+  runGitStatus = defaultRunGitStatus,
+}) {
+  const quality = state.quality ?? freshQuality();
+  const dir = scopeRoot(rootDir, state, scope);
+  if (scope.files.length > 0) {
+    return {
+      eligible: true,
+      paths: [...scope.files],
+      fingerprint: fingerprint(dir, scope.files),
+      incremental: null,
+    };
+  }
+  if (quality.phase === 'review') {
+    return {
+      eligible: true,
+      paths: [],
+      fingerprint: fingerprint(dir, []),
+      incremental: null,
+    };
+  }
+  if (quality.reviewRounds > 0) {
+    const priorSnapshot = path.join(
+      taskDir,
+      'reviews',
+      `.snapshot-r${quality.reviewRounds}`
+    );
+    const priorFiles = fs.existsSync(priorSnapshot)
+      ? listSnapshotScope(priorSnapshot)
+      : [];
+    if (priorFiles.length > 0) {
+      const incremental = generateIncrementalDiff({
+        repoDir: dir,
+        snapshotDir: priorSnapshot,
+        files: priorFiles,
+        runGitStatus,
+      });
+      if (incremental !== null) {
+        const digest = crypto
+          .createHash('sha256')
+          .update(incremental)
+          .digest('hex')
+          .slice(0, 16);
+        return {
+          eligible: true,
+          paths: priorFiles,
+          fingerprint: `${fingerprint(dir, [])}-${digest}`,
+          incremental,
+        };
+      }
+    }
+  }
+  return { eligible: false, paths: [], fingerprint: null, incremental: null };
 }
 
 /**
@@ -691,6 +786,17 @@ export function isSecretFile(file) {
 }
 
 /**
+ * Whether `rel` (a `path.relative` result) points outside its base: exactly
+ * `..`, or a path that starts with `../` / `..\\`. A legal filename that merely
+ * starts with two dots (`..notes.txt`, `dir/..config.js`) is inside.
+ *
+ * @param {string} rel
+ * @returns {boolean}
+ */
+const isOutsideRel = (rel) =>
+  rel === '..' || rel.startsWith(`..${path.sep}`) || rel.startsWith('../');
+
+/**
  * Resolve `relPath` strictly inside `baseDir`, returning null on traversal,
  * absolute paths, or NUL bytes.
  *
@@ -708,8 +814,96 @@ function resolveInside(baseDir, relPath) {
   const resolvedBase = path.resolve(baseDir);
   const full = path.resolve(resolvedBase, relPath);
   const rel = path.relative(resolvedBase, full);
-  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  if (!rel || isOutsideRel(rel) || path.isAbsolute(rel)) return null;
   return full;
+}
+
+/**
+ * Whether `full` resolves (through symlinks) to a regular file inside `root`.
+ *
+ * @param {string} root
+ * @param {string} full
+ * @returns {boolean}
+ */
+function realFileInside(root, full) {
+  try {
+    if (!fs.lstatSync(full).isFile()) return false;
+    const rel = path.relative(fs.realpathSync(root), fs.realpathSync(full));
+    return Boolean(rel) && !isOutsideRel(rel) && !path.isAbsolute(rel);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A `git diff` query over literal paths, never an external diff driver or a
+ * textconv filter: review artifacts show the repository bytes, and protected
+ * paths are filtered out before the call, so they never reach git.
+ *
+ * @param {string[]} options diff subcommand options (e.g. `['--numstat', '-z']`)
+ * @param {string} since
+ * @param {string[]} paths eligible repo-relative POSIX paths
+ * @returns {string[]}
+ */
+function diffArgs(options, since, paths) {
+  return [
+    '--literal-pathspecs',
+    '-c',
+    'core.quotePath=false',
+    'diff',
+    ...options,
+    '--no-ext-diff',
+    '--no-textconv',
+    '--no-color',
+    since,
+    '--',
+    ...paths,
+  ];
+}
+
+/**
+ * The in-scope paths a git content query may receive, protected secret paths
+ * dropped.
+ *
+ * @param {Scope} scope
+ * @returns {string[]}
+ */
+const eligiblePaths = (scope) =>
+  scope.files.filter((file) => !isSecretFile(file));
+
+/**
+ * The in-scope paths a git content query may receive: protected secret paths
+ * are dropped before any `git diff` runs. A rename's old path is added when a
+ * name-only listing (renames off) reports it and it is not protected, so
+ * rename detection, stats, and patches agree; a rename with a protected side
+ * is left out whole.
+ *
+ * @param {string} repoDir
+ * @param {Scope} scope
+ * @param {RunGit} runGit
+ * @returns {string[]}
+ */
+function contentPaths(repoDir, scope, runGit) {
+  const paths = new Set(eligiblePaths(scope));
+  if (paths.size === 0 || scope.since === null) return [...paths].sort();
+  for (const name of splitGitPaths(
+    runGit(
+      [
+        '--literal-pathspecs',
+        '-c',
+        'core.quotePath=false',
+        'diff',
+        '--name-only',
+        '--no-renames',
+        '-z',
+        scope.since,
+      ],
+      repoDir
+    )
+  )) {
+    if (!isSecretFile(name)) paths.add(name);
+  }
+  return [...paths].sort();
 }
 
 /**
@@ -736,7 +930,7 @@ function inspectWorkingFile(repoDir, file) {
     const realRepo = fs.realpathSync(repoDir);
     const realFull = fs.realpathSync(full);
     const rel = path.relative(realRepo, realFull);
-    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    if (!rel || isOutsideRel(rel) || path.isAbsolute(rel)) {
       return { kind: 'unsafe' };
     }
     if (isSecretFile(rel.split(path.sep).join('/'))) {
@@ -777,10 +971,14 @@ export function diffStats({ repoDir, scope, runGit = defaultRunGit }) {
   const stats = new Map();
   if (scope.base === null || scope.since === null) return stats;
   const inScope = new Set(scope.files);
-  for (const [file, stat] of parseNumstat(
-    runGit(['diff', '--numstat', '-z', scope.since], repoDir)
-  )) {
-    if (inScope.has(file) && !isSecretFile(file)) stats.set(file, stat);
+  const paths =
+    eligiblePaths(scope).length > 0 ? contentPaths(repoDir, scope, runGit) : [];
+  if (paths.length > 0) {
+    for (const [file, stat] of parseNumstat(
+      runGit(diffArgs(['--numstat', '-M', '-z'], scope.since, paths), repoDir)
+    )) {
+      if (inScope.has(file) && !isSecretFile(file)) stats.set(file, stat);
+    }
   }
   for (const file of splitGitPaths(
     runGit(['ls-files', '--others', '--exclude-standard', '-z'], repoDir)
@@ -828,9 +1026,17 @@ export function generateReviewDiff({
   if (scope.base === null || scope.since === null || scope.files.length === 0) {
     return null;
   }
-  const { tracked, renames } = parseNameStatus(
-    runGit(['diff', '--name-status', '-M', '-z', scope.since], repoDir)
-  );
+  const eligible = eligiblePaths(scope);
+  const paths = eligible.length > 0 ? contentPaths(repoDir, scope, runGit) : [];
+  const { tracked, renames } =
+    paths.length === 0
+      ? { tracked: new Set(), renames: new Map() }
+      : parseNameStatus(
+          runGit(
+            diffArgs(['--name-status', '-M', '-z'], scope.since, paths),
+            repoDir
+          )
+        );
   /** @type {string[]} */
   const chunks = [];
   /** @type {string[]} */
@@ -851,20 +1057,11 @@ export function generateReviewDiff({
     let text = null;
     if (tracked.has(file)) {
       const diff = runGit(
-        [
-          '--literal-pathspecs',
-          '-c',
-          'core.quotePath=false',
-          'diff',
-          '-M',
-          `--unified=${DIFF_CONTEXT_LINES}`,
-          '--no-ext-diff',
-          '--no-textconv',
-          '--no-color',
+        diffArgs(
+          ['-M', `--unified=${DIFF_CONTEXT_LINES}`],
           scope.since,
-          '--',
-          ...(oldPath ? [oldPath, file] : [file]),
-        ],
+          oldPath ? [oldPath, file] : [file]
+        ),
         repoDir
       );
       if (diff === null) {
@@ -918,34 +1115,152 @@ export function generateReviewDiff({
   return `${prefix}${notes.join('\n')}\n`;
 }
 
-/** Manifest inside a snapshot folder listing files skipped (binary / oversized / secret / symlink). */
+/** Versioned metadata file of a snapshot (beside the mirrored `files/`). */
+const SNAPSHOT_MANIFEST_FILE = 'manifest.json';
+/** Mirrored reviewed files live under this folder, so metadata never collides. */
+const SNAPSHOT_FILES_DIR = 'files';
+/** Manifest schema version. */
+const SNAPSHOT_MANIFEST_VERSION = 1;
+/** Legacy manifest listing skipped files; read only when `manifest.json` is absent. */
 const SNAPSHOT_SKIPPED_FILE = '.snapshot-skipped.json';
-/** Manifest inside a snapshot folder listing the complete round scope (including absent/deleted files). */
+/** Legacy manifest listing the complete round scope; read only when `manifest.json` is absent. */
 const SNAPSHOT_SCOPE_FILE = '.snapshot-scope.json';
 
 /**
- * Save the working-tree versions of `files` under `dir` (relative paths
- * mirrored) so a later round can diff against them. Binary, oversized,
- * symlink, secret paths, and files containing secret patterns are recorded in
- * `.snapshot-skipped.json` instead of mirrored, so no credentials are copied
- * into review artifacts and a later round does not mistake them for newly
- * added files. The complete path inventory (including paths absent from the
- * working tree, such as deleted tracked files) is recorded in
- * `.snapshot-scope.json`. Returns the number of files saved.
+ * @typedef {{ version: number, scope: string[], skipped: string[] }} SnapshotManifest
+ * @typedef {{ legacy: boolean, manifest: SnapshotManifest | null, filesRoot: string }} SnapshotLayout
+ */
+
+/**
+ * A snapshot path exactly as recorded: relative, POSIX-separated, already
+ * normalized. Null for anything else (absolute, `..`, `./x`, backslashes).
+ *
+ * @param {unknown} value
+ * @returns {string | null}
+ */
+function normalizedRelPath(value) {
+  if (typeof value !== 'string' || !value || value.includes('\0')) return null;
+  if (value.includes('\\') || path.posix.isAbsolute(value)) return null;
+  const normalized = path.posix.normalize(value);
+  return normalized === value && value !== '.' ? value : null;
+}
+
+/**
+ * How a snapshot folder stores its data: a versioned `manifest.json` plus
+ * `files/`, or the legacy top-level layout when `manifest.json` is absent.
+ * A manifest that exists but is unreadable or invalid yields no files; it is
+ * never mistaken for the legacy layout, whose paths would then be wrong.
+ *
+ * @param {string} dir
+ * @returns {SnapshotLayout}
+ */
+function snapshotLayout(dir) {
+  const manifestFile = resolveInside(dir, SNAPSHOT_MANIFEST_FILE);
+  const present = manifestFile !== null && realFileInside(dir, manifestFile);
+  if (!present) {
+    return { legacy: true, manifest: null, filesRoot: dir };
+  }
+  const filesRoot = path.join(dir, SNAPSHOT_FILES_DIR);
+  /** @type {SnapshotManifest | null} */
+  let manifest = null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(String(manifestFile), 'utf-8'));
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      parsed.version === SNAPSHOT_MANIFEST_VERSION &&
+      Array.isArray(parsed.scope) &&
+      Array.isArray(parsed.skipped)
+    ) {
+      /** @param {unknown} value */
+      const contained = (value) => {
+        const file = normalizedRelPath(value);
+        return file !== null && resolveInside(filesRoot, file) !== null
+          ? file
+          : null;
+      };
+      /** @param {unknown[]} list */
+      const paths = (list) => [
+        ...new Set(list.map(contained).filter((file) => file !== null)),
+      ];
+      manifest = {
+        version: SNAPSHOT_MANIFEST_VERSION,
+        scope: paths(parsed.scope),
+        skipped: paths(parsed.skipped),
+      };
+    }
+  } catch {
+    manifest = null;
+  }
+  return { legacy: false, manifest, filesRoot };
+}
+
+/**
+ * Whether a snapshot mirrors `file` right now (regular, contained).
+ *
+ * @param {SnapshotLayout} layout
+ * @param {string} file
+ * @returns {boolean}
+ */
+function snapshotHasFile(layout, file) {
+  const full = resolveInside(layout.filesRoot, file);
+  return full !== null && realFileInside(layout.filesRoot, full);
+}
+
+/**
+ * A legacy snapshot's JSON path list, validated and sorted; empty when the
+ * file is missing or malformed.
+ *
+ * @param {string} dir
+ * @param {string} name
+ * @returns {string[]}
+ */
+function readLegacyList(dir, name) {
+  const full = resolveInside(dir, name);
+  if (full === null || !realFileInside(dir, full)) return [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(full, 'utf-8'));
+    if (!Array.isArray(parsed)) return [];
+    /** @type {string[]} */
+    const files = [];
+    for (const value of parsed) {
+      const file = normalizedRelPath(value);
+      if (file !== null && resolveInside(dir, file) !== null) files.push(file);
+    }
+    return [...new Set(files)].sort();
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Save the working-tree versions of `files` under `dir/files/<path>` so a
+ * later round can diff against them, with one versioned `manifest.json`
+ * holding `{ version: 1, scope, skipped }`. A reviewed repository file named
+ * `manifest.json`, `.snapshot-skipped.json`, or `.snapshot-scope.json` is
+ * mirrored like any other, never confused with the metadata. Binary,
+ * oversized, symlink, secret paths, and files containing secret patterns are
+ * recorded as skipped instead of mirrored, so no credentials are copied into
+ * review artifacts and a later round does not mistake them for newly added
+ * files. The complete path inventory (including paths absent from the working
+ * tree, such as deleted tracked files) is `scope`. Returns the number of files
+ * saved.
  *
  * @param {{ repoDir: string, dir: string, files: string[] }} options
  * @returns {number}
  */
 export function saveSnapshot({ repoDir, dir, files }) {
   fs.rmSync(dir, { recursive: true, force: true });
+  const filesRoot = path.join(dir, SNAPSHOT_FILES_DIR);
   let saved = 0;
   /** @type {string[]} */
   const skipped = [];
   /** @type {string[]} */
   const inventory = [];
-  for (const file of [...new Set(files)].sort()) {
-    const target = resolveInside(dir, file);
-    if (!target) continue;
+  for (const raw of [...new Set(files)].sort()) {
+    const file = normalizedRelPath(raw);
+    const target = file === null ? null : resolveInside(filesRoot, file);
+    if (file === null || target === null) continue;
     inventory.push(file);
     const entry = inspectWorkingFile(repoDir, file);
     if (entry.kind === 'secret') {
@@ -955,7 +1270,7 @@ export function saveSnapshot({ repoDir, dir, files }) {
           fs.lstatSync(full);
           skipped.push(file);
         } catch {
-          // Absent in working tree; still recorded in SNAPSHOT_SCOPE_FILE.
+          // Absent in working tree; still recorded as part of the scope.
         }
       }
       continue;
@@ -979,25 +1294,19 @@ export function saveSnapshot({ repoDir, dir, files }) {
       skipped.push(file);
       continue;
     }
-    fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
-    fs.writeFileSync(target, buffer, { mode: 0o600 });
+    ensurePrivateDir(path.dirname(target));
+    writePrivate(target, buffer);
     saved++;
   }
-  if (skipped.length > 0 || inventory.length > 0) {
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  }
-  if (skipped.length > 0) {
-    fs.writeFileSync(
-      path.join(dir, SNAPSHOT_SKIPPED_FILE),
-      JSON.stringify(skipped.sort()),
-      { encoding: 'utf-8', mode: 0o600 }
-    );
-  }
   if (inventory.length > 0) {
-    fs.writeFileSync(
-      path.join(dir, SNAPSHOT_SCOPE_FILE),
-      JSON.stringify(inventory),
-      { encoding: 'utf-8', mode: 0o600 }
+    ensurePrivateDir(dir);
+    writePrivate(
+      path.join(dir, SNAPSHOT_MANIFEST_FILE),
+      JSON.stringify({
+        version: SNAPSHOT_MANIFEST_VERSION,
+        scope: inventory,
+        skipped: [...new Set(skipped)].sort(),
+      })
     );
   }
   return saved;
@@ -1011,43 +1320,34 @@ export function saveSnapshot({ repoDir, dir, files }) {
  * @returns {string[]}
  */
 export function listSnapshotSkipped(dir) {
-  try {
-    const raw = fs.readFileSync(path.join(dir, SNAPSHOT_SKIPPED_FILE), 'utf-8');
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed)
-      ? parsed.filter((item) => typeof item === 'string').sort()
-      : [];
-  } catch {
-    return [];
-  }
+  const layout = snapshotLayout(dir);
+  if (layout.manifest) return [...new Set(layout.manifest.skipped)].sort();
+  return layout.legacy ? readLegacyList(dir, SNAPSHOT_SKIPPED_FILE) : [];
 }
 
 /**
  * The complete path inventory recorded for a snapshot round (saved files,
  * skipped files, and files absent from the working tree at snapshot time), as
- * sorted POSIX paths. Falls back to the union of saved and skipped files for
- * snapshots written before `.snapshot-scope.json` existed.
+ * sorted POSIX paths. Legacy snapshots (no `manifest.json`) fall back to the
+ * union of `.snapshot-scope.json`, the mirrored files, and
+ * `.snapshot-skipped.json`.
  *
  * @param {string} dir
  * @returns {string[]}
  */
 export function listSnapshotScope(dir) {
-  /** @type {string[]} */
-  let recorded = [];
-  try {
-    const raw = fs.readFileSync(path.join(dir, SNAPSHOT_SCOPE_FILE), 'utf-8');
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      recorded = parsed.filter((item) => typeof item === 'string');
-    }
-  } catch {
-    recorded = [];
+  const layout = snapshotLayout(dir);
+  if (layout.manifest) {
+    return [
+      ...new Set([...layout.manifest.scope, ...layout.manifest.skipped]),
+    ].sort();
   }
+  if (!layout.legacy) return [];
   return [
     ...new Set([
-      ...recorded,
+      ...readLegacyList(dir, SNAPSHOT_SCOPE_FILE),
       ...listSnapshotFiles(dir),
-      ...listSnapshotSkipped(dir),
+      ...readLegacyList(dir, SNAPSHOT_SKIPPED_FILE),
     ]),
   ].sort();
 }
@@ -1059,6 +1359,17 @@ export function listSnapshotScope(dir) {
  * @returns {string[]}
  */
 export function listSnapshotFiles(dir) {
+  const layout = snapshotLayout(dir);
+  if (layout.manifest) {
+    const manifest = layout.manifest;
+    return manifest.scope
+      .filter(
+        (file) =>
+          !manifest.skipped.includes(file) && snapshotHasFile(layout, file)
+      )
+      .sort();
+  }
+  if (!layout.legacy) return [];
   /** @type {string[]} */
   const out = [];
   /**
@@ -1116,6 +1427,7 @@ export function generateIncrementalDiff({
   maxFileBytes = MAX_DIFF_FILE_BYTES,
   maxTotalBytes = MAX_DIFF_TOTAL_BYTES,
 }) {
+  const layout = snapshotLayout(snapshotDir);
   const skippedInSnapshot = new Set(listSnapshotSkipped(snapshotDir));
   /** @type {string[]} */
   const chunks = [];
@@ -1123,9 +1435,8 @@ export function generateIncrementalDiff({
   const omitted = [];
   let total = 0;
   for (const file of [...files].sort()) {
-    const snapshotFile = resolveInside(snapshotDir, file);
     const currentPath = resolveInside(repoDir, file);
-    if (!snapshotFile || !currentPath) continue;
+    if (!currentPath) continue;
     if (isSecretFile(file)) {
       let exists = false;
       try {
@@ -1147,15 +1458,20 @@ export function generateIncrementalDiff({
       total += chunks.at(-1)?.length ?? 0;
       continue;
     }
+    const snapshotPath = resolveInside(layout.filesRoot, file);
     /** @type {Buffer | null} */
     let snapshot = null;
-    try {
-      if (fs.lstatSync(snapshotFile).isFile()) {
-        snapshot = fs.readFileSync(snapshotFile);
+    if (
+      snapshotPath !== null &&
+      realFileInside(layout.filesRoot, snapshotPath)
+    ) {
+      try {
+        snapshot = fs.readFileSync(snapshotPath);
+      } catch {
+        snapshot = null;
       }
-    } catch {
-      snapshot = null;
     }
+    const snapshotFile = snapshot === null ? null : snapshotPath;
     const current = inspectWorkingFile(repoDir, file);
     /** @type {string | null} */
     let text = null;
@@ -1189,7 +1505,7 @@ export function generateIncrementalDiff({
       }
     } else if (current.kind === 'missing') {
       text = deletedFileDiff(file, snapshot);
-    } else if (current.kind === 'file') {
+    } else if (current.kind === 'file' && snapshotFile !== null) {
       const result = runGitStatus(
         [
           '-c',

@@ -13,6 +13,7 @@ import {
   SNAPSHOT_MAX_FILE_BYTES,
   SEVERITY_RUBRIC,
   defaultRunGit,
+  defaultRunGitStatus,
   diffStats,
   findingsTemplate,
   fingerprint,
@@ -31,6 +32,7 @@ import {
   productFiles,
   reviewBase,
   reviewFiles,
+  reviewPreflight,
   reviewScope,
   roundBase,
   saveSnapshot,
@@ -373,6 +375,131 @@ describe('taskReviewScope', () => {
   });
 });
 
+describe('reviewPreflight', () => {
+  /** @param {string[]} files @param {string | null} [base] */
+  const scope = (files, base = 'main') => ({
+    base,
+    since: base === null ? null : 'abc123',
+    files,
+  });
+  const taskDir = () => path.join(root, 'tasks', NAME);
+  const quality = (
+    /** @type {Partial<import('../quality.js').Quality>} */ overrides
+  ) => ({
+    ...freshQuality(),
+    ...overrides,
+  });
+
+  test('should be eligible for a non-empty scope and fingerprint its files', () => {
+    fs.writeFileSync(path.join(root, 'a.js'), 'a\n');
+
+    const result = reviewPreflight({
+      rootDir: root,
+      taskDir: taskDir(),
+      state: codeState(),
+      scope: scope(['a.js']),
+    });
+
+    expect(result).toMatchObject({
+      eligible: true,
+      paths: ['a.js'],
+      incremental: null,
+    });
+    expect(result.fingerprint).toBe(fingerprint(root, ['a.js']));
+  });
+
+  test('should keep an open round eligible without files', () => {
+    const result = reviewPreflight({
+      rootDir: root,
+      taskDir: taskDir(),
+      state: codeState({
+        quality: quality({ phase: 'review', reviewRounds: 1 }),
+      }),
+      scope: scope([]),
+    });
+
+    expect(result).toMatchObject({
+      eligible: true,
+      paths: [],
+      incremental: null,
+    });
+    expect(result.fingerprint).toBe(fingerprint(root, []));
+  });
+
+  test('should fall back to the previous snapshot when the git scope empties', () => {
+    fs.writeFileSync(path.join(root, 'only.js'), 'gone\n');
+    saveSnapshot({
+      repoDir: root,
+      dir: path.join(taskDir(), 'reviews', '.snapshot-r1'),
+      files: ['only.js'],
+    });
+    fs.rmSync(path.join(root, 'only.js'));
+    const state = codeState({
+      quality: quality({
+        phase: 'fix',
+        reviewRounds: 1,
+        reviewedDiff: fingerprint(root, ['only.js']),
+      }),
+    });
+
+    const result = reviewPreflight({
+      rootDir: root,
+      taskDir: taskDir(),
+      state,
+      scope: scope([]),
+      runGitStatus: defaultRunGitStatus,
+    });
+
+    expect(result.eligible).toBe(true);
+    expect(result.paths).toEqual(['only.js']);
+    expect(result.incremental).toContain('deleted file mode');
+    expect(result.fingerprint).toMatch(/^[0-9a-f]{16}-[0-9a-f]{16}$/);
+    expect(result.fingerprint).not.toBe(state.quality?.reviewedDiff);
+  });
+
+  test('should be ineligible for a genuinely empty first round', () => {
+    expect(
+      reviewPreflight({
+        rootDir: root,
+        taskDir: taskDir(),
+        state: codeState(),
+        scope: scope([]),
+      })
+    ).toEqual({
+      eligible: false,
+      paths: [],
+      fingerprint: null,
+      incremental: null,
+    });
+  });
+
+  test('should be ineligible when the previous snapshot shows no change', () => {
+    fs.writeFileSync(path.join(root, 'same.js'), 'same\n');
+    saveSnapshot({
+      repoDir: root,
+      dir: path.join(taskDir(), 'reviews', '.snapshot-r1'),
+      files: ['same.js'],
+    });
+
+    expect(
+      reviewPreflight({
+        rootDir: root,
+        taskDir: taskDir(),
+        state: codeState({
+          quality: quality({ phase: 'fix', reviewRounds: 1 }),
+        }),
+        scope: scope([]),
+        runGitStatus: defaultRunGitStatus,
+      })
+    ).toEqual({
+      eligible: false,
+      paths: [],
+      fingerprint: null,
+      incremental: null,
+    });
+  });
+});
+
 describe('roundBase', () => {
   const folderScope = { base: null, since: null, files: ['a.js'] };
 
@@ -563,7 +690,7 @@ describe('reviewScope', () => {
     /** @type {import('../review.js').RunGit} */
     const runGit = vi.fn((args) => {
       if (args[0] === 'merge-base') return 'abc123';
-      if (args[0] === 'diff') return 'utils/b.js\nutils/a.js';
+      if (args.includes('diff')) return 'utils/b.js\nutils/a.js';
       return 'utils/new.js\ntasks/x/n.js\n';
     });
 
@@ -576,7 +703,7 @@ describe('reviewScope', () => {
     });
     expect(runGit).toHaveBeenCalledWith(['merge-base', 'HEAD', 'main'], root);
     expect(runGit).toHaveBeenCalledWith(
-      ['diff', '--name-only', '-z', 'abc123'],
+      ['diff', '--name-only', '--no-renames', '-z', 'abc123'],
       root
     );
   });
@@ -1062,7 +1189,7 @@ describe('diffStats', () => {
   test('should count added and deleted lines for in-scope tracked files', () => {
     /** @type {import('../review.js').RunGit} */
     const runGit = vi.fn((args) =>
-      args[0] === 'diff'
+      args.includes('--numstat')
         ? '10\t2\tutils/a.js\n3\t0\tutils/b.js\n1\t1\toutside.js'
         : ''
     );
@@ -1077,7 +1204,22 @@ describe('diffStats', () => {
     expect(stats.get('utils/b.js')).toEqual({ added: 3, deleted: 0 });
     expect(stats.has('outside.js')).toBe(false);
     expect(runGit).toHaveBeenCalledWith(
-      ['diff', '--numstat', '-z', 'abc123'],
+      [
+        '--literal-pathspecs',
+        '-c',
+        'core.quotePath=false',
+        'diff',
+        '--numstat',
+        '-M',
+        '-z',
+        '--no-ext-diff',
+        '--no-textconv',
+        '--no-color',
+        'abc123',
+        '--',
+        'utils/a.js',
+        'utils/b.js',
+      ],
       root
     );
   });
@@ -1089,7 +1231,9 @@ describe('diffStats', () => {
     fs.writeFileSync(path.join(root, '.env'), 'SECRET=1\n');
     /** @type {import('../review.js').RunGit} */
     const runGit = (args) =>
-      args[0] === 'diff' ? '' : 'lib/new.js\0lib/blob.bin\0lib/gone.js\0.env\0';
+      args[0] === 'ls-files'
+        ? 'lib/new.js\0lib/blob.bin\0lib/gone.js\0.env\0'
+        : '';
 
     const stats = diffStats({
       repoDir: root,
@@ -1336,6 +1480,132 @@ describe('generateReviewDiff', () => {
     expect(patch).not.toContain('plain-secret-value');
   });
 
+  test('should never pass protected paths to git content, stat, or rename queries', () => {
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'src', 'a.js'), 'a\n');
+    /** @type {string[][]} */
+    const calls = [];
+    /** @type {import('../review.js').RunGit} */
+    const runGit = vi.fn((args) => {
+      calls.push(args);
+      if (args.includes('--numstat')) return '1\t1\tsrc/a.js\0';
+      if (args.includes('--name-status')) return 'M\0src/a.js\0';
+      if (args.includes('--name-only')) return 'src/a.js\0';
+      if (args.includes('--unified=8')) return patchOf('src/a.js');
+      return '';
+    });
+    const scope = gitScope(['.env', 'secrets/k.txt', 'src/a.js']);
+
+    generateReviewDiff({ repoDir: root, scope, runGit });
+    diffStats({ repoDir: root, scope, runGit });
+
+    const queries = calls.filter(
+      (args) =>
+        args.includes('--numstat') ||
+        args.includes('--name-status') ||
+        args.includes('--unified=8')
+    );
+    expect(queries.length).toBeGreaterThanOrEqual(3);
+    for (const args of queries) {
+      expect(args[0]).toBe('--literal-pathspecs');
+      expect(args).toContain('--no-ext-diff');
+      expect(args).toContain('--no-textconv');
+      const separator = args.indexOf('--');
+      expect(separator).toBeGreaterThan(-1);
+      const paths = args.slice(separator + 1);
+      expect(paths).toContain('src/a.js');
+      expect(paths).not.toContain('.env');
+      expect(paths).not.toContain('secrets/k.txt');
+    }
+  });
+
+  test('should omit a rename when either side is a protected path', () => {
+    /** @type {string[][]} */
+    const calls = [];
+    /** @type {import('../review.js').RunGit} */
+    const runGit = (args) => {
+      calls.push(args);
+      if (args.includes('--name-status')) return 'R100\0.env\0src/a.js\0';
+      if (args.includes('--name-only')) return 'src/a.js\0';
+      if (args.includes('--unified=8')) {
+        return 'diff --git a/.env b/src/a.js\n+leaked';
+      }
+      return '';
+    };
+
+    const patch = generateReviewDiff({
+      repoDir: root,
+      scope: gitScope(['.env', 'src/a.js']),
+      runGit,
+    });
+
+    expect(patch).toContain('... [omitted: protected secret path]');
+    expect(patch).not.toContain('+leaked');
+    expect(calls.filter((args) => args.includes('--unified=8'))).toEqual([]);
+  });
+
+  test('should keep a legal name starting with two dots in scope through stats, patch, and snapshot', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'review-dotdot-'));
+    const gitExec = (/** @type {string[]} */ args) => {
+      const res = spawnSync('git', args, { cwd: repo, encoding: 'utf-8' });
+      if (res.status !== 0) {
+        throw new Error(`git ${args.join(' ')} failed: ${res.stderr}`);
+      }
+      return res.stdout.trim();
+    };
+    try {
+      gitExec(['init', '-b', 'main']);
+      gitExec(['config', 'user.email', 'test@example.com']);
+      gitExec(['config', 'user.name', 'Test']);
+      fs.writeFileSync(path.join(repo, 'base.js'), 'base\n');
+      gitExec(['add', 'base.js']);
+      gitExec(['commit', '-m', 'init']);
+      const base = gitExec(['rev-parse', 'HEAD']);
+      fs.writeFileSync(path.join(repo, '..notes.txt'), 'dot dot\n');
+      fs.mkdirSync(path.join(repo, 'dir'));
+      fs.writeFileSync(path.join(repo, 'dir', '..config.js'), 'config\n');
+
+      const scope = reviewScope({
+        rootDir: repo,
+        taskDir: path.join(repo, 'tasks', NAME),
+        base,
+        repoDir: repo,
+      });
+      expect(scope.files).toEqual(['..notes.txt', 'dir/..config.js']);
+
+      const stats = diffStats({ repoDir: repo, scope });
+      expect(stats.get('..notes.txt')).toEqual({
+        added: 1,
+        deleted: 0,
+        untracked: true,
+      });
+
+      const patch = generateReviewDiff({ repoDir: repo, scope });
+      expect(patch).toContain('diff --git a/..notes.txt b/..notes.txt');
+      expect(patch).toContain('+dot dot');
+      expect(patch).toContain('diff --git a/dir/..config.js b/dir/..config.js');
+
+      const snapshotDir = path.join(repo, '.snapshot-r1');
+      saveSnapshot({ repoDir: repo, dir: snapshotDir, files: scope.files });
+      expect(listSnapshotFiles(snapshotDir)).toEqual([
+        '..notes.txt',
+        'dir/..config.js',
+      ]);
+
+      fs.writeFileSync(path.join(repo, '..notes.txt'), 'dot dot changed\n');
+      const incremental = generateIncrementalDiff({
+        repoDir: repo,
+        snapshotDir,
+        files: listSnapshotScope(snapshotDir),
+        runGitStatus: defaultRunGitStatus,
+      });
+      expect(incremental).toContain('diff --git a/..notes.txt b/..notes.txt');
+      expect(incremental).toContain('-dot dot\n+dot dot changed');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   test('should handle non-ASCII paths and staged renames against a real git repository', () => {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'review-git-'));
     const gitExec = (/** @type {string[]} */ args) => {
@@ -1552,7 +1822,9 @@ describe('saveSnapshot and listSnapshotFiles', () => {
     ]);
     expect(fs.existsSync(path.join(dir, '.env'))).toBe(false);
     expect(fs.existsSync(path.join(dir, 'has-token.js'))).toBe(false);
-    expect(fs.readFileSync(path.join(dir, 'a.js'), 'utf-8')).toBe('one\n');
+    expect(fs.readFileSync(path.join(dir, 'files', 'a.js'), 'utf-8')).toBe(
+      'one\n'
+    );
   });
 
   test('should replace an existing snapshot and list nested files', () => {
@@ -1570,6 +1842,130 @@ describe('saveSnapshot and listSnapshotFiles', () => {
 
   test('should list nothing without a snapshot folder', () => {
     expect(listSnapshotFiles(path.join(root, 'missing'))).toEqual([]);
+  });
+
+  test('should keep one versioned manifest beside the mirrored files', () => {
+    fs.writeFileSync(path.join(root, 'a.js'), 'one\n');
+    fs.writeFileSync(path.join(root, 'blob.bin'), Buffer.from([0]));
+    fs.writeFileSync(path.join(root, '.env'), 'X=1\n');
+    const dir = path.join(root, '.snapshot-r1');
+
+    saveSnapshot({
+      repoDir: root,
+      dir,
+      files: ['a.js', 'blob.bin', '.env', 'gone.js'],
+    });
+
+    expect(
+      JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf-8'))
+    ).toEqual({
+      version: 1,
+      scope: ['.env', 'a.js', 'blob.bin', 'gone.js'],
+      skipped: ['.env', 'blob.bin'],
+    });
+    expect(fs.existsSync(path.join(dir, 'files', 'a.js'))).toBe(true);
+    expect(fs.existsSync(path.join(dir, 'a.js'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'files', 'blob.bin'))).toBe(false);
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(path.join(dir, 'files')).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(path.join(dir, 'manifest.json')).mode & 0o777).toBe(
+        0o600
+      );
+      expect(fs.statSync(path.join(dir, 'files', 'a.js')).mode & 0o777).toBe(
+        0o600
+      );
+    }
+  });
+
+  test('should not confuse reviewed files named like snapshot metadata', () => {
+    const names = [
+      'manifest.json',
+      '.snapshot-skipped.json',
+      '.snapshot-scope.json',
+      'src/manifest.json',
+    ];
+    for (const name of names) {
+      fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true });
+      fs.writeFileSync(path.join(root, name), `old:${name}\n`);
+    }
+    const dir = path.join(root, '.snapshot-r1');
+
+    expect(saveSnapshot({ repoDir: root, dir, files: names })).toBe(4);
+    expect(listSnapshotFiles(dir)).toEqual([...names].sort());
+    expect(listSnapshotScope(dir)).toEqual([...names].sort());
+    expect(listSnapshotSkipped(dir)).toEqual([]);
+
+    for (const name of names) {
+      fs.writeFileSync(path.join(root, name), `new:${name}\n`);
+    }
+    const incremental = generateIncrementalDiff({
+      repoDir: root,
+      snapshotDir: dir,
+      files: listSnapshotScope(dir),
+      runGitStatus: defaultRunGitStatus,
+    });
+    for (const name of names) {
+      expect(incremental).toContain(`diff --git a/${name} b/${name}`);
+      expect(incremental).toContain(`-old:${name}`);
+      expect(incremental).toContain(`+new:${name}`);
+    }
+  });
+
+  test('should read a legacy snapshot without a manifest', () => {
+    const dir = path.join(root, '.snapshot-r1');
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'a.js'), 'old\n');
+    fs.writeFileSync(
+      path.join(dir, '.snapshot-scope.json'),
+      JSON.stringify(['src/a.js', 'gone.js', '../out'])
+    );
+    fs.writeFileSync(
+      path.join(dir, '.snapshot-skipped.json'),
+      JSON.stringify(['gone.js', '../out'])
+    );
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'src', 'a.js'), 'new\n');
+
+    expect(listSnapshotFiles(dir)).toEqual(['src/a.js']);
+    expect(listSnapshotSkipped(dir)).toEqual(['gone.js']);
+    expect(listSnapshotScope(dir)).toEqual(['gone.js', 'src/a.js']);
+    const patch = generateIncrementalDiff({
+      repoDir: root,
+      snapshotDir: dir,
+      files: listSnapshotScope(dir),
+      runGitStatus: defaultRunGitStatus,
+    });
+    expect(patch).toContain('-old\n+new');
+  });
+
+  test('should accept only contained normalized paths from a manifest', () => {
+    const dir = path.join(root, '.snapshot-r1');
+    fs.mkdirSync(path.join(dir, 'files'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'files', 'ok.js'), 'x\n');
+    fs.writeFileSync(
+      path.join(dir, 'manifest.json'),
+      JSON.stringify({
+        version: 1,
+        scope: ['../out', '/abs', './x', 'a\\b', '..notes.txt', 'ok.js'],
+        skipped: ['../out', '..notes.txt'],
+      })
+    );
+
+    expect(listSnapshotFiles(dir)).toEqual(['ok.js']);
+    expect(listSnapshotScope(dir)).toEqual(['..notes.txt', 'ok.js']);
+    expect(listSnapshotSkipped(dir)).toEqual(['..notes.txt']);
+  });
+
+  test('should ignore an invalid manifest instead of misreading it as legacy', () => {
+    const dir = path.join(root, '.snapshot-r1');
+    fs.mkdirSync(path.join(dir, 'files'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'files', 'a.js'), 'x\n');
+    fs.writeFileSync(path.join(dir, 'manifest.json'), '{not json');
+
+    expect(listSnapshotFiles(dir)).toEqual([]);
+    expect(listSnapshotScope(dir)).toEqual([]);
+    expect(listSnapshotSkipped(dir)).toEqual([]);
   });
 });
 

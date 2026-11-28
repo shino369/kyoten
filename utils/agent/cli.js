@@ -14,7 +14,12 @@ import os from 'os';
 import path from 'path';
 import { buildCommand, runAgent } from '../loop/adapters.js';
 import { isLinkedWorktree } from '../loop/worktree.js';
-import { TOKEN_KEYS, dsccEnv, profilePath } from '../kyoten/dscc.js';
+import {
+  TOKEN_KEYS,
+  dsccEnv,
+  profilePath,
+  writePrivate,
+} from '../kyoten/dscc.js';
 import { runIfMain } from '../module-runner.js';
 import { REDACTED, isSecretKey, redactSecrets } from '../redact.js';
 import { INNER_LOOP_ENV } from '../task/loop.js';
@@ -208,7 +213,6 @@ export function answerOf(result) {
 }
 
 const PROFILE_SECRET_NAME_RE = /AUTH|HEADERS/i;
-const URL_CREDENTIAL_RE = /^[a-z][a-z0-9+.-]*:\/\/([^/\s@]+)@/i;
 const URL_SECRET_PARAM_RE = /(?:token|secret|password|key|auth)/i;
 const HEADER_SCHEME_RE = /^(?:Bearer|Basic|Token)\s+(\S+)$/i;
 
@@ -259,34 +263,65 @@ function addHeaderSecrets(values, raw) {
 }
 
 /**
- * Extract credential components from a URL string (userinfo, decoded password,
- * and secret-named query parameters).
+ * `decodeURIComponent` that returns the raw value when the encoding is
+ * malformed, so a broken escape still gets scrubbed.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+function decodeOrRaw(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Extract credential components from a URL string: the userinfo (`username`,
+ * `password`, and `username:password`, raw and decoded) and secret-named query
+ * parameters (raw and decoded).
  *
  * @param {Set<string>} values
  * @param {string} raw
  */
 function addUrlSecrets(values, raw) {
-  const cred = URL_CREDENTIAL_RE.exec(raw)?.[1];
-  if (cred) {
-    addSecretValue(values, cred);
-    const colon = cred.indexOf(':');
-    if (colon !== -1 && cred.slice(colon + 1)) {
-      const pw = cred.slice(colon + 1);
-      addSecretValue(values, pw);
-      try {
-        addSecretValue(values, decodeURIComponent(pw));
-      } catch {
-        // Malformed percent-encoding: raw value is already captured.
-      }
+  /** @type {URL} */
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return; // Not a URL: no userinfo or query parameters to read.
+  }
+  const user = parsed.username;
+  const pass = parsed.password;
+  if (user || pass) {
+    if (user) addSecretValue(values, user);
+    if (pass) addSecretValue(values, pass);
+    if (user && pass) addSecretValue(values, `${user}:${pass}`);
+    const decodedUser = user ? decodeOrRaw(user) : '';
+    const decodedPass = pass ? decodeOrRaw(pass) : '';
+    if (decodedUser) addSecretValue(values, decodedUser);
+    if (decodedPass) addSecretValue(values, decodedPass);
+    if (decodedUser) {
+      addSecretValue(
+        values,
+        decodedPass ? `${decodedUser}:${decodedPass}` : decodedUser
+      );
     }
   }
-  try {
-    const parsed = new URL(raw);
-    for (const [param, val] of parsed.searchParams.entries()) {
-      if (URL_SECRET_PARAM_RE.test(param)) addSecretValue(values, val, 4);
-    }
-  } catch {
-    // Not a URL.
+  // Raw (still percent-encoded) query values, which the decoded searchParams
+  // would miss.
+  for (const pair of parsed.search.replace(/^\?/, '').split('&')) {
+    if (!pair) continue;
+    const eq = pair.indexOf('=');
+    const name = decodeOrRaw(eq === -1 ? pair : pair.slice(0, eq));
+    const value = eq === -1 ? '' : pair.slice(eq + 1);
+    if (value && URL_SECRET_PARAM_RE.test(name))
+      addSecretValue(values, value, 4);
+  }
+  for (const [param, val] of parsed.searchParams.entries()) {
+    if (URL_SECRET_PARAM_RE.test(param)) addSecretValue(values, val, 4);
   }
 }
 
@@ -328,7 +363,11 @@ function envSecrets(env) {
   const values = new Set();
   for (const [key, value] of Object.entries(env)) {
     if (!value) continue;
-    if (isSecretKey(key)) addSecretValue(values, value, 8);
+    if (isSecretKey(key) || PROFILE_SECRET_NAME_RE.test(key)) {
+      addSecretValue(values, value, 8);
+      if (/HEADERS/i.test(key)) addHeaderSecrets(values, value);
+    }
+    addUrlSecrets(values, value);
   }
   return [...values].sort((a, b) => b.length - a.length);
 }
@@ -570,7 +609,7 @@ function ask(options, d) {
     output: scrubSecrets(rawResult.output, secrets),
   };
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(
+  writePrivate(
     file,
     formatRecord({
       command,
@@ -581,8 +620,7 @@ function ask(options, d) {
       prompt,
       result,
       secrets,
-    }),
-    { encoding: 'utf-8', mode: 0o600 }
+    })
   );
 
   const code = result.code === null ? 1 : result.code;

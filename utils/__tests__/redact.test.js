@@ -67,6 +67,24 @@ describe('redact', () => {
       );
     });
 
+    test.each([
+      'https://calendar.example.invalid?invite=reader@example.invalid',
+      'https://example.invalid#contact=user@example.invalid',
+    ])('should keep %s, whose @ is after the authority', (url) => {
+      expect(redactSecrets(url)).toBe(url);
+      expect(containsSecret(url)).toBe(false);
+    });
+
+    test('should redact only the userinfo of a URL with a query', () => {
+      expect(
+        redactSecrets(
+          'https://user:pass@api.example.invalid/v1?invite=reader@example.invalid'
+        )
+      ).toBe(
+        `https://${REDACTED}@api.example.invalid/v1?invite=reader@example.invalid`
+      );
+    });
+
     test('should redact a whole PEM private key block', () => {
       expect(redactSecrets(`before\n${FAKE.pem}\nafter`)).toBe(
         'before\n[REDACTED PRIVATE KEY]\nafter'

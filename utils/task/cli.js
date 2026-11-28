@@ -46,6 +46,7 @@ import {
   STATE_FILE,
   appendNotes,
   currentTask,
+  ensurePrivateDir,
   listTaskNames,
   loadTask,
   readActive,
@@ -71,7 +72,6 @@ import {
 import {
   diffStats,
   findingsTemplate,
-  fingerprint,
   formatReviewBrief,
   generateIncrementalDiff,
   generateReviewDiff,
@@ -80,6 +80,7 @@ import {
   parseFindings,
   recordFindings,
   reviewFiles,
+  reviewPreflight,
   saveSnapshot,
   scopeRoot,
   roundBase,
@@ -88,6 +89,7 @@ import {
 } from './review.js';
 import { trashPaths } from './trash.js';
 import { summarize, tail } from './verify.js';
+import { writePrivate } from '../kyoten/dscc.js';
 import { relPosix } from '../paths.js';
 import {
   formatTaskMemory,
@@ -1195,42 +1197,28 @@ export const COMMANDS = {
       runGit: deps.runGit,
     });
     const reviewsDir = path.join(task.dir, 'reviews');
-    const preScopeDir = scopeRoot(deps.rootDir, task.state, scope);
-    /** @type {string | null | undefined} */
-    let emptyScopeIncremental;
-    if (scope.files.length === 0 && quality.phase !== 'review') {
-      const priorSnapshot =
-        quality.reviewRounds > 0
-          ? path.join(reviewsDir, `.snapshot-r${quality.reviewRounds}`)
-          : null;
-      const priorFiles =
-        priorSnapshot && fs.existsSync(priorSnapshot)
-          ? listSnapshotScope(priorSnapshot)
-          : [];
-      if (priorSnapshot && priorFiles.length > 0) {
-        emptyScopeIncremental = generateIncrementalDiff({
-          repoDir: preScopeDir,
-          snapshotDir: priorSnapshot,
-          files: priorFiles,
-          runGitStatus: deps.runGitStatus,
-        });
-      }
-      if (!emptyScopeIncremental) {
-        if (scope.base === null) {
-          throw new Error(
-            `Nothing to review for ${name}: its task folder has no code (${taskRel}/).\nFix: pnpm task review --base <ref> to review git changes instead`
-          );
-        }
-        const noStart =
-          task.state.startCommit === undefined && options.base === undefined
-            ? ` ${name} has no recorded start commit (it predates them), so work committed on ${scope.base} itself cannot be found.`
-            : '';
+    const preflight = reviewPreflight({
+      rootDir: deps.rootDir,
+      taskDir: task.dir,
+      state: task.state,
+      scope,
+      runGitStatus: deps.runGitStatus,
+    });
+    if (!preflight.eligible) {
+      if (scope.base === null) {
         throw new Error(
-          `Nothing to review for ${name}: no files changed since ${scope.base} (commit ${String(scope.since).slice(0, 7)}).${noStart} If the work is already committed there, review against the commit before it.\nFix: pnpm task review --base <the commit before the task's first commit>`
+          `Nothing to review for ${name}: its task folder has no code (${taskRel}/).\nFix: pnpm task review --base <ref> to review git changes instead`
         );
       }
+      const noStart =
+        task.state.startCommit === undefined && options.base === undefined
+          ? ` ${name} has no recorded start commit (it predates them), so work committed on ${scope.base} itself cannot be found.`
+          : '';
+      throw new Error(
+        `Nothing to review for ${name}: no files changed since ${scope.base} (commit ${String(scope.since).slice(0, 7)}).${noStart} If the work is already committed there, review against the commit before it.\nFix: pnpm task review --base <the commit before the task's first commit>`
+      );
     }
-    const print = fingerprint(preScopeDir, scope.files);
+    const print = /** @type {string} */ (preflight.fingerprint);
     const now = deps.now();
     const agent = detectAgent(options, deps.env);
     let round = 0;
@@ -1257,7 +1245,7 @@ export const COMMANDS = {
       { now, agent }
     );
     const files = reviewFiles(name, round);
-    fs.mkdirSync(reviewsDir, { recursive: true, mode: 0o700 });
+    ensurePrivateDir(reviewsDir);
     const scopeDir = scopeRoot(deps.rootDir, state, scope);
     const stats = diffStats({ repoDir: scopeDir, scope, runGit: deps.runGit });
     // The snapshot lets the next round show only what changed since this one;
@@ -1272,34 +1260,26 @@ export const COMMANDS = {
       runGit: deps.runGit,
     });
     if (patch !== null) {
-      fs.writeFileSync(path.join(task.dir, files.diff), patch, {
-        encoding: 'utf-8',
-        mode: 0o600,
-      });
+      writePrivate(path.join(task.dir, files.diff), patch);
     }
     const previousSnapshot = path.join(reviewsDir, `.snapshot-r${round - 1}`);
     let incremental = null;
     if (round > 1 && files.incrementalDiff && fs.existsSync(previousSnapshot)) {
       incremental =
-        emptyScopeIncremental !== undefined
-          ? emptyScopeIncremental
-          : generateIncrementalDiff({
-              repoDir: scopeDir,
-              snapshotDir: previousSnapshot,
-              files: [
-                ...new Set([
-                  ...scope.files,
-                  ...listSnapshotScope(previousSnapshot),
-                ]),
-              ].sort(),
-              runGitStatus: deps.runGitStatus,
-            });
+        preflight.incremental ??
+        generateIncrementalDiff({
+          repoDir: scopeDir,
+          snapshotDir: previousSnapshot,
+          files: [
+            ...new Set([
+              ...scope.files,
+              ...listSnapshotScope(previousSnapshot),
+            ]),
+          ].sort(),
+          runGitStatus: deps.runGitStatus,
+        });
       if (incremental !== null) {
-        fs.writeFileSync(
-          path.join(task.dir, files.incrementalDiff),
-          incremental,
-          { encoding: 'utf-8', mode: 0o600 }
-        );
+        writePrivate(path.join(task.dir, files.incrementalDiff), incremental);
       }
     }
     const diffPath = patch === null ? null : `${taskRel}/${files.diff}`;
@@ -1307,7 +1287,7 @@ export const COMMANDS = {
       incremental === null || !files.incrementalDiff
         ? null
         : `${taskRel}/${files.incrementalDiff}`;
-    fs.writeFileSync(
+    writePrivate(
       path.join(task.dir, files.brief),
       formatReviewBrief({
         state,
@@ -1322,15 +1302,13 @@ export const COMMANDS = {
           taskDir: task.dir,
           scope,
         }),
-      }),
-      { encoding: 'utf-8', mode: 0o600 }
+      })
     );
     const findingsPath = path.join(task.dir, files.findings);
     if (!fs.existsSync(findingsPath)) {
-      fs.writeFileSync(
+      writePrivate(
         findingsPath,
-        findingsTemplate({ name, round, brief: `${taskRel}/${files.brief}` }),
-        { encoding: 'utf-8', mode: 0o600 }
+        findingsTemplate({ name, round, brief: `${taskRel}/${files.brief}` })
       );
     }
     if (!reopened) {

@@ -65,7 +65,9 @@ const SECRET_RULES = [
   },
   {
     name: 'url-credentials',
-    pattern: /\b([a-z][a-z0-9+.-]*:\/\/)([^/\s@]+)@/gi,
+    // The authority ends at `/`, `?`, or `#`: an `@` after a query or fragment
+    // (an email in `?invite=reader@example.com`) is not a credential.
+    pattern: /\b([a-z][a-z0-9+.-]*:\/\/)([^/\s?#@]+)@/gi,
     replace: (match, scheme, creds) =>
       creds.includes(REDACTED) ? match : `${scheme}${REDACTED}@`,
   },

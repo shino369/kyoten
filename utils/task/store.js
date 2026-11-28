@@ -25,6 +25,8 @@ export const TASK_SUBDIRS = [
   'translated',
   'tmp',
 ];
+/** Tool-owned subdirectories whose artifacts may hold secrets or review data. */
+export const PRIVATE_SUBDIRS = ['reviews', 'tmp'];
 
 /**
  * @typedef {import('./state.js').TaskState} TaskState
@@ -594,6 +596,21 @@ export function appendNotes(dir, entry, separate) {
 }
 
 /**
+ * Create `dir` (and its parents) as a private directory: `0o700`, so another
+ * local user cannot read review artifacts or agent records. `mkdirSync`'s mode
+ * is masked by the umask, so POSIX gets an explicit `chmod`.
+ *
+ * @param {string} dir
+ * @param {NodeJS.Platform} [platform]  injectable for tests
+ * @returns {string} `dir`
+ */
+export function ensurePrivateDir(dir, platform = process.platform) {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (platform !== 'win32') fs.chmodSync(dir, 0o700);
+  return dir;
+}
+
+/**
  * Scaffold a task directory from templates/task/.
  *
  * @param {{ rootDir: string, name: string, state: TaskState, acceptance: string, date: string, templatesDir?: string }} options
@@ -630,7 +647,10 @@ export function scaffoldTask({
   const notes = render(NOTES_FILE);
 
   fs.mkdirSync(dir, { recursive: true });
-  for (const sub of TASK_SUBDIRS) fs.mkdirSync(path.join(dir, sub));
+  for (const sub of TASK_SUBDIRS) {
+    if (PRIVATE_SUBDIRS.includes(sub)) ensurePrivateDir(path.join(dir, sub));
+    else fs.mkdirSync(path.join(dir, sub));
+  }
   fs.writeFileSync(path.join(dir, PLAN_FILE), plan, 'utf-8');
   fs.writeFileSync(path.join(dir, NOTES_FILE), notes, 'utf-8');
   saveState(dir, state);

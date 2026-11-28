@@ -1180,6 +1180,22 @@ describe('review', () => {
     expect(run(['review']).out).toContain('Review round still open 1/2');
   });
 
+  test('should rewrite an existing brief privately', () => {
+    greenCodeTask();
+    run(['review']);
+    const brief = path.join(taskDir(), 'reviews', `BRIEF_${NAME}-r1.md`);
+    fs.chmodSync(brief, 0o644);
+    fs.writeFileSync(brief, 'stale\n');
+
+    run(['review']);
+
+    expect(fs.readFileSync(brief, 'utf-8')).toContain('# Review brief');
+    expect(fs.readFileSync(brief, 'utf-8')).not.toBe('stale\n');
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(brief).mode & 0o777).toBe(0o600);
+    }
+  });
+
   test('should write a pre-computed diff patch and link it in the brief and output', () => {
     newTask(['--verify', 'pnpm test']);
     finishSteps();
@@ -1221,11 +1237,19 @@ describe('review', () => {
     );
     expect(brief).toContain('- utils/x.js (+1/-1)\n');
     expect(brief).toContain('## Reading budget');
+    const diffFile = path.join(taskDir(), 'reviews', `DIFF_${NAME}-r1.patch`);
+    fs.chmodSync(diffFile, 0o644);
     const reopened = JSON.parse(run(['review', '--json'], { runGit }).out);
     expect(reopened).toMatchObject({
       reopened: true,
       diff: `tasks/${NAME}/reviews/DIFF_${NAME}-r1.patch`,
     });
+    expect(fs.readFileSync(diffFile, 'utf-8')).toContain(
+      'diff --git a/utils/x.js b/utils/x.js'
+    );
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(diffFile).mode & 0o777).toBe(0o600);
+    }
   });
 
   test('should print the diff paths and the cross-model hint', () => {
@@ -1353,7 +1377,14 @@ describe('review', () => {
     expect(parsed.reopened).toBe(true);
     expect(
       fs.readFileSync(
-        path.join(taskDir(), 'reviews', '.snapshot-r1', 'utils', 'x.js'),
+        path.join(
+          taskDir(),
+          'reviews',
+          '.snapshot-r1',
+          'files',
+          'utils',
+          'x.js'
+        ),
         'utf-8'
       )
     ).toBe('a\n');
@@ -1643,7 +1674,7 @@ describe('review', () => {
       files: ['utils/x.js'],
     });
     expect(runGit).toHaveBeenCalledWith(
-      ['diff', '--name-only', '-z', 'start123'],
+      ['diff', '--name-only', '--no-renames', '-z', 'start123'],
       root
     );
     expect(state().quality?.base).toBe('start123');
@@ -1659,7 +1690,7 @@ describe('review', () => {
     const parsed = JSON.parse(run(['review', '--json'], { runGit }).out);
     expect(parsed.scope).toMatchObject({ base: 'mid789', since: 'mid789' });
     expect(runGit).toHaveBeenCalledWith(
-      ['diff', '--name-only', '-z', 'mid789'],
+      ['diff', '--name-only', '--no-renames', '-z', 'mid789'],
       root
     );
   });
@@ -1712,7 +1743,7 @@ describe('review', () => {
         files: ['a.js', 'tasks/t.js'],
       });
       expect(runGit).toHaveBeenCalledWith(
-        ['diff', '--name-only', '-z', 'r-start'],
+        ['diff', '--name-only', '--no-renames', '-z', 'r-start'],
         repo
       );
       const brief = fs.readFileSync(
