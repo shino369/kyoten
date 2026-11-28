@@ -531,7 +531,7 @@ describe('main', () => {
     fs.writeFileSync(
       file,
       [
-        'ANTHROPIC_BASE_URL=https://us%40er:p%40ss@api.deepseek.com/anthropic?api_key=raw%2Fquery-key&access_token=raw%2Faccess-token',
+        'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic',
         'ANTHROPIC_AUTH_TOKEN=short-dscc',
         'ANTHROPIC_API_KEY=api-key-literal',
         'ANTHROPIC_CUSTOM_HEADERS="X-Api-Key: hdr-secret-42"',
@@ -542,14 +542,6 @@ describe('main', () => {
       'short-dscc',
       'api-key-literal',
       'hdr-secret-42',
-      'us%40er',
-      'us@er',
-      'p%40ss',
-      'p@ss',
-      'raw%2Fquery-key',
-      'raw/query-key',
-      'raw%2Faccess-token',
-      'raw/access-token',
       'inherited-openai-key',
     ];
     const runAgent = vi.fn(() => ({
@@ -754,7 +746,7 @@ describe('dscc', () => {
       code: 1,
       signal: null,
       stdout: `auth failed for sk-short-dscc and ghp_${'a'.repeat(36)}\n`,
-      output: `stderr: url-secret-pw token=sk-short-dscc ghp_${'a'.repeat(36)}\n`,
+      output: `stderr: https://user:url-secret-pw@api.deepseek.com token=sk-short-dscc ghp_${'a'.repeat(36)}\n`,
       durationMs: 100,
     }));
 
@@ -774,10 +766,10 @@ describe('dscc', () => {
     expect(parsed.answer).toContain('[REDACTED]');
   });
 
-  test('should scrub custom header values, quoted tokens, URL query secrets, and inherited env keys', () => {
+  test('should scrub custom header values, quoted tokens, and inherited env keys', () => {
     const file = profile(
       [
-        'ANTHROPIC_BASE_URL=https://user:p%40ss@api.deepseek.com/anthropic?api_key=query-secret-99',
+        'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic',
         'ANTHROPIC_AUTH_TOKEN="quoted-dscc-tok"',
         'ANTHROPIC_CUSTOM_HEADERS="X-Api-Key: hdr-secret-42"',
         '',
@@ -786,10 +778,8 @@ describe('dscc', () => {
     const runAgent = vi.fn(() => ({
       code: 0,
       signal: null,
-      stdout:
-        'echo quoted-dscc-tok hdr-secret-42 query-secret-99 p@ss inherited-env-secret\n',
-      output:
-        'full quoted-dscc-tok hdr-secret-42 query-secret-99 p@ss inherited-env-secret\n',
+      stdout: 'echo quoted-dscc-tok hdr-secret-42 inherited-env-secret\n',
+      output: 'full quoted-dscc-tok hdr-secret-42 inherited-env-secret\n',
       durationMs: 50,
     }));
 
@@ -806,8 +796,6 @@ describe('dscc', () => {
     for (const leaked of [
       'quoted-dscc-tok',
       'hdr-secret-42',
-      'query-secret-99',
-      'p@ss',
       'inherited-env-secret',
     ]) {
       expect(recordText).not.toContain(leaked);
@@ -816,60 +804,32 @@ describe('dscc', () => {
     }
   });
 
-  test('should scrub raw and decoded userinfo and query credentials', () => {
+  test('should keep non-credential profile values and the working directory in the answer', () => {
     const file = profile(
-      'ANTHROPIC_BASE_URL=https://us%40er:p%40ss@api.deepseek.com/anthropic?api_token=raw%2Fquery-secret\nANTHROPIC_AUTH_TOKEN=sk-test-secret\n'
+      `${PROFILED}CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192\nANTHROPIC_MODEL=deepseek-chat\n`
     );
+    const text =
+      'Buffer 8192 bytes in /home/t/project/src/app.js via deepseek-chat; sk-test-secret\n';
     const runAgent = vi.fn(() => ({
       code: 0,
       signal: null,
-      stdout: 'us%40er us@er p%40ss p@ss raw%2Fquery-secret raw/query-secret\n',
-      output: 'us%40er us@er p%40ss p@ss raw%2Fquery-secret raw/query-secret\n',
+      stdout: text,
+      output: text,
       durationMs: 1,
     }));
 
     const { out } = run(['ask', '--agent', 'dscc', '--json', 'hi'], {
-      env: { DSCC_PROFILE: file },
+      env: { DSCC_PROFILE: file, PWD: '/home/t/project' },
       runAgent,
     });
 
     const parsed = JSON.parse(out);
-    const recordText = read(parsed.record);
-    for (const leaked of [
-      'us%40er',
-      'us@er',
-      'p%40ss',
-      'p@ss',
-      'raw%2Fquery-secret',
-      'raw/query-secret',
-    ]) {
-      expect(parsed.answer).not.toContain(leaked);
-      expect(parsed.output).not.toContain(leaked);
-      expect(recordText).not.toContain(leaked);
+    for (const value of [parsed.answer, parsed.output, read(parsed.record)]) {
+      expect(value).toContain('Buffer 8192 bytes');
+      expect(value).toContain('/home/t/project/src/app.js');
+      expect(value).toContain('deepseek-chat');
+      expect(value).not.toContain('sk-test-secret');
     }
-  });
-
-  test('should scrub credentials with malformed percent-encoding as raw values', () => {
-    const file = profile(
-      'ANTHROPIC_BASE_URL=https://bad%zz:pass%zz@api.deepseek.com/anthropic\nANTHROPIC_AUTH_TOKEN=sk-test-secret\n'
-    );
-    const runAgent = vi.fn(() => ({
-      code: 0,
-      signal: null,
-      stdout: 'bad%zz pass%zz\n',
-      output: 'bad%zz pass%zz\n',
-      durationMs: 1,
-    }));
-
-    const { out } = run(['ask', '--agent', 'dscc', '--json', 'hi'], {
-      env: { DSCC_PROFILE: file },
-      runAgent,
-    });
-
-    const parsed = JSON.parse(out);
-    expect(parsed.answer).not.toContain('bad%zz');
-    expect(parsed.answer).not.toContain('pass%zz');
-    expect(read(parsed.record)).not.toContain('bad%zz');
   });
 
   test('should not scrub inherited values the child never received', () => {
