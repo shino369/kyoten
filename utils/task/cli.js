@@ -78,12 +78,14 @@ import {
   listSnapshotScope,
   openRound,
   parseFindings,
+  previousSnapshotDir,
   recordFindings,
   reviewFiles,
   reviewPreflight,
   saveSnapshot,
   scopeRoot,
   roundBase,
+  snapshotDirFor,
   taskFolderNotes,
   taskReviewScope,
 } from './review.js';
@@ -1250,7 +1252,7 @@ export const COMMANDS = {
     const stats = diffStats({ repoDir: scopeDir, scope, runGit: deps.runGit });
     // The snapshot lets the next round show only what changed since this one;
     // reopening an open round keeps it (the reviewed code must not move).
-    const snapshotDir = path.join(reviewsDir, `.snapshot-r${round}`);
+    const snapshotDir = snapshotDirFor(reviewsDir, round);
     if (!reopened && scope.files.length > 0) {
       saveSnapshot({ repoDir: scopeDir, dir: snapshotDir, files: scope.files });
     }
@@ -1262,9 +1264,10 @@ export const COMMANDS = {
     if (patch !== null) {
       writePrivate(path.join(task.dir, files.diff), patch);
     }
-    const previousSnapshot = path.join(reviewsDir, `.snapshot-r${round - 1}`);
+    const previousSnapshot =
+      round > 1 ? previousSnapshotDir(reviewsDir, round - 1) : null;
     let incremental = null;
-    if (round > 1 && files.incrementalDiff && fs.existsSync(previousSnapshot)) {
+    if (round > 1 && files.incrementalDiff && previousSnapshot !== null) {
       incremental =
         preflight.incremental ??
         generateIncrementalDiff({
@@ -1273,10 +1276,11 @@ export const COMMANDS = {
           files: [
             ...new Set([
               ...scope.files,
-              ...listSnapshotScope(previousSnapshot),
+              ...listSnapshotScope(previousSnapshot, reviewsDir),
             ]),
           ].sort(),
           runGitStatus: deps.runGitStatus,
+          trustedReviewsDir: reviewsDir,
         });
       if (incremental !== null) {
         writePrivate(path.join(task.dir, files.incrementalDiff), incremental);

@@ -497,6 +497,82 @@ describe('main', () => {
     }
   });
 
+  test('should not treat author identity or ordinary query parameters as credentials', () => {
+    const url =
+      'https://calendar.example.invalid?invite=reader@example.invalid&author=reader@example.invalid&keyboard=us';
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      stdout: `${url} reader@example.invalid Reader\n`,
+      output: `${url} reader@example.invalid Reader\n`,
+      durationMs: 1,
+    }));
+
+    const { out } = run(['ask', '--agent', 'codex', '--json', 'hi'], {
+      env: {
+        HOME: '/home/t',
+        GIT_AUTHOR_EMAIL: 'reader@example.invalid',
+        GIT_AUTHOR_NAME: 'Reader',
+      },
+      runAgent,
+    });
+
+    const parsed = JSON.parse(out);
+    const recordText = read(parsed.record);
+    for (const text of [parsed.answer, parsed.output, recordText]) {
+      expect(text).toContain(url);
+      expect(text).toContain('reader@example.invalid');
+      expect(text).toContain('Reader');
+    }
+  });
+
+  test('should scrub every accepted credential value from the answer and the record', () => {
+    const file = path.join(root, 'dscc.env');
+    fs.writeFileSync(
+      file,
+      [
+        'ANTHROPIC_BASE_URL=https://us%40er:p%40ss@api.deepseek.com/anthropic?api_key=raw%2Fquery-key&access_token=raw%2Faccess-token',
+        'ANTHROPIC_AUTH_TOKEN=short-dscc',
+        'ANTHROPIC_API_KEY=api-key-literal',
+        'ANTHROPIC_CUSTOM_HEADERS="X-Api-Key: hdr-secret-42"',
+        '',
+      ].join('\n')
+    );
+    const leaked = [
+      'short-dscc',
+      'api-key-literal',
+      'hdr-secret-42',
+      'us%40er',
+      'us@er',
+      'p%40ss',
+      'p@ss',
+      'raw%2Fquery-key',
+      'raw/query-key',
+      'raw%2Faccess-token',
+      'raw/access-token',
+      'inherited-openai-key',
+    ];
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      stdout: `${leaked.join(' ')}\n`,
+      output: `${leaked.join(' ')}\n`,
+      durationMs: 1,
+    }));
+
+    const { out } = run(['ask', '--agent', 'dscc', '--json', 'hi'], {
+      env: { DSCC_PROFILE: file, OPENAI_API_KEY: 'inherited-openai-key' },
+      runAgent,
+    });
+
+    const parsed = JSON.parse(out);
+    const recordText = read(parsed.record);
+    for (const text of [parsed.answer, parsed.output, recordText]) {
+      for (const value of leaked) expect(text).not.toContain(value);
+      expect(text).toContain('[REDACTED]');
+    }
+  });
+
   test('should pass the agent exit code through, and exit 1 when it was stopped', () => {
     const failed = vi.fn(() => ({
       code: 3,

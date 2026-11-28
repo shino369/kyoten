@@ -269,6 +269,9 @@ export function reviewScope({
   const rawTracked = splitGitPaths(
     runGit(['diff', '--name-only', '--no-renames', '-z', since], repoDir)
   );
+  const rawUntracked = splitGitPaths(
+    runGit(['ls-files', '--others', '--exclude-standard', '-z'], repoDir)
+  );
   const protectedTracked = rawTracked.filter(isSecretFile);
   const eligibleTracked = rawTracked.filter((file) => !isSecretFile(file));
   const eligibleSet = new Set(eligibleTracked);
@@ -277,7 +280,10 @@ export function reviewScope({
       ? []
       : splitGitPaths(
           runGit(
-            diffArgs(['--name-only', '-M', '-z'], since, eligibleTracked),
+            diffArgs(['--name-only', '-M', '-z'], since, eligibleTracked, [
+              ...protectedTracked,
+              ...rawUntracked.filter(isSecretFile),
+            ]),
             repoDir
           )
         ).filter((file) => eligibleSet.has(file));
@@ -286,9 +292,7 @@ export function reviewScope({
   const files = new Set([
     ...trackedFiles,
     ...protectedTracked,
-    ...splitGitPaths(
-      runGit(['ls-files', '--others', '--exclude-standard', '-z'], repoDir)
-    ),
+    ...rawUntracked,
   ]);
   // tasks/ is this workspace's git-ignored task folder; another repository's
   // tasks/ is code like any other.
@@ -423,20 +427,19 @@ export function reviewPreflight({
     };
   }
   if (quality.reviewRounds > 0) {
-    const priorSnapshot = path.join(
-      taskDir,
-      'reviews',
-      `.snapshot-r${quality.reviewRounds}`
-    );
-    const priorFiles = fs.existsSync(priorSnapshot)
-      ? listSnapshotScope(priorSnapshot)
-      : [];
-    if (priorFiles.length > 0) {
+    const reviewsDir = path.join(taskDir, 'reviews');
+    const priorSnapshot = previousSnapshotDir(reviewsDir, quality.reviewRounds);
+    const priorFiles =
+      priorSnapshot === null
+        ? []
+        : listSnapshotScope(priorSnapshot, reviewsDir);
+    if (priorSnapshot !== null && priorFiles.length > 0) {
       const incremental = generateIncrementalDiff({
         repoDir: dir,
         snapshotDir: priorSnapshot,
         files: priorFiles,
         runGitStatus,
+        trustedReviewsDir: reviewsDir,
       });
       if (incremental !== null) {
         const digest = crypto
@@ -836,18 +839,37 @@ function realFileInside(root, full) {
 }
 
 /**
+ * Static pathspec exclusions for the credential locations AGENTS.md §1
+ * protects. Every git content query receives these beside the literal
+ * exclusions of the paths in scope.
+ */
+export const STATIC_PROTECTED_EXCLUDES = [
+  ':(exclude,glob)**/secrets/**',
+  ':(exclude,glob)**/.ssh/**',
+  ':(exclude,glob)**/.aws/**',
+  ':(exclude,glob)**/.gnupg/**',
+  ':(exclude,glob)**/*.pem',
+  ':(exclude,glob)**/*.key',
+  ':(exclude,glob)**/credentials.json',
+];
+
+/**
  * A `git diff` query over literal paths, never an external diff driver or a
- * textconv filter: review artifacts show the repository bytes, and protected
- * paths are filtered out before the call, so they never reach git.
+ * textconv filter: review artifacts show the repository bytes. Each allowed
+ * path is prefixed with `:(literal)`, so glob characters stay literal, and
+ * each protected path is an explicit `:(exclude,literal)` pathspec, so a
+ * file-to-directory transition (`config` -> `config/`) cannot select a
+ * protected descendant. `--literal-pathspecs` must not be passed: it disables
+ * the `:(exclude,...)` magic.
  *
  * @param {string[]} options diff subcommand options (e.g. `['--numstat', '-z']`)
  * @param {string} since
- * @param {string[]} paths eligible repo-relative POSIX paths
+ * @param {string[]} allowedPaths eligible repo-relative POSIX paths
+ * @param {string[]} [excludedPaths] protected repo-relative POSIX paths
  * @returns {string[]}
  */
-function diffArgs(options, since, paths) {
+function diffArgs(options, since, allowedPaths, excludedPaths = []) {
   return [
-    '--literal-pathspecs',
     '-c',
     'core.quotePath=false',
     'diff',
@@ -857,53 +879,222 @@ function diffArgs(options, since, paths) {
     '--no-color',
     since,
     '--',
-    ...paths,
+    ...allowedPaths.map((file) => `:(literal)${file}`),
+    ...excludedPaths.map((file) => `:(exclude,literal)${file}`),
+    ...STATIC_PROTECTED_EXCLUDES,
   ];
 }
 
 /**
- * The in-scope paths a git content query may receive, protected secret paths
- * dropped.
+ * Whether a raw-diff blob OID is unset (`000…0`) or absent.
  *
- * @param {Scope} scope
- * @returns {string[]}
+ * @param {string} oid
+ * @returns {boolean}
  */
-const eligiblePaths = (scope) =>
-  scope.files.filter((file) => !isSecretFile(file));
+const isZeroOid = (oid) => !oid || /^0+$/.test(oid);
 
 /**
- * The in-scope paths a git content query may receive: protected secret paths
- * are dropped before any `git diff` runs. A rename's old path is added when a
- * name-only listing (renames off) reports it and it is not protected, so
- * rename detection, stats, and patches agree; a rename with a protected side
- * is left out whole.
+ * @typedef {{ status: string, oldOid: string, newOid: string, path: string }} RawChange
+ * @typedef {{
+ *   untracked: Set<string>,
+ *   crossTargets: Map<string, string>,
+ *   crossRenames: Map<string, string>,
+ *   crossSources: Set<string>,
+ *   allowed: string[],
+ *   excluded: string[],
+ * }} GitSelection
+ */
+
+/**
+ * Arguments for the raw change inventory: every tracked change with the blob
+ * OIDs on both sides, without rename detection, so no similarity scan can read
+ * protected content.
  *
- * @param {string} repoDir
- * @param {Scope} scope
- * @param {RunGit} runGit
+ * @param {string} since
+ * @param {boolean} [cached] compare the index instead of the working tree
  * @returns {string[]}
  */
-function contentPaths(repoDir, scope, runGit) {
-  const paths = new Set(eligiblePaths(scope));
-  if (paths.size === 0 || scope.since === null) return [...paths].sort();
-  for (const name of splitGitPaths(
+function rawArgs(since, cached = false) {
+  return [
+    '-c',
+    'core.quotePath=false',
+    'diff',
+    ...(cached ? ['--cached'] : []),
+    '--raw',
+    '--no-abbrev',
+    '--no-renames',
+    '--no-ext-diff',
+    '--no-textconv',
+    '-z',
+    since,
+  ];
+}
+
+/**
+ * Parse `git diff --raw --no-abbrev --no-renames -z` output into changes.
+ * Null when the text is not the raw format (a simple mock, or a failed
+ * query), so the caller can fall back.
+ *
+ * @param {string | null} text
+ * @returns {RawChange[] | null}
+ */
+function parseRawChanges(text) {
+  if (text === null) return null;
+  if (text === '') return [];
+  if (!text.startsWith(':')) return null;
+  const tokens = text.split('\0');
+  /** @type {RawChange[]} */
+  const changes = [];
+  for (let i = 0; i + 1 < tokens.length; i += 2) {
+    const meta = tokens[i];
+    const file = tokens[i + 1];
+    if (!meta.startsWith(':')) return null;
+    const [, , oldOid, newOid, ...status] = meta.slice(1).split(' ');
+    if (!file || status.length === 0 || !status[0]) return null;
+    changes.push({ status: status[0][0], oldOid, newOid, path: file });
+  }
+  return changes;
+}
+
+/**
+ * Every tracked change since `since`, as raw records with the blob OIDs.
+ * Falls back to a name-only listing (no OIDs) for simple line-based unit-test
+ * mocks and tools that reject `--raw`; every path is then a modification.
+ *
+ * @param {string} repoDir
+ * @param {string} since
+ * @param {RunGit} runGit
+ * @returns {RawChange[]}
+ */
+function trackedChanges(repoDir, since, runGit) {
+  const raw = parseRawChanges(runGit(rawArgs(since), repoDir));
+  if (raw !== null) return raw;
+  return splitGitPaths(
     runGit(
       [
-        '--literal-pathspecs',
         '-c',
         'core.quotePath=false',
         'diff',
         '--name-only',
         '--no-renames',
         '-z',
-        scope.since,
+        since,
       ],
       repoDir
     )
-  )) {
-    if (!isSecretFile(name)) paths.add(name);
+  ).map((file) => ({
+    status: 'M',
+    oldOid: '',
+    newOid: '',
+    path: file,
+  }));
+}
+
+/**
+ * How a git scope maps onto git content queries: the paths a content query may
+ * receive (`allowed`), the ones it must never receive (`excluded`, including
+ * every protected path and both sides of a cross-boundary rename), which paths
+ * are confirmed untracked (the only ones a review may render as new files),
+ * and the cross-boundary renames themselves.
+ *
+ * A rename that crosses the protected boundary is paired by exact blob OID
+ * before Git's similarity scan: protected -> ordinary marks the ordinary
+ * destination a protected target, and ordinary -> protected pairs both sides.
+ * Pairing is conservative: any match marks the non-protected side, so an
+ * ambiguous OID can never leak it.
+ *
+ * @param {{ repoDir: string, scope: Scope, runGit: RunGit }} options
+ * @returns {GitSelection}
+ */
+function selectGitChanges({ repoDir, scope, runGit }) {
+  const since = /** @type {string} */ (scope.since);
+  const raw = trackedChanges(repoDir, since, runGit);
+  const untrackedList = splitGitPaths(
+    runGit(['ls-files', '--others', '--exclude-standard', '-z'], repoDir)
+  );
+  const untracked = new Set(untrackedList);
+  const protectedPaths = new Set([
+    ...scope.files.filter(isSecretFile),
+    ...raw.filter((change) => isSecretFile(change.path)).map((c) => c.path),
+    ...untrackedList.filter(isSecretFile),
+  ]);
+  /** @type {RawChange[] | null} */
+  let staged = null;
+  /**
+   * The blob OID on a change's destination side. A staged rename always has
+   * an exact OID (the index records it); a working-tree edit alone may zero
+   * it, so the staged raw diff supplies the index OID when available.
+   *
+   * @param {RawChange} change
+   * @returns {string}
+   */
+  const oidOf = (change) => {
+    if (change.status !== 'A' || !isZeroOid(change.newOid)) {
+      return change.newOid;
+    }
+    staged ??= parseRawChanges(runGit(rawArgs(since, true), repoDir)) ?? [];
+    return staged.find((entry) => entry.path === change.path)?.newOid ?? '';
+  };
+  /** @type {Map<string, string>} */
+  const crossTargets = new Map();
+  /** @type {Map<string, string>} */
+  const crossRenames = new Map();
+  /** @type {Set<string>} */
+  const crossSources = new Set();
+  const deletedProtected = raw.filter(
+    (change) =>
+      change.status === 'D' &&
+      !isZeroOid(change.oldOid) &&
+      isSecretFile(change.path)
+  );
+  for (const added of raw) {
+    if (added.status !== 'A' || isSecretFile(added.path)) continue;
+    const oid = oidOf(added);
+    if (isZeroOid(oid)) continue;
+    const sources = deletedProtected
+      .filter((change) => change.oldOid === oid)
+      .map((change) => change.path)
+      .sort();
+    if (sources.length === 0) continue;
+    crossTargets.set(added.path, sources[0]);
+    for (const source of sources) crossSources.add(source);
   }
-  return [...paths].sort();
+  const addedProtected = raw.filter(
+    (change) => change.status === 'A' && isSecretFile(change.path)
+  );
+  for (const deleted of raw) {
+    if (
+      deleted.status !== 'D' ||
+      isZeroOid(deleted.oldOid) ||
+      isSecretFile(deleted.path)
+    ) {
+      continue;
+    }
+    const targets = addedProtected
+      .filter((change) => oidOf(change) === deleted.oldOid)
+      .map((change) => change.path)
+      .sort();
+    if (targets.length === 0) continue;
+    crossSources.add(deleted.path);
+    for (const target of targets) crossRenames.set(target, deleted.path);
+  }
+  const allowedSet = new Set(
+    [...scope.files, ...raw.map((change) => change.path)].filter(
+      (file) => !isSecretFile(file)
+    )
+  );
+  for (const source of crossSources) allowedSet.delete(source);
+  for (const target of crossTargets.keys()) allowedSet.delete(target);
+  return {
+    untracked,
+    crossTargets,
+    crossRenames,
+    crossSources,
+    allowed: [...allowedSet].sort(),
+    excluded: [
+      ...new Set([...protectedPaths, ...crossSources, ...crossTargets.keys()]),
+    ].sort(),
+  };
 }
 
 /**
@@ -960,8 +1151,9 @@ const statLabel = (stat) =>
 /**
  * Added and deleted line counts for the files in scope, for the brief. A git
  * scope uses `git diff --numstat -z`; untracked files are counted from disk and
- * flagged `untracked` (protected secret paths are never read). A task-folder
- * scope has no base and returns nothing.
+ * flagged `untracked`. Protected paths and both sides of a cross-boundary
+ * rename are never read or counted. A task-folder scope has no base and
+ * returns nothing.
  *
  * @param {{ repoDir: string, scope: Scope, runGit?: RunGit }} options
  * @returns {Map<string, FileStat>}
@@ -971,19 +1163,28 @@ export function diffStats({ repoDir, scope, runGit = defaultRunGit }) {
   const stats = new Map();
   if (scope.base === null || scope.since === null) return stats;
   const inScope = new Set(scope.files);
-  const paths =
-    eligiblePaths(scope).length > 0 ? contentPaths(repoDir, scope, runGit) : [];
-  if (paths.length > 0) {
+  const selection = selectGitChanges({ repoDir, scope, runGit });
+  const excluded = new Set(selection.excluded);
+  if (selection.allowed.length > 0) {
     for (const [file, stat] of parseNumstat(
-      runGit(diffArgs(['--numstat', '-M', '-z'], scope.since, paths), repoDir)
+      runGit(
+        diffArgs(
+          ['--numstat', '-M', '-z'],
+          scope.since,
+          selection.allowed,
+          selection.excluded
+        ),
+        repoDir
+      )
     )) {
-      if (inScope.has(file) && !isSecretFile(file)) stats.set(file, stat);
+      if (inScope.has(file) && !excluded.has(file) && !isSecretFile(file)) {
+        stats.set(file, stat);
+      }
     }
   }
-  for (const file of splitGitPaths(
-    runGit(['ls-files', '--others', '--exclude-standard', '-z'], repoDir)
-  )) {
+  for (const file of selection.untracked) {
     if (!inScope.has(file) || stats.has(file)) continue;
+    if (excluded.has(file) || isSecretFile(file)) continue;
     const entry = inspectWorkingFile(repoDir, file);
     if (entry.kind !== 'file') continue;
     let buffer;
@@ -1026,17 +1227,27 @@ export function generateReviewDiff({
   if (scope.base === null || scope.since === null || scope.files.length === 0) {
     return null;
   }
-  const eligible = eligiblePaths(scope);
-  const paths = eligible.length > 0 ? contentPaths(repoDir, scope, runGit) : [];
-  const { tracked, renames } =
-    paths.length === 0
-      ? { tracked: new Set(), renames: new Map() }
-      : parseNameStatus(
-          runGit(
-            diffArgs(['--name-status', '-M', '-z'], scope.since, paths),
-            repoDir
-          )
+  const selection = selectGitChanges({ repoDir, scope, runGit });
+  const statusText =
+    selection.allowed.length === 0
+      ? ''
+      : runGit(
+          diffArgs(
+            ['--name-status', '-M', '-z'],
+            scope.since,
+            selection.allowed,
+            selection.excluded
+          ),
+          repoDir
         );
+  // null is a failed bulk query, '' an empty result: only a path confirmed by
+  // `ls-files --others` may be synthesized, and a failed query is recovered
+  // per file (or reported) instead of guessing trackability.
+  const statusFailed = statusText === null;
+  const { tracked, renames } = statusFailed
+    ? { tracked: new Set(), renames: new Map() }
+    : parseNameStatus(statusText);
+  const renamedFrom = new Set(renames.values());
   /** @type {string[]} */
   const chunks = [];
   /** @type {string[]} */
@@ -1045,7 +1256,18 @@ export function generateReviewDiff({
   const unavailable = [];
   let total = 0;
   for (const file of [...scope.files].sort()) {
-    const oldPath = renames.get(file);
+    // A cross-boundary rename is one conservative chunk naming both sides;
+    // neither side ever reaches a git content query.
+    if (selection.crossSources.has(file)) continue;
+    const crossed = selection.crossTargets.get(file);
+    if (crossed !== undefined) {
+      chunks.push(
+        `diff --git a/${crossed} b/${file}\n... [omitted: protected secret path]\n`
+      );
+      total += chunks.at(-1)?.length ?? 0;
+      continue;
+    }
+    const oldPath = renames.get(file) ?? selection.crossRenames.get(file);
     if (isSecretFile(file) || (oldPath && isSecretFile(oldPath))) {
       chunks.push(
         `diff --git a/${oldPath ?? file} b/${file}\n... [omitted: protected secret path]\n`
@@ -1053,23 +1275,11 @@ export function generateReviewDiff({
       total += chunks.at(-1)?.length ?? 0;
       continue;
     }
+    // The old side of a rename is shown with its destination's patch.
+    if (renamedFrom.has(file)) continue;
     /** @type {string | null} */
     let text = null;
-    if (tracked.has(file)) {
-      const diff = runGit(
-        diffArgs(
-          ['-M', `--unified=${DIFF_CONTEXT_LINES}`],
-          scope.since,
-          oldPath ? [oldPath, file] : [file]
-        ),
-        repoDir
-      );
-      if (diff === null) {
-        unavailable.push(file);
-        continue;
-      }
-      if (diff) text = `${diff}\n`;
-    } else {
+    if (selection.untracked.has(file)) {
       const entry = inspectWorkingFile(repoDir, file);
       if (entry.kind === 'secret') {
         text = `diff --git a/${file} b/${file}\n... [omitted: protected secret path]\n`;
@@ -1082,6 +1292,51 @@ export function generateReviewDiff({
           text = null;
         }
       }
+    } else {
+      let isTracked = tracked.has(file);
+      let diffOld = oldPath;
+      if (!isTracked) {
+        if (!statusFailed) {
+          // In scope but neither tracked nor confirmed untracked: report it
+          // rather than inventing a new file.
+          unavailable.push(file);
+          continue;
+        }
+        const single = runGit(
+          diffArgs(
+            ['--name-status', '-z'],
+            scope.since,
+            [file],
+            selection.excluded
+          ),
+          repoDir
+        );
+        if (single === null) {
+          unavailable.push(file);
+          continue;
+        }
+        const recovered = parseNameStatus(single);
+        if (!recovered.tracked.has(file)) {
+          unavailable.push(file);
+          continue;
+        }
+        isTracked = true;
+        diffOld = recovered.renames.get(file) ?? diffOld;
+      }
+      const diff = runGit(
+        diffArgs(
+          ['-M', `--unified=${DIFF_CONTEXT_LINES}`],
+          scope.since,
+          diffOld ? [diffOld, file] : [file],
+          selection.excluded
+        ),
+        repoDir
+      );
+      if (diff === null) {
+        unavailable.push(file);
+        continue;
+      }
+      if (diff) text = `${diff}\n`;
     }
     if (text === null) continue;
     text = capFileDiff(redactSecrets(text), file, maxFileBytes);
@@ -1128,8 +1383,72 @@ const SNAPSHOT_SCOPE_FILE = '.snapshot-scope.json';
 
 /**
  * @typedef {{ version: number, scope: string[], skipped: string[] }} SnapshotManifest
- * @typedef {{ legacy: boolean, manifest: SnapshotManifest | null, filesRoot: string }} SnapshotLayout
+ * @typedef {{ legacy: boolean, manifest: SnapshotManifest | null, filesRoot: string, readable: boolean }} SnapshotLayout
  */
+
+/** New snapshots keep their own versioned directory name. */
+const SNAPSHOT_V2_PREFIX = '.snapshot-v2-r';
+/** Only this name is a legacy (pre-manifest) snapshot; never a v2 layout. */
+const SNAPSHOT_LEGACY_RE = /^\.snapshot-r\d+$/;
+
+/**
+ * Whether `dir` is a legacy snapshot folder. Legacy snapshots mirror the
+ * reviewed files at the top level, so a root `manifest.json` inside one is an
+ * ordinary reviewed file, never snapshot metadata.
+ *
+ * @param {string} dir
+ * @returns {boolean}
+ */
+export function isLegacySnapshotDir(dir) {
+  return SNAPSHOT_LEGACY_RE.test(path.basename(dir));
+}
+
+/**
+ * The directory new snapshots for `round` are saved in, beside the legacy
+ * `.snapshot-r<N>` names older rounds used.
+ *
+ * @param {string} reviewsDir
+ * @param {number} round
+ * @returns {string}
+ */
+export function snapshotDirFor(reviewsDir, round) {
+  return path.join(reviewsDir, `${SNAPSHOT_V2_PREFIX}${round}`);
+}
+
+/**
+ * The snapshot directory of an earlier round: the versioned one if it exists,
+ * else the legacy one, else null.
+ *
+ * @param {string} reviewsDir
+ * @param {number} round
+ * @returns {string | null}
+ */
+export function previousSnapshotDir(reviewsDir, round) {
+  const current = snapshotDirFor(reviewsDir, round);
+  if (fs.existsSync(current)) return current;
+  const legacy = path.join(reviewsDir, `.snapshot-r${round}`);
+  return fs.existsSync(legacy) ? legacy : null;
+}
+
+/**
+ * Whether `full` is a real directory (never a symlink), and, with `root`,
+ * resolves strictly inside it.
+ *
+ * @param {string} full
+ * @param {string} [root]
+ * @returns {boolean}
+ */
+function realDirectory(full, root) {
+  try {
+    const st = fs.lstatSync(full);
+    if (st.isSymbolicLink() || !st.isDirectory()) return false;
+    if (root === undefined) return true;
+    const rel = path.relative(fs.realpathSync(root), fs.realpathSync(full));
+    return Boolean(rel) && !isOutsideRel(rel) && !path.isAbsolute(rel);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * A snapshot path exactly as recorded: relative, POSIX-separated, already
@@ -1146,53 +1465,84 @@ function normalizedRelPath(value) {
 }
 
 /**
- * How a snapshot folder stores its data: a versioned `manifest.json` plus
- * `files/`, or the legacy top-level layout when `manifest.json` is absent.
- * A manifest that exists but is unreadable or invalid yields no files; it is
- * never mistaken for the legacy layout, whose paths would then be wrong.
+ * How a snapshot folder stores its data. `.snapshot-r<N>` is always the
+ * legacy top-level layout, where a root `manifest.json` is an ordinary
+ * reviewed file. Every other folder is a v2 layout: it needs a valid
+ * `manifest.json` (every listed path normalized and contained) and a real,
+ * contained `files/` directory. A folder whose root or `files/` is a symlink,
+ * that lives outside `trustedReviewsDir`, or whose manifest is missing or
+ * invalid is unreadable: no metadata or file contents are used from it.
  *
  * @param {string} dir
+ * @param {string} [trustedReviewsDir]
  * @returns {SnapshotLayout}
  */
-function snapshotLayout(dir) {
-  const manifestFile = resolveInside(dir, SNAPSHOT_MANIFEST_FILE);
-  const present = manifestFile !== null && realFileInside(dir, manifestFile);
-  if (!present) {
-    return { legacy: true, manifest: null, filesRoot: dir };
-  }
+function snapshotLayout(dir, trustedReviewsDir) {
   const filesRoot = path.join(dir, SNAPSHOT_FILES_DIR);
+  /** @returns {SnapshotLayout} */
+  const closed = () => ({
+    legacy: false,
+    manifest: null,
+    filesRoot,
+    readable: false,
+  });
+  if (!realDirectory(dir)) return closed();
+  if (trustedReviewsDir !== undefined) {
+    if (!realDirectory(trustedReviewsDir)) return closed();
+    try {
+      const rel = path.relative(
+        fs.realpathSync(trustedReviewsDir),
+        fs.realpathSync(dir)
+      );
+      if (!rel || isOutsideRel(rel) || path.isAbsolute(rel)) return closed();
+    } catch {
+      return closed();
+    }
+  }
+  if (isLegacySnapshotDir(dir)) {
+    return { legacy: true, manifest: null, filesRoot: dir, readable: true };
+  }
+  let filesPresent = false;
+  try {
+    fs.lstatSync(filesRoot);
+    filesPresent = true;
+  } catch {
+    // Absent: nothing can be read from it, but metadata still reads.
+  }
+  if (filesPresent && !realDirectory(filesRoot, dir)) return closed();
+  const manifestFile = resolveInside(dir, SNAPSHOT_MANIFEST_FILE);
+  if (manifestFile === null || !realFileInside(dir, manifestFile)) {
+    return closed();
+  }
+  /** @param {unknown} value */
+  const contained = (value) => {
+    const file = normalizedRelPath(value);
+    return file !== null && resolveInside(filesRoot, file) !== null;
+  };
   /** @type {SnapshotManifest | null} */
   let manifest = null;
   try {
-    const parsed = JSON.parse(fs.readFileSync(String(manifestFile), 'utf-8'));
+    const parsed = JSON.parse(fs.readFileSync(manifestFile, 'utf-8'));
     if (
       typeof parsed === 'object' &&
       parsed !== null &&
       parsed.version === SNAPSHOT_MANIFEST_VERSION &&
       Array.isArray(parsed.scope) &&
-      Array.isArray(parsed.skipped)
+      Array.isArray(parsed.skipped) &&
+      parsed.scope.every(contained) &&
+      parsed.skipped.every(contained)
     ) {
-      /** @param {unknown} value */
-      const contained = (value) => {
-        const file = normalizedRelPath(value);
-        return file !== null && resolveInside(filesRoot, file) !== null
-          ? file
-          : null;
-      };
-      /** @param {unknown[]} list */
-      const paths = (list) => [
-        ...new Set(list.map(contained).filter((file) => file !== null)),
-      ];
       manifest = {
         version: SNAPSHOT_MANIFEST_VERSION,
-        scope: paths(parsed.scope),
-        skipped: paths(parsed.skipped),
+        scope: parsed.scope,
+        skipped: parsed.skipped,
       };
     }
   } catch {
     manifest = null;
   }
-  return { legacy: false, manifest, filesRoot };
+  if (manifest === null) return closed();
+  return { legacy: false, manifest, filesRoot, readable: true };
 }
 
 /**
@@ -1250,6 +1600,11 @@ function readLegacyList(dir, name) {
  * @returns {number}
  */
 export function saveSnapshot({ repoDir, dir, files }) {
+  if (isLegacySnapshotDir(dir)) {
+    throw new Error(
+      `${path.basename(dir)} is a legacy snapshot directory; new snapshots need the versioned name.\nFix: save under ${SNAPSHOT_V2_PREFIX}<round> (snapshotDirFor)`
+    );
+  }
   fs.rmSync(dir, { recursive: true, force: true });
   const filesRoot = path.join(dir, SNAPSHOT_FILES_DIR);
   let saved = 0;
@@ -1317,10 +1672,12 @@ export function saveSnapshot({ repoDir, dir, files }) {
  * snapshot, as sorted POSIX paths.
  *
  * @param {string} dir
+ * @param {string} [trustedReviewsDir] the snapshot must live strictly inside it
  * @returns {string[]}
  */
-export function listSnapshotSkipped(dir) {
-  const layout = snapshotLayout(dir);
+export function listSnapshotSkipped(dir, trustedReviewsDir) {
+  const layout = snapshotLayout(dir, trustedReviewsDir);
+  if (!layout.readable) return [];
   if (layout.manifest) return [...new Set(layout.manifest.skipped)].sort();
   return layout.legacy ? readLegacyList(dir, SNAPSHOT_SKIPPED_FILE) : [];
 }
@@ -1328,15 +1685,16 @@ export function listSnapshotSkipped(dir) {
 /**
  * The complete path inventory recorded for a snapshot round (saved files,
  * skipped files, and files absent from the working tree at snapshot time), as
- * sorted POSIX paths. Legacy snapshots (no `manifest.json`) fall back to the
- * union of `.snapshot-scope.json`, the mirrored files, and
- * `.snapshot-skipped.json`.
+ * sorted POSIX paths. Legacy snapshots (no manifest) fall back to the union of
+ * `.snapshot-scope.json`, the mirrored files, and `.snapshot-skipped.json`.
  *
  * @param {string} dir
+ * @param {string} [trustedReviewsDir] the snapshot must live strictly inside it
  * @returns {string[]}
  */
-export function listSnapshotScope(dir) {
-  const layout = snapshotLayout(dir);
+export function listSnapshotScope(dir, trustedReviewsDir) {
+  const layout = snapshotLayout(dir, trustedReviewsDir);
+  if (!layout.readable) return [];
   if (layout.manifest) {
     return [
       ...new Set([...layout.manifest.scope, ...layout.manifest.skipped]),
@@ -1346,7 +1704,7 @@ export function listSnapshotScope(dir) {
   return [
     ...new Set([
       ...readLegacyList(dir, SNAPSHOT_SCOPE_FILE),
-      ...listSnapshotFiles(dir),
+      ...listSnapshotFiles(dir, trustedReviewsDir),
       ...readLegacyList(dir, SNAPSHOT_SKIPPED_FILE),
     ]),
   ].sort();
@@ -1356,10 +1714,12 @@ export function listSnapshotScope(dir) {
  * The files a saved snapshot holds, as sorted POSIX paths.
  *
  * @param {string} dir
+ * @param {string} [trustedReviewsDir] the snapshot must live strictly inside it
  * @returns {string[]}
  */
-export function listSnapshotFiles(dir) {
-  const layout = snapshotLayout(dir);
+export function listSnapshotFiles(dir, trustedReviewsDir) {
+  const layout = snapshotLayout(dir, trustedReviewsDir);
+  if (!layout.readable) return [];
   if (layout.manifest) {
     const manifest = layout.manifest;
     return manifest.scope
@@ -1414,9 +1774,10 @@ function rewriteNoIndexHeaders(patch, file) {
  * current working tree, as a unified diff with repo-relative paths. `files`
  * should be the union of the current scope and `listSnapshotScope(snapshotDir)`,
  * so a file that appeared, disappeared, or was restored still shows. Null when
- * nothing changed.
+ * nothing changed, or when the snapshot folder fails validation (a symlinked
+ * root or `files/`, an untrusted location, or a bad manifest).
  *
- * @param {{ repoDir: string, snapshotDir: string, files: string[], runGitStatus?: RunGitStatus, maxFileBytes?: number, maxTotalBytes?: number }} options
+ * @param {{ repoDir: string, snapshotDir: string, files: string[], runGitStatus?: RunGitStatus, maxFileBytes?: number, maxTotalBytes?: number, trustedReviewsDir?: string }} options
  * @returns {string | null}
  */
 export function generateIncrementalDiff({
@@ -1426,9 +1787,13 @@ export function generateIncrementalDiff({
   runGitStatus = defaultRunGitStatus,
   maxFileBytes = MAX_DIFF_FILE_BYTES,
   maxTotalBytes = MAX_DIFF_TOTAL_BYTES,
+  trustedReviewsDir,
 }) {
-  const layout = snapshotLayout(snapshotDir);
-  const skippedInSnapshot = new Set(listSnapshotSkipped(snapshotDir));
+  const layout = snapshotLayout(snapshotDir, trustedReviewsDir);
+  if (!layout.readable) return null;
+  const skippedInSnapshot = new Set(
+    listSnapshotSkipped(snapshotDir, trustedReviewsDir)
+  );
   /** @type {string[]} */
   const chunks = [];
   /** @type {string[]} */

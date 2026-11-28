@@ -1079,7 +1079,7 @@ describe('scopeFingerprint round-2 eligibility (real git)', () => {
     expect(
       saveSnapshot({
         repoDir: repo,
-        dir: path.join(taskDir, 'reviews', '.snapshot-r1'),
+        dir: path.join(taskDir, 'reviews', '.snapshot-v2-r1'),
         files: ['only-huge.json'],
       })
     ).toBe(0);
@@ -1099,7 +1099,7 @@ describe('scopeFingerprint round-2 eligibility (real git)', () => {
     fs.rmSync(path.join(repo, 'gone.js'));
     saveSnapshot({
       repoDir: repo,
-      dir: path.join(taskDir, 'reviews', '.snapshot-r1'),
+      dir: path.join(taskDir, 'reviews', '.snapshot-v2-r1'),
       files: ['gone.js'],
     });
     fs.writeFileSync(path.join(repo, 'gone.js'), 'original line\n');

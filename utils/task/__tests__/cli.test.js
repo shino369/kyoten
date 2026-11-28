@@ -1380,7 +1380,7 @@ describe('review', () => {
         path.join(
           taskDir(),
           'reviews',
-          '.snapshot-r1',
+          '.snapshot-v2-r1',
           'files',
           'utils',
           'x.js'

@@ -212,8 +212,24 @@ export function answerOf(result) {
   return result.stdout.trim() ? result.stdout : result.output;
 }
 
-const PROFILE_SECRET_NAME_RE = /AUTH|HEADERS/i;
-const URL_SECRET_PARAM_RE = /(?:token|secret|password|key|auth)/i;
+/** Profile fields the launcher accepts as credentials, whatever their value. */
+const PROFILE_CREDENTIAL_KEYS = new Set([
+  ...TOKEN_KEYS,
+  'ANTHROPIC_CUSTOM_HEADERS',
+]);
+/**
+ * Credential variable names in an inherited environment, token-bounded so
+ * `GIT_AUTHOR_EMAIL` / `GIT_AUTHOR_NAME` (which merely contain `AUTH`) never
+ * match.
+ */
+const ENV_SECRET_NAME_RE =
+  /(?:^|[_-])(?:TOKEN|SECRET|PASSWORD|PASSWD|PWD|API_?KEY|ACCESS_KEY|PRIVATE_KEY|AUTH_TOKEN|AUTH_KEY|AUTH_HEADER|CUSTOM_HEADERS|AUTHORIZATION|CREDENTIALS?)(?:$|[_-])/i;
+/**
+ * Explicit full-name credential query parameters; anchored, so `invite`,
+ * `author`, `keyboard`, or `public_key_id` never match.
+ */
+const URL_SECRET_PARAM_RE =
+  /^(?:api[_-]?key|api[_-]?token|access[_-]?token|auth[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|token|secret|client[_-]?secret|password|passwd|pwd|key|auth|authorization|sig|signature|credentials?)$/i;
 const HEADER_SCHEME_RE = /^(?:Bearer|Basic|Token)\s+(\S+)$/i;
 
 /**
@@ -243,6 +259,7 @@ function addSecretValue(values, raw, minLength = 1) {
 /**
  * Extract header values and scheme tokens from a custom-headers env value
  * (e.g. `ANTHROPIC_CUSTOM_HEADERS="X-Api-Key: secret\nAuthorization: Basic …"`).
+ * A configured headers field is trusted whole, so short values count too.
  *
  * @param {Set<string>} values
  * @param {string} raw
@@ -256,9 +273,9 @@ function addHeaderSecrets(values, raw) {
     if (colon === -1) continue;
     const headerValue = line.slice(colon + 1).trim();
     if (!headerValue) continue;
-    addSecretValue(values, headerValue, 4);
+    addSecretValue(values, headerValue);
     const scheme = HEADER_SCHEME_RE.exec(headerValue)?.[1];
-    if (scheme) addSecretValue(values, scheme, 4);
+    if (scheme) addSecretValue(values, scheme);
   }
 }
 
@@ -327,7 +344,9 @@ function addUrlSecrets(values, raw) {
 
 /**
  * Literal secret values from a dscc profile (`set`), longest first so
- * scrubbing replaces full tokens before any substring.
+ * scrubbing replaces full tokens before any substring. A credential field the
+ * launcher accepts is trusted whole (no minimum length); other profile values
+ * only contribute URL userinfo and explicitly named query credentials.
  *
  * @param {Record<string, string>} set
  * @returns {string[]}
@@ -338,9 +357,9 @@ export function profileSecrets(set) {
   for (const [key, value] of Object.entries(set)) {
     if (!value) continue;
     if (
-      TOKEN_KEYS.includes(key) ||
+      PROFILE_CREDENTIAL_KEYS.has(key) ||
       isSecretKey(key) ||
-      PROFILE_SECRET_NAME_RE.test(key)
+      ENV_SECRET_NAME_RE.test(key)
     ) {
       addSecretValue(values, value);
       if (/HEADERS/i.test(key)) addHeaderSecrets(values, value);
@@ -353,7 +372,8 @@ export function profileSecrets(set) {
 /**
  * Literal secret values from a child process environment (e.g. inherited API
  * keys), requiring at least 8 characters so short flags like `1`/`true` never
- * corrupt normal output.
+ * corrupt normal output. Only explicitly named credential variables count:
+ * `GIT_AUTHOR_EMAIL` is not one.
  *
  * @param {NodeJS.ProcessEnv} env
  * @returns {string[]}
@@ -363,7 +383,7 @@ function envSecrets(env) {
   const values = new Set();
   for (const [key, value] of Object.entries(env)) {
     if (!value) continue;
-    if (isSecretKey(key) || PROFILE_SECRET_NAME_RE.test(key)) {
+    if (ENV_SECRET_NAME_RE.test(key)) {
       addSecretValue(values, value, 8);
       if (/HEADERS/i.test(key)) addHeaderSecrets(values, value);
     }
