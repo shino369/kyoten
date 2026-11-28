@@ -877,8 +877,15 @@ describe('consolidate', () => {
 });
 
 describe('consolidation policy and sides', () => {
-  test('should require consent for a note rewritten by an unaudited legacy consolidation', () => {
+  const disableAgy = () =>
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, agy: false },
+    });
+
+  test('should report unknown provenance for a note rewritten by an unaudited legacy consolidation when off', () => {
     const { user } = seed('agy');
+    disableAgy();
     updateNote(
       dir,
       user.id,
@@ -898,26 +905,31 @@ describe('consolidation policy and sides', () => {
       deps({ runAgent, env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1' } })
     );
 
-    expect(run).toMatchObject({ status: 'deferred', foreign: ['unknown'] });
+    expect(run).toMatchObject({
+      status: 'deferred',
+      policy: 'disabled',
+      foreign: ['unknown'],
+    });
     expect(runAgent).not.toHaveBeenCalled();
   });
 
-  test('should recognize DSH-written notes in a legacy DSCC extraction journal', () => {
+  test('should recognize DSH-written notes in a legacy DSCC extraction journal when dscc is off', () => {
     seed('dscc', 'dsh');
-    writeConfig(dir, {
-      ...DEFAULT_CONFIG,
-      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, dscc: true },
-    });
     const runAgent = agentReturning({ profile: [], ops: [] });
 
     const run = consolidate(deps({ runAgent, env: { KYOTEN_AGENT: 'dscc' } }));
 
-    expect(run).toMatchObject({ status: 'deferred', foreign: ['normal'] });
+    expect(run).toMatchObject({
+      status: 'deferred',
+      policy: 'disabled',
+      foreign: ['normal'],
+    });
     expect(runAgent).not.toHaveBeenCalled();
   });
 
   test('should ignore foreign extraction runs that contributed nothing to the prompt', () => {
     seed('agy');
+    disableAgy();
     appendJournal(dir, { status: 'applied', side: 'normal', changes: [] });
     const runAgent = agentReturning({ profile: [], ops: [] });
 
@@ -925,12 +937,14 @@ describe('consolidation policy and sides', () => {
       deps({ runAgent, env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1' } })
     );
 
-    expect(run.status).toBe('consolidated');
-    expect(runAgent).toHaveBeenCalledTimes(1);
+    expect(run).toMatchObject({ status: 'deferred', policy: 'disabled' });
+    expect(run.foreign).toBeUndefined();
+    expect(runAgent).not.toHaveBeenCalled();
   });
 
-  test('should require consent for manual notes after an empty same-side extraction', () => {
+  test('should report unknown provenance for manual notes after an empty same-side extraction when off', () => {
     seed();
+    disableAgy();
     appendJournal(dir, {
       at: NOW.toISOString(),
       status: 'applied',
@@ -944,7 +958,11 @@ describe('consolidation policy and sides', () => {
       deps({ runAgent, env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1' } })
     );
 
-    expect(run).toMatchObject({ status: 'deferred', foreign: ['unknown'] });
+    expect(run).toMatchObject({
+      status: 'deferred',
+      policy: 'disabled',
+      foreign: ['unknown'],
+    });
     expect(runAgent).not.toHaveBeenCalled();
   });
 
@@ -956,8 +974,9 @@ describe('consolidation policy and sides', () => {
     expect(readJournal(dir)).toEqual([]);
   });
 
-  test('should require consent after a same-side note is manually edited', () => {
+  test('should report unknown provenance after a same-side note is manually edited when off', () => {
     const { user } = seed('agy');
+    disableAgy();
     updateNote(
       dir,
       user.id,
@@ -970,12 +989,17 @@ describe('consolidation policy and sides', () => {
       deps({ runAgent, env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1' } })
     );
 
-    expect(run).toMatchObject({ status: 'deferred', foreign: ['unknown'] });
+    expect(run).toMatchObject({
+      status: 'deferred',
+      policy: 'disabled',
+      foreign: ['unknown'],
+    });
     expect(runAgent).not.toHaveBeenCalled();
   });
 
-  test('should keep consent per run after consolidating an unknown note into a known note', () => {
+  test('should preserve foreign provenance after consolidating an unknown note into a known note when off', () => {
     const { user } = seed('agy');
+    disableAgy();
     const unknown = add({
       scope: 'user',
       type: 'preference',
@@ -1007,7 +1031,11 @@ describe('consolidation policy and sides', () => {
     expect(
       loadNotes(dir).notes.find(({ id }) => id === unknown.id)?.status
     ).toBe('deleted');
-    expect(next).toMatchObject({ status: 'deferred', foreign: ['unknown'] });
+    expect(next).toMatchObject({
+      status: 'deferred',
+      policy: 'disabled',
+      foreign: ['unknown'],
+    });
     expect(nextAgent).not.toHaveBeenCalled();
   });
 
@@ -1052,7 +1080,7 @@ describe('consolidation policy and sides', () => {
     expect(runAgent).toHaveBeenCalledTimes(1);
   });
 
-  test('should require cross-side consent even when dscc consolidation is enabled', () => {
+  test('should consolidate mixed notes on dscc once opted in', () => {
     seed('normal');
     writeConfig(dir, {
       ...DEFAULT_CONFIG,
@@ -1063,14 +1091,15 @@ describe('consolidation policy and sides', () => {
     const run = consolidate(deps({ runAgent, env: { KYOTEN_AGENT: 'dscc' } }));
 
     expect(run).toMatchObject({
-      status: 'deferred',
+      status: 'consolidated',
       side: 'dscc',
-      foreign: ['normal'],
+      crossSide: ['normal'],
+      crossSideAuto: true,
     });
-    expect(runAgent).not.toHaveBeenCalled();
+    expect(runAgent).toHaveBeenCalledTimes(1);
   });
 
-  test('should require cross-side consent from agy by default', () => {
+  test('should consolidate mixed notes on agy by default, and defer when agy is disabled', () => {
     seed('normal');
     const session = 'dscc-1';
     const note = add({
@@ -1095,10 +1124,34 @@ describe('consolidation policy and sides', () => {
 
     const run = consolidate(deps({ runAgent, env: agyEnv }));
     expect(run).toMatchObject({
+      status: 'consolidated',
+      side: 'agy',
+      crossSide: ['normal', 'dscc'],
+      crossSideAuto: true,
+    });
+    expect(runAgent).toHaveBeenCalledTimes(1);
+
+    disableAgy();
+    const deferred = consolidate(deps({ runAgent, env: agyEnv }));
+    expect(deferred).toMatchObject({
       status: 'deferred',
       side: 'agy',
-      foreign: ['normal', 'dscc'],
+      policy: 'disabled',
+      policyAgent: 'agy',
     });
+    expect(runAgent).toHaveBeenCalledTimes(1);
+  });
+
+  test('should preview a dry run even when auto-consolidation is off', () => {
+    seed('dscc');
+    const runAgent = agentReturning({ profile: [], ops: [] });
+
+    const run = consolidate(
+      deps({ dryRun: true, runAgent, env: { KYOTEN_AGENT: 'dscc' } })
+    );
+
+    expect(run).toMatchObject({ status: 'dry-run', side: 'dscc' });
+    expect(run.crossSide).toBeUndefined();
     expect(runAgent).not.toHaveBeenCalled();
   });
 
@@ -1343,12 +1396,13 @@ describe('consolidation policy and sides', () => {
       side: 'normal',
     });
 
-    // dscc launched inside a codex shell must stay on dscc and respect autoConsolidate.dscc=false
+    // dscc launched inside a codex shell must stay on dscc even when both session markers are present
     const nestedDscc = consolidate(
       deps({
         runAgent,
         env: {
           CODEX_THREAD_ID: 'outer-codex',
+          CLAUDE_CODE_SESSION_ID: 'inner-claude',
           KYOTEN_AGENT: 'dscc',
         },
       })
@@ -1360,7 +1414,7 @@ describe('consolidation policy and sides', () => {
     });
   });
 
-  test('should require cross-side consent even when --force bypasses the disabled policy', () => {
+  test('should let --force override a disabled worker on mixed notes and record crossSideVia', () => {
     seed('normal');
     const runAgent = agentReturning({ profile: [], ops: [] });
 
@@ -1372,11 +1426,12 @@ describe('consolidation policy and sides', () => {
       })
     );
     expect(forced).toMatchObject({
-      status: 'deferred',
+      status: 'consolidated',
       side: 'dscc',
-      foreign: ['normal'],
+      crossSide: ['normal'],
+      crossSideVia: '--force',
     });
-    expect(runAgent).not.toHaveBeenCalled();
+    expect(runAgent).toHaveBeenCalledTimes(1);
   });
 
   test('should let --force override a disabled worker for its own side', () => {

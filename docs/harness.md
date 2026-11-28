@@ -516,23 +516,19 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   dscc. A mismatching entry stays queued for a matching worker without recording an attempt.
   Automatic consolidation is controlled per agent via
   `pnpm memory set --auto-consolidate <claude|codex|dsh|agy|dscc>=on|off|default`: `claude`,
-  `codex`, `dsh`, and `agy` default **on**, while `dscc`
+  `codex`, `dsh`, and `agy` default **on** (consolidating mixed notes automatically), while `dscc`
   defaults **off** (opt-in, because `dscc` runs through the Claude Code harness against DeepSeek).
   A bare `--auto-consolidate default` restores all five defaults.
   When auto-consolidation is off for the resolved agent, background and default manual runs defer
-  with a Fix line; `pnpm memory set --auto-consolidate <agent>=on` opts in, or
-  `pnpm memory consolidate --allow-cross-side` (or `--force`) runs once. An `agy` or `dscc` run
-  still requires `--allow-cross-side` each time it would send notes from other or unknown provider
-  sides. The check uses the selected notes' history. Edits without a matching provider record
-  and legacy consolidations that predate this tracking count as unknown, as do imported notes.
-  This applies with auto-consolidation enabled and when using `--force`. Normal providers
-  continue to consolidate notes from every side. Consolidation is paused
+  with a Fix line (reporting any foreign or unknown note sides from the selected notes' history);
+  `pnpm memory set --auto-consolidate <agent>=on` opts in, or
+  `pnpm memory consolidate --allow-cross-side` (or `--force`) runs once. Consolidation is paused
   while saving is off everywhere (`pnpm memory off`; it stays due and runs once saving is back on);
   a manual `pnpm memory consolidate` then refuses with a Fix line unless `--force` (a `--dry-run`
-  is always allowed). Consolidation reuses the last run's model only when that run used the same
-  agent and side as the worker. `pnpm memory status` shows the per-agent auto-consolidation
-  settings, any sides that need per-run consent, and whether consolidation is off or ToS-blocked
-  for the current session.
+  is always allowed and never calls a model). Consolidation reuses the last run's model only when
+  that run used the same agent and side as the worker. `pnpm memory status` shows the per-agent
+  auto-consolidation settings, any sides that need `--allow-cross-side` while an agent is off, and
+  whether consolidation is off or ToS-blocked for the current session.
   Consolidation rotates batches of similar notes and can archive old task digests and stale,
   unused facts after taking a snapshot. Use `pnpm memory recall <query> --archived` to search
   those notes and `pnpm memory restore <id>` to return one to active recall. Export and import

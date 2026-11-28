@@ -884,6 +884,37 @@ describe('formatChange and formatRun', () => {
       'Consolidated memory:',
       '  Sent notes from normal, unknown to the selected provider (dscc) because --allow-cross-side was given.',
     ]);
+    expect(
+      formatRun({
+        job: 'consolidation',
+        status: 'consolidated',
+        side: 'dscc',
+        crossSide: ['normal'],
+        crossSideVia: '--force',
+        changes: [],
+        profile: 0,
+        quarantined: 0,
+        refused: 0,
+        invalid: [],
+      })
+    ).toEqual([
+      'Consolidated memory:',
+      '  Sent notes from normal to the selected provider (dscc) because --force was given.',
+    ]);
+    expect(
+      formatRun({
+        job: 'consolidation',
+        status: 'consolidated',
+        side: 'agy',
+        crossSide: ['normal'],
+        crossSideAuto: true,
+        changes: [],
+        profile: 0,
+        quarantined: 0,
+        refused: 0,
+        invalid: [],
+      })
+    ).toEqual(['Consolidated memory: nothing to change.']);
   });
 
   test('should report a consolidation that failed or had nothing to do', () => {

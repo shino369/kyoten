@@ -687,10 +687,13 @@ export function formatRun(run, { agent, force, dryRun } = {}) {
         (/** @type {string} */ problem) => `Skipped ${problem}`
       ),
     ];
+    const crossSideFlag = run.crossSideVia ?? '--allow-cross-side';
     const crossSide =
-      Array.isArray(run.crossSide) && run.crossSide.length > 0
+      Array.isArray(run.crossSide) &&
+      run.crossSide.length > 0 &&
+      !run.crossSideAuto
         ? [
-            `Sent notes from ${run.crossSide.join(', ')} to the selected provider (${run.side}) because --allow-cross-side was given.`,
+            `Sent notes from ${run.crossSide.join(', ')} to the selected provider (${run.side}) because ${crossSideFlag} was given.`,
           ]
         : [];
     const title =
@@ -702,10 +705,11 @@ export function formatRun(run, { agent, force, dryRun } = {}) {
       : [`${title}:`, ...[...details, ...crossSide].map((line) => `  ${line}`)];
   }
   if (run.status === 'dry-run') {
+    const crossSideFlag = run.crossSideVia ?? '--allow-cross-side';
     const crossSide =
       Array.isArray(run.crossSide) && run.crossSide.length > 0
         ? [
-            `--allow-cross-side: notes from ${run.crossSide.join(', ')} would go to the selected provider (${run.side}).`,
+            `${crossSideFlag}: notes from ${run.crossSide.join(', ')} would go to the selected provider (${run.side}).`,
           ]
         : [];
     return [

@@ -487,9 +487,9 @@ export function consolidationAgent(config, env) {
   if (caller && CALL_AGENTS.includes(/** @type {any} */ (caller))) {
     return caller;
   }
+  if (env.KYOTEN_AGENT === DSCC_AGENT) return 'claude';
   const sessions = sessionHarnesses(env);
   if (sessions.length > 1) return null;
-  if (env.KYOTEN_AGENT === DSCC_AGENT) return 'claude';
   return sessions[0] ?? 'claude';
 }
 
@@ -567,12 +567,14 @@ export function consolidate(deps) {
   }
   const { input, foreign } = prepareConsolidation(deps.rootDir, side, now);
   const policyAgent = consolidationPolicyKey(agent, deps.env);
+  const autoAllowed = config.autoConsolidate[policyAgent];
   const { shown, cursor, archiveIds, scopeHints } = input;
-  if (
-    !config.autoConsolidate[policyAgent] &&
-    !deps.allowCrossSide &&
-    !deps.force
-  ) {
+  // Per-agent automatic consolidation policy: claude, codex, dsh, and agy
+  // default on (consolidating mixed notes automatically); dscc defaults off
+  // (opt-in via `pnpm memory set --auto-consolidate dscc=on` or one-shot
+  // `--allow-cross-side` / `--force`). `--dry-run` sends nothing so it is
+  // always allowed to preview the prompt.
+  if (!deps.dryRun && !autoAllowed && !deps.allowCrossSide && !deps.force) {
     return {
       ...base,
       status: 'deferred',
@@ -589,9 +591,14 @@ export function consolidate(deps) {
     appendJournal(dir, run);
     return run;
   }
-  if (foreign.length > 0 && !deps.allowCrossSide) {
-    return { ...base, status: 'deferred', side, foreign };
-  }
+  const crossSideVia =
+    foreign.length > 0 && !autoAllowed && (deps.allowCrossSide || deps.force)
+      ? deps.allowCrossSide
+        ? '--allow-cross-side'
+        : '--force'
+      : null;
+  const crossSideAuto =
+    foreign.length > 0 && autoAllowed && !deps.allowCrossSide;
   const prompt = buildConsolidationPrompt(input);
   const last = lastRun(dir);
   const model = modelFor({
@@ -609,7 +616,9 @@ export function consolidate(deps) {
       agent,
       model,
       prompt,
-      ...(foreign.length > 0 ? { crossSide: foreign } : {}),
+      ...(foreign.length > 0 && (deps.allowCrossSide || crossSideVia)
+        ? { crossSide: foreign, ...(crossSideVia ? { crossSideVia } : {}) }
+        : {}),
     };
   }
 
@@ -688,6 +697,8 @@ export function consolidate(deps) {
     model,
     side,
     ...(side !== 'normal' ? { crossSide: foreign } : {}),
+    ...(crossSideVia ? { crossSideVia } : {}),
+    ...(crossSideAuto ? { crossSideAuto: true } : {}),
     changes,
     profile: profile.lines.length,
     quarantined: checked.quarantined.length,

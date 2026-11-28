@@ -830,17 +830,20 @@ describe('consolidate and undo', () => {
     expect(runAgent).not.toHaveBeenCalled();
   });
 
-  test('should preserve preview and force flags in a cross-side retry', () => {
+  test('should allow --dry-run preview even when auto-consolidation is off', () => {
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, agy: false },
+    });
     const runAgent = agent({ profile: [], ops: [] });
 
-    const deferred = run(
-      ['consolidate', '--agent', 'agy', '--force', '--dry-run'],
-      { runAgent, env: {} }
-    );
+    const preview = run(['consolidate', '--agent', 'agy', '--dry-run'], {
+      runAgent,
+      env: {},
+    });
 
-    expect(deferred.out).toContain(
-      'Fix: pnpm memory consolidate --agent agy --force --dry-run --allow-cross-side'
-    );
+    expect(preview.code).toBe(0);
+    expect(preview.out).toMatch(/^Would send the consolidation/);
     expect(runAgent).not.toHaveBeenCalled();
   });
 
@@ -868,13 +871,10 @@ describe('consolidate and undo', () => {
   test('should allow manual consolidate --agent agy from a plain terminal and block other harnesses', () => {
     const runAgent = agent({ profile: [], ops: [] });
 
-    const manual = run(
-      ['consolidate', '--agent', 'agy', '--allow-cross-side'],
-      {
-        runAgent,
-        env: {},
-      }
-    );
+    const manual = run(['consolidate', '--agent', 'agy'], {
+      runAgent,
+      env: {},
+    });
     expect(manual.code).toBe(0);
     expect(runAgent).toHaveBeenCalledTimes(1);
     expect(runAgent).toHaveBeenCalledWith(
@@ -994,7 +994,7 @@ describe('consolidate and undo', () => {
     expect(json.consolidation.foreign).toEqual([]);
   });
 
-  test('should report cross-side consent is needed for Antigravity even when enabled', () => {
+  test('should report auto-consolidation enabled for Antigravity by default even with mixed notes', () => {
     appendJournal(dir, { status: 'applied', side: 'normal' });
 
     const json = runJson(['status'], {
@@ -1003,7 +1003,7 @@ describe('consolidate and undo', () => {
 
     expect(json.consolidation.agent).toBe('agy');
     expect(json.consolidation.autoEnabled).toBe(true);
-    expect(json.consolidation.foreign).toEqual(['unknown']);
+    expect(json.consolidation.foreign).toEqual([]);
   });
 
   test('should report when KYOTEN_CALLER_HARNESS identifies agy and agy is disabled', () => {
@@ -1573,11 +1573,15 @@ describe('personalize --compact and --audit', () => {
 });
 
 describe('status', () => {
-  test('should show the consent required to send a task digest selected for archiving', () => {
+  test('should report foreign provenance for an archived task digest when auto-consolidation is off', () => {
     save({
       type: 'episode',
       text: 'Completed setup of the sample workspace.',
       source: { via: 'digest', task: 'sample' },
+    });
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, agy: false },
     });
 
     const status = runJson(['status'], {

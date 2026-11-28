@@ -179,11 +179,10 @@ Extraction and consolidation
                                 in the background; never while saving is off, --force
                                 overrides for a manual run). Auto-consolidation defaults on
                                 for ${CALL_AGENTS.join('/')} and off for dscc (pnpm memory set
-                                --auto-consolidate <agent>=on|off). --allow-cross-side or --force
-                                overrides an agent's off setting once. agy and dscc require
-                                --allow-cross-side to send notes from other or unknown sides,
-                                including with --force. --agent selects the CLI for a manual
-                                run (other harnesses cannot pass --agent agy)
+                                --auto-consolidate <agent>=on|off). When off, --allow-cross-side
+                                or --force overrides once (--dry-run always previews without
+                                sending). --agent selects the CLI for a manual run (other
+                                harnesses cannot pass --agent agy)
   undo [--dry-run]              Revert the last extraction, consolidation, import, or persona
                                 compaction (notes saved since are kept)
 
@@ -1315,7 +1314,7 @@ export const COMMANDS = {
       autoEnabled,
       tosBlockedBy,
       foreign:
-        callSide && callSide !== 'normal'
+        autoEnabled === false && callSide && callSide !== 'normal'
           ? prepareConsolidation(deps.rootDir, callSide, now).foreign
           : [],
     };
