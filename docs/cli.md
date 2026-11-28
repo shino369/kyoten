@@ -11,6 +11,7 @@ Run `pnpm docs:cli` to refresh this reference from the workspace CLI help. Run `
 - [`pnpm kyoten`](#pnpm-kyoten)
 - [`pnpm loop`](#pnpm-loop)
 - [`pnpm memory`](#pnpm-memory)
+- [`pnpm remote`](#pnpm-remote)
 - [`pnpm skills:add`](#pnpm-skillsadd)
 - [`pnpm skills:install`](#pnpm-skillsinstall)
 - [`pnpm skills:link`](#pnpm-skillslink)
@@ -293,6 +294,24 @@ Options
   --message <text>, -m <text>   Reason for rm
   --json                       Machine-readable output
   --help, -h                   Show this help (also pnpm memory help)
+```
+
+## `pnpm remote`
+
+```text
+Usage: pnpm remote <command> [options]
+
+Manage status hooks (OSC 7501 for Rex/terminals, native Herdr pane reporting).
+
+Commands
+  status [--json]
+  osc7501 on|off
+  herdr on|off
+  help
+
+Options
+  --help, -h   Show this help
+  --json       Machine-readable JSON output
 ```
 
 ## `pnpm skills:add`

@@ -23,6 +23,7 @@ const HELP_COMMANDS = {
   kyoten: '--help',
   loop: '--help',
   memory: '--help',
+  remote: '--help',
   'skills:add': '--help',
   'skills:install': '--help',
   'skills:link': '--help',
