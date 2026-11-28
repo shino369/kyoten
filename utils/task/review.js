@@ -1221,7 +1221,9 @@ function normalizedRelPath(value) {
   if (typeof value !== 'string' || !value || value.includes('\0')) return null;
   if (value.includes('\\') || path.posix.isAbsolute(value)) return null;
   const normalized = path.posix.normalize(value);
-  return normalized === value && value !== '.' && !value.startsWith('../')
+  return normalized === value &&
+    value !== '.' &&
+    !value.split('/').includes('..')
     ? value
     : null;
 }
@@ -1308,9 +1310,16 @@ export function saveSnapshot({ repoDir, dir, files }) {
     const entry = inspectWorkingFile(repoDir, file);
     if (entry.kind === 'secret') {
       const full = resolveInside(repoDir, file);
-      if (full && fs.lstatSync(full, { throwIfNoEntry: false })) {
-        skipped.push(file);
+      // A parent replaced by a file (ENOTDIR) means the path is absent.
+      let present = false;
+      try {
+        present = Boolean(
+          full && fs.lstatSync(full, { throwIfNoEntry: false })
+        );
+      } catch {
+        present = false;
       }
+      if (present) skipped.push(file);
       continue;
     }
     if (entry.kind === 'symlink') {
@@ -1390,14 +1399,14 @@ export function listSnapshotFiles(dir) {
 }
 
 /**
- * Whether a previous round's snapshot exists but cannot be used, so the brief
- * can say the incremental patch is unavailable.
+ * Whether a previous round's snapshot is missing or unusable, so the brief can
+ * say the incremental patch is unavailable.
  *
- * @param {string | null} dir
+ * @param {string | null} dir `previousSnapshotDir` (null: no snapshot folder)
  * @returns {boolean}
  */
 export function snapshotUnusable(dir) {
-  return dir !== null && snapshotLayout(dir) === null;
+  return dir === null || snapshotLayout(dir) === null;
 }
 
 /**
@@ -1625,7 +1634,7 @@ const where = (f) => `${f.file}${f.line ? `:${f.line}` : ''}`;
  * The brief a clean-context reviewer works from.
  *
  * @param {{ state: TaskState, round: number, scope: Scope, taskRel: string, folder?: FolderNotes, diffPath?: string | null, incrementalDiffPath?: string | null, incrementalUnavailable?: boolean, stats?: Map<string, FileStat> }} options
- *   `incrementalUnavailable`: the previous round's snapshot exists but is unusable
+ *   `incrementalUnavailable`: the previous round's snapshot is missing or unusable
  * @returns {string}
  */
 export function formatReviewBrief({
@@ -1678,7 +1687,7 @@ export function formatReviewBrief({
         ]
       : incrementalUnavailable
         ? [
-            `Changes since round ${round - 1}: unavailable (the round ${round - 1} snapshot is missing its manifest or files/; review the full Diff)`,
+            `Changes since round ${round - 1}: unavailable (the round ${round - 1} snapshot is missing or incomplete; review the full Diff)`,
           ]
         : []),
     '',

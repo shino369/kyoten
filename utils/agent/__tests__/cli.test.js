@@ -804,6 +804,39 @@ describe('dscc', () => {
     }
   });
 
+  test('should scrub a short profile token and inherited _PWD/PASSWD values', () => {
+    const file = profile(
+      'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic\nANTHROPIC_AUTH_TOKEN=sk-1234\n'
+    );
+    const text =
+      'key sk-1234 db mysql-pass-1 smtp smtp-pass-22 cwd /home/t/project\n';
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      stdout: text,
+      output: text,
+      durationMs: 1,
+    }));
+
+    const { out } = run(['ask', '--agent', 'dscc', '--json', 'hi'], {
+      env: {
+        DSCC_PROFILE: file,
+        PWD: '/home/t/project',
+        MYSQL_PWD: 'mysql-pass-1',
+        SMTP_PASSWD: 'smtp-pass-22',
+      },
+      runAgent,
+    });
+
+    const parsed = JSON.parse(out);
+    for (const value of [parsed.answer, parsed.output, read(parsed.record)]) {
+      for (const leaked of ['sk-1234', 'mysql-pass-1', 'smtp-pass-22']) {
+        expect(value).not.toContain(leaked);
+      }
+      expect(value).toContain('/home/t/project');
+    }
+  });
+
   test('should keep non-credential profile values and the working directory in the answer', () => {
     const file = profile(
       `${PROFILED}CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192\nANTHROPIC_MODEL=deepseek-chat\n`

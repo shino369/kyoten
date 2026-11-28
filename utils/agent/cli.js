@@ -218,32 +218,38 @@ const PROFILE_CREDENTIAL_KEYS = new Set(TOKEN_KEYS);
 const HEADERS_KEY_RE = /(?:^|_)CUSTOM_HEADERS$/i;
 /**
  * The shortest literal that is scrubbed: a shorter value (a port, a count, a
- * flag) would shred ordinary output, and a real token is longer.
+ * flag) would shred ordinary output. A profile credential field is a known
+ * secret, so it uses a lower floor than a value matched only by its inherited
+ * variable name.
  */
-const MIN_SECRET_LENGTH = 8;
+const MIN_PROFILE_SECRET_LENGTH = 4;
+const MIN_ENV_SECRET_LENGTH = 8;
 /**
  * Inherited variable names that hold credentials: TOKEN, SECRET, PASSWORD,
- * API_KEY, ACCESS_KEY, PRIVATE_KEY, or AUTHORIZATION as a whole `_`-separated
- * word, so `GITHUB_TOKEN` matches but `CLAUDE_CODE_MAX_OUTPUT_TOKENS`,
- * `GIT_AUTHOR_EMAIL`, and `PWD` do not.
+ * PASSWD, API_KEY, ACCESS_KEY, PRIVATE_KEY, AUTH_KEY, AUTH_HEADER,
+ * AUTHORIZATION, or CREDENTIAL(S) as a whole `_`-separated word, or a `_PWD`
+ * suffix. `GITHUB_TOKEN` and `MYSQL_PWD` match; `CLAUDE_CODE_MAX_OUTPUT_TOKENS`,
+ * `GIT_AUTHOR_EMAIL`, and the shell's `PWD` / `OLDPWD` do not.
  */
 const ENV_SECRET_NAME_RE =
-  /(?:^|_)(?:TOKEN|SECRET|PASSWORD|API_?KEY|ACCESS_KEY|PRIVATE_KEY|AUTHORIZATION)(?:$|_)/i;
+  /(?:^|_)(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|ACCESS_KEY|PRIVATE_KEY|AUTH_(?:KEY|HEADER)|AUTHORIZATION|CREDENTIALS?)(?:$|_)|_PWD$/i;
 const HEADER_SCHEME_RE = /^(?:Bearer|Basic|Token)\s+(\S+)$/i;
 
 /**
  * Add a literal secret, unquoted when wrapped in matching quotes, to `values`
- * unless it is too short or a reference (`$VAR`, `<placeholder>`).
+ * unless it is shorter than `minLength` or a reference (`$VAR`,
+ * `<placeholder>`).
  *
  * @param {Set<string>} values
  * @param {string} raw
+ * @param {number} minLength
  */
-function addSecretValue(values, raw) {
+function addSecretValue(values, raw, minLength) {
   const trimmed = raw.trim();
   const value = /^(["']).*\1$/s.test(trimmed)
     ? trimmed.slice(1, -1).trim()
     : trimmed;
-  if (value.length >= MIN_SECRET_LENGTH && !/^(?:\$|<[^>]*>$)/.test(value)) {
+  if (value.length >= minLength && !/^(?:\$|<[^>]*>$)/.test(value)) {
     values.add(value);
   }
 }
@@ -254,8 +260,9 @@ function addSecretValue(values, raw) {
  *
  * @param {Set<string>} values
  * @param {string} raw
+ * @param {number} minLength
  */
-function addHeaderSecrets(values, raw) {
+function addHeaderSecrets(values, raw, minLength) {
   const trimmed = raw.trim();
   const unquoted = /^(["']).*\1$/s.test(trimmed)
     ? trimmed.slice(1, -1)
@@ -264,9 +271,9 @@ function addHeaderSecrets(values, raw) {
     const colon = line.indexOf(':');
     if (colon === -1) continue;
     const headerValue = line.slice(colon + 1).trim();
-    addSecretValue(values, headerValue);
+    addSecretValue(values, headerValue, minLength);
     const scheme = HEADER_SCHEME_RE.exec(headerValue)?.[1];
-    if (scheme) addSecretValue(values, scheme);
+    if (scheme) addSecretValue(values, scheme, minLength);
   }
 }
 
@@ -289,8 +296,12 @@ export function profileSecrets(set) {
   const values = new Set();
   for (const [key, value] of Object.entries(set)) {
     if (!value) continue;
-    if (PROFILE_CREDENTIAL_KEYS.has(key)) addSecretValue(values, value);
-    if (HEADERS_KEY_RE.test(key)) addHeaderSecrets(values, value);
+    if (PROFILE_CREDENTIAL_KEYS.has(key)) {
+      addSecretValue(values, value, MIN_PROFILE_SECRET_LENGTH);
+    }
+    if (HEADERS_KEY_RE.test(key)) {
+      addHeaderSecrets(values, value, MIN_PROFILE_SECRET_LENGTH);
+    }
   }
   return longestFirst(values);
 }
@@ -307,8 +318,12 @@ function envSecrets(env) {
   const values = new Set();
   for (const [key, value] of Object.entries(env)) {
     if (!value) continue;
-    if (ENV_SECRET_NAME_RE.test(key)) addSecretValue(values, value);
-    if (HEADERS_KEY_RE.test(key)) addHeaderSecrets(values, value);
+    if (ENV_SECRET_NAME_RE.test(key)) {
+      addSecretValue(values, value, MIN_ENV_SECRET_LENGTH);
+    }
+    if (HEADERS_KEY_RE.test(key)) {
+      addHeaderSecrets(values, value, MIN_ENV_SECRET_LENGTH);
+    }
   }
   return longestFirst(values);
 }

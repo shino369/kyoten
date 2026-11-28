@@ -2257,6 +2257,28 @@ describe('saveSnapshot and listSnapshotFiles', () => {
     );
   });
 
+  test('should record a protected path under a former directory without throwing', () => {
+    fs.writeFileSync(path.join(root, 'config'), 'now a file\n');
+    const dir = path.join(root, '.snapshot-r1');
+
+    expect(
+      saveSnapshot({ repoDir: root, dir, files: ['config/.env', 'config'] })
+    ).toBe(1);
+    expect(listSnapshotScope(dir)).toEqual(['config', 'config/.env']);
+    expect(listSnapshotSkipped(dir)).toEqual([]);
+  });
+
+  test('should reject a manifest that lists a bare parent path', () => {
+    const dir = path.join(root, '.snapshot-r1');
+    fs.mkdirSync(path.join(dir, 'files'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'manifest.json'),
+      JSON.stringify({ version: 1, scope: ['..', 'ok.js'], skipped: [] })
+    );
+
+    expect(listSnapshotScope(dir)).toEqual([]);
+  });
+
   test('should ignore an invalid manifest', () => {
     const dir = path.join(root, '.snapshot-r1');
     fs.mkdirSync(path.join(dir, 'files'), { recursive: true });

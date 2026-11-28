@@ -1300,7 +1300,7 @@ export const COMMANDS = {
         taskRel,
         diffPath,
         incrementalDiffPath: incrementalPath,
-        incrementalUnavailable: snapshotUnusable(previousSnapshot),
+        incrementalUnavailable: round > 1 && snapshotUnusable(previousSnapshot),
         stats,
         folder: taskFolderNotes({
           rootDir: deps.rootDir,

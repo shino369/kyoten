@@ -1385,39 +1385,49 @@ describe('review', () => {
     expect(state().status).toBe('active');
   });
 
-  test('should open round 2 with a note when the round-1 snapshot is unusable', () => {
-    newTask(['--verify', 'pnpm test']);
-    finishSteps();
-    run(['verify']);
-    const file = path.join(root, 'utils', 'x.js');
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, 'a\n');
-    /** @type {import('../review.js').RunGit} */
-    const runGit = (args) => {
-      if (args[0] === 'symbolic-ref') return 'origin/main';
-      if (args[0] === 'merge-base') return 'abc123';
-      if (args.includes('--name-status')) return 'M\0utils/x.js\0';
-      if (args.includes('--name-only')) return 'utils/x.js\0';
-      if (args.includes('--numstat')) return '1\t0\tutils/x.js\0';
-      if (args.includes('diff')) return 'diff --git a/utils/x.js b/utils/x.js';
-      return '';
-    };
-    run(['review'], { runGit });
-    addRows(1, [
-      '| | utils/x.js | low | Style | reading it | CONFIRMED | agreed |',
-    ]);
-    run(['review', 'record']);
-    fs.rmSync(path.join(taskDir(), 'reviews', '.snapshot-r1', 'manifest.json'));
-    fs.writeFileSync(file, 'b\n');
+  test.each([
+    {
+      label: 'has no manifest',
+      target: path.join('.snapshot-r1', 'manifest.json'),
+    },
+    { label: 'is gone', target: '.snapshot-r1' },
+  ])(
+    'should open round 2 with a note when the round-1 snapshot $label',
+    ({ target }) => {
+      newTask(['--verify', 'pnpm test']);
+      finishSteps();
+      run(['verify']);
+      const file = path.join(root, 'utils', 'x.js');
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, 'a\n');
+      /** @type {import('../review.js').RunGit} */
+      const runGit = (args) => {
+        if (args[0] === 'symbolic-ref') return 'origin/main';
+        if (args[0] === 'merge-base') return 'abc123';
+        if (args.includes('--name-status')) return 'M\0utils/x.js\0';
+        if (args.includes('--name-only')) return 'utils/x.js\0';
+        if (args.includes('--numstat')) return '1\t0\tutils/x.js\0';
+        if (args.includes('diff'))
+          return 'diff --git a/utils/x.js b/utils/x.js';
+        return '';
+      };
+      run(['review'], { runGit });
+      addRows(1, [
+        '| | utils/x.js | low | Style | reading it | CONFIRMED | agreed |',
+      ]);
+      run(['review', 'record']);
+      fs.rmSync(path.join(taskDir(), 'reviews', target), { recursive: true });
+      fs.writeFileSync(file, 'b\n');
 
-    const parsed = JSON.parse(run(['review', '--json'], { runGit }).out);
+      const parsed = JSON.parse(run(['review', '--json'], { runGit }).out);
 
-    expect(parsed.round).toBe(2);
-    expect(parsed.incrementalDiff).toBeNull();
-    expect(read(`reviews/BRIEF_${NAME}-r2.md`)).toContain(
-      'Changes since round 1: unavailable (the round 1 snapshot is missing its manifest or files/; review the full Diff)'
-    );
-  });
+      expect(parsed.round).toBe(2);
+      expect(parsed.incrementalDiff).toBeNull();
+      expect(read(`reviews/BRIEF_${NAME}-r2.md`)).toContain(
+        'Changes since round 1: unavailable (the round 1 snapshot is missing or incomplete; review the full Diff)'
+      );
+    }
+  );
 
   test('should keep the round-1 snapshot when reopening the same round', () => {
     newTask(['--verify', 'pnpm test']);
