@@ -24,8 +24,23 @@ export const BUDGET_RANGE = { min: 1000, max: 10000 };
 /** Session switches kept; older ones belong to sessions long gone. */
 export const MAX_OFF_SESSIONS = 50;
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$/;
+/** Agents with per-agent automatic consolidation switches. */
+export const CONSOLIDATE_AGENTS = /** @type {const} */ ([
+  ...CALL_AGENTS,
+  'dscc',
+]);
+/** Default automatic consolidation policy per agent (opt-in for dscc). */
+export const DEFAULT_AUTO_CONSOLIDATE = Object.freeze({
+  claude: true,
+  codex: true,
+  dsh: true,
+  agy: true,
+  dscc: false,
+});
 
 /**
+ * @typedef {typeof CONSOLIDATE_AGENTS[number]} ConsolidateAgent
+ * @typedef {Record<ConsolidateAgent, boolean>} AutoConsolidateConfig
  * @typedef {object} MemoryConfig
  * @property {boolean} off
  * @property {string[]} offSessions
@@ -33,6 +48,7 @@ const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$/;
  * @property {import('./agent-call.js').CallAgent | null} extractAgent
  * @property {number | null} budget
  * @property {boolean} personalizationEnabled
+ * @property {AutoConsolidateConfig} autoConsolidate
  */
 
 /** @type {Readonly<MemoryConfig>} */
@@ -43,6 +59,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   extractAgent: null,
   budget: null,
   personalizationEnabled: true,
+  autoConsolidate: DEFAULT_AUTO_CONSOLIDATE,
 });
 const KEYS = Object.keys(DEFAULT_CONFIG);
 
@@ -68,6 +85,31 @@ function normalizeSessions(value) {
   // The last mention of an id wins, so a re-added session counts as newest.
   const unique = value.filter((id, i) => value.lastIndexOf(id) === i);
   return unique.slice(-MAX_OFF_SESSIONS);
+}
+
+/**
+ * @param {unknown} value
+ * @returns {AutoConsolidateConfig}
+ */
+function normalizeAutoConsolidate(value) {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    invalid('autoConsolidate must be an object.');
+  }
+  const result = /** @type {AutoConsolidateConfig} */ ({
+    ...DEFAULT_AUTO_CONSOLIDATE,
+  });
+  for (const [agent, setting] of Object.entries(value)) {
+    if (!CONSOLIDATE_AGENTS.includes(/** @type {any} */ (agent))) {
+      invalid(
+        `Unknown autoConsolidate agent ${JSON.stringify(agent)}; agents: ${CONSOLIDATE_AGENTS.join(', ')}.`
+      );
+    }
+    if (typeof setting !== 'boolean') {
+      invalid(`autoConsolidate.${agent} must be true or false.`);
+    }
+    result[/** @type {ConsolidateAgent} */ (agent)] = setting;
+  }
+  return result;
 }
 
 /**
@@ -138,6 +180,7 @@ export function normalizeConfig(input, { allowLegacyDshModel = false } = {}) {
     extractAgent,
     budget,
     personalizationEnabled: config.personalizationEnabled,
+    autoConsolidate: normalizeAutoConsolidate(config.autoConsolidate),
   };
 }
 
@@ -147,7 +190,13 @@ export function normalizeConfig(input, { allowLegacyDshModel = false } = {}) {
  */
 export function readConfig(dir) {
   const content = readIfExists(path.join(dir, CONFIG_FILE));
-  if (content === null) return { ...DEFAULT_CONFIG, offSessions: [] };
+  if (content === null) {
+    return {
+      ...DEFAULT_CONFIG,
+      offSessions: [],
+      autoConsolidate: { ...DEFAULT_AUTO_CONSOLIDATE },
+    };
+  }
   let parsed;
   try {
     parsed = JSON.parse(content);
@@ -169,6 +218,17 @@ export function writeConfig(dir, config) {
   /** @type {Record<string, unknown>} */
   const changed = {};
   for (const key of KEYS) {
+    if (key === 'autoConsolidate') {
+      const diff = Object.fromEntries(
+        CONSOLIDATE_AGENTS.filter(
+          (agent) =>
+            normalized.autoConsolidate[agent] !==
+            DEFAULT_AUTO_CONSOLIDATE[agent]
+        ).map((agent) => [agent, normalized.autoConsolidate[agent]])
+      );
+      if (Object.keys(diff).length > 0) changed.autoConsolidate = diff;
+      continue;
+    }
     const value = normalized[/** @type {keyof MemoryConfig} */ (key)];
     const fallback = DEFAULT_CONFIG[/** @type {keyof MemoryConfig} */ (key)];
     if (JSON.stringify(value) !== JSON.stringify(fallback))
