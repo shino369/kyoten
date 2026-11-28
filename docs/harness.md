@@ -644,8 +644,9 @@ cache hit rate based on cached plus uncached prompt tokens.
   the brief and its evidence on demand. For native reviews, use `pnpm task review` and give
   only the brief path to the reviewer and triage subagents, then run `pnpm task review record`.
 - Codex `oneshot` review checks configuration layers for active MCP servers before sending the
-  pack. It skips the user layer, like `codex exec --ignore-user-config`. Overrides of cloud
-  authentication or routing in the user layer prevent the check from verifying managed MCP.
+  pack. It skips the user layer, like `codex exec --ignore-user-config`, and checks managed
+  requirements for Apps and Plugins. Project MCP settings and user overrides of cloud
+  authentication or routing prevent this check from verifying the review's configuration.
 - `pnpm loop <task> --agent <a> --review` uses the same review and triage prompts after verify
   passes and fixes confirmed must-fix/high findings. Select `--reviewer dscc` to opt into DeepSeek
   through Claude Code, or use `--no-oneshot-review` to allow read-only inspection. The loop logs

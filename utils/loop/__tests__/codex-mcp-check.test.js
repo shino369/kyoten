@@ -23,6 +23,17 @@ test('should honor non-user layer precedence for a disabled managed server', () 
   );
 });
 
+test('should refuse a project-level override that masks active managed MCP in the probe', () => {
+  const project = {
+    ...layer('project', { mcp_servers: { fixture: { enabled: false } } }),
+    disabledReason: 'The project is untrusted.',
+  };
+
+  expect(reviewMcpIsEmpty(response([project, user, managed, system]))).toBe(
+    false
+  );
+});
+
 test('should refuse a user layer that changes the cloud policy bootstrap identity', () => {
   const customAuth = layer('user', { cli_auth_credentials_store: 'keyring' });
 
@@ -43,7 +54,7 @@ test('should reject a config reply without layer information', () => {
 // Serve the same stdio handshake as Codex, with no model or MCP process.
 const fakeAppServer = `
   import { createInterface } from 'node:readline';
-  const result = JSON.parse(process.argv[1]);
+  const { config, requirements } = JSON.parse(process.argv[1]);
   let initialized = false;
   for await (const line of createInterface({ input: process.stdin })) {
     const request = JSON.parse(line);
@@ -53,7 +64,9 @@ const fakeAppServer = `
       initialized = true;
     } else if (initialized && request.method === 'config/read' &&
                request.params.includeLayers && request.params.cwd === process.cwd()) {
-      console.log(JSON.stringify({ id: request.id, result }));
+      console.log(JSON.stringify({ id: request.id, result: config }));
+    } else if (initialized && request.method === 'configRequirements/read') {
+      console.log(JSON.stringify({ id: request.id, result: { requirements } }));
     } else {
       process.exitCode = 1;
       break;
@@ -62,15 +75,35 @@ const fakeAppServer = `
 `;
 
 test.each([
-  ['user-only configuration', response([user, system]), true],
-  ['managed MCP with the same name', response([user, managed, system]), false],
-])('should guard review dispatch for %s', async (_label, config, expected) => {
-  const argv = [
-    '--input-type=module',
-    '-e',
-    fakeAppServer,
-    JSON.stringify(config),
-  ];
+  ['user-only configuration', response([user, system]), null, true],
+  [
+    'managed MCP with the same name',
+    response([user, managed, system]),
+    null,
+    false,
+  ],
+  [
+    'managed Apps requirements',
+    response([user, system]),
+    { featureRequirements: { apps: true } },
+    false,
+  ],
+  [
+    'managed Plugins requirements',
+    response([user, system]),
+    { featureRequirements: { plugins: true } },
+    false,
+  ],
+])(
+  'should guard review dispatch for %s',
+  async (_label, config, requirements, expected) => {
+    const argv = [
+      '--input-type=module',
+      '-e',
+      fakeAppServer,
+      JSON.stringify({ config, requirements }),
+    ];
 
-  expect(await checkReviewMcp(process.execPath, argv, 2000)).toBe(expected);
-});
+    expect(await checkReviewMcp(process.execPath, argv, 2000)).toBe(expected);
+  }
+);

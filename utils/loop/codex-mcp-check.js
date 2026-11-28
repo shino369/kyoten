@@ -47,7 +47,12 @@ export function reviewMcpIsEmpty(result) {
     }
     if (!Object.hasOwn(config, 'mcp_servers')) continue;
     if (!record(config.mcp_servers)) return false;
-    for (const [name, server] of Object.entries(config.mcp_servers)) {
+    const servers = Object.entries(config.mcp_servers);
+    // If TMPDIR is in a checkout, ignoring user config can change project
+    // trust. A project override cannot prove that an inherited server is off.
+    if (type === 'project' && servers.length > 0) return false;
+    if (layer.disabledReason) continue;
+    for (const [name, server] of servers) {
       if (!record(server)) return false;
       if (!enabled.has(name) || Object.hasOwn(server, 'enabled')) {
         enabled.set(name, server.enabled !== false);
@@ -88,7 +93,24 @@ export async function checkReviewMcp(executable, argv, timeoutMs) {
           params: { cwd: process.cwd(), includeLayers: true },
         });
       }
-      if (reply?.id === 1) return reviewMcpIsEmpty(reply.result);
+      if (reply?.id === 1) {
+        if (!reviewMcpIsEmpty(reply.result)) return false;
+        // Managed feature requirements can override the CLI disables when
+        // Codex starts a session, even if config/read reports them as off.
+        send({ id: 2, method: 'configRequirements/read' });
+      }
+      if (reply?.id === 2) {
+        const requirements = reply.result?.requirements;
+        if (requirements === null) return true;
+        const features = requirements?.featureRequirements;
+        return (
+          features === null ||
+          (record(features) &&
+            [features.apps, features.plugins].every(
+              (value) => value === undefined || value === false
+            ))
+        );
+      }
     }
     return false;
   } finally {
