@@ -1163,7 +1163,7 @@ describe('review', () => {
   });
 
   test.each([true, false])(
-    'should dispatch Codex oneshot evidence only when the MCP check is empty (%s)',
+    'should dispatch Codex oneshot evidence only when the effective MCP check passes (%s)',
     (empty) => {
       newTask(['--verify', 'pnpm test']);
       fs.writeFileSync(
@@ -1181,9 +1181,10 @@ describe('review', () => {
       );
       runAgent.mockReturnValueOnce({
         ...reply,
+        code: empty ? 0 : 1,
         stdout: empty
-          ? 'No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.'
-          : 'Fixture MCP server is configured.',
+          ? 'No active MCP servers outside user configuration.'
+          : '',
       });
 
       const result = run(
@@ -1199,14 +1200,17 @@ describe('review', () => {
         { runAgent }
       );
 
-      expect(runAgent.mock.calls[0][0].command.args.slice(-2)).toEqual([
-        'mcp',
-        'list',
-      ]);
+      const probe = runAgent.mock.calls[0][0].command;
+      expect(probe.bin).toBe(process.execPath);
+      expect(path.basename(probe.args[0])).toBe('codex-mcp-check.js');
+      expect(probe.args).toContain('app-server');
       expect(runAgent.mock.calls[0][0].prompt).toBe('');
       expect(runAgent).toHaveBeenCalledTimes(empty ? 2 : 1);
       expect(result.code).toBe(empty ? 0 : 1);
       if (empty) {
+        expect(runAgent.mock.calls[1][0].command.args).toContain(
+          '--ignore-user-config'
+        );
         expect(runAgent.mock.calls[1][0].prompt).toContain(
           'export const evidence = 42;'
         );

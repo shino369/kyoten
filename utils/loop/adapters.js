@@ -25,6 +25,7 @@ import { writePrivate } from '../kyoten/dscc.js';
 import { EXTRACT_ENV } from '../memory/extract-env.js';
 import { crossSpawn } from '../spawn.js';
 import { HARNESS_SESSION_VARS } from '../task/store.js';
+import { MCP_CHECK_OK } from './codex-mcp-check.js';
 
 export const AGENTS = /** @type {const} */ (['claude', 'codex', 'dsh', 'agy']);
 /** Set on child processes/workers so they know which harness spawned them. */
@@ -269,22 +270,18 @@ export const CLAUDE_ISOLATION_SETTINGS = JSON.stringify({
 });
 
 /**
- * Codex can load MCP servers from configuration outside the user layer.
- * Probe without passing the job prompt, and accept only a verified empty list.
+ * Check all configured MCP servers before a memory job.
  * @param {Parameters<typeof runAgent>[0]} options
  * @param {typeof runAgent} dispatch
  */
 export function codexMcpEmpty(options, dispatch) {
   const { command } = options;
-  const exec = command.args.findIndex(
-    (arg, index) => arg === 'exec' && command.args[index + 1] === '--ephemeral'
-  );
   const probe = dispatch({
     ...options,
     command: {
       ...command,
       args: [
-        ...command.args.slice(0, exec),
+        ...codexExecPrefix(command),
         ...CODEX_ISOLATION_ARGS,
         'mcp',
         'list',
@@ -293,6 +290,46 @@ export function codexMcpEmpty(options, dispatch) {
     prompt: '',
   });
   return probe.code === 0 && probe.stdout.trim() === CODEX_EMPTY_MCP_LIST;
+}
+
+/** @param {AgentCommand} command */
+function codexExecPrefix(command) {
+  const exec = command.args.findIndex(
+    (arg, index) => arg === 'exec' && command.args[index + 1] === '--ephemeral'
+  );
+  return command.args.slice(0, exec);
+}
+
+const CODEX_MCP_CHECK = fileURLToPath(
+  new URL('./codex-mcp-check.js', import.meta.url)
+);
+
+/**
+ * Check the layers used by review exec --ignore-user-config. The helper sends
+ * only local configuration requests and reports a decision, never config data.
+ * @param {Parameters<typeof runAgent>[0]} options
+ * @param {typeof runAgent} dispatch
+ */
+export function codexReviewMcpEmpty(options, dispatch) {
+  const probe = dispatch({
+    ...options,
+    command: {
+      agent: 'codex',
+      bin: process.execPath,
+      args: [
+        CODEX_MCP_CHECK,
+        String(options.timeoutMs),
+        options.command.bin,
+        ...codexExecPrefix(options.command),
+        'app-server',
+        '--stdio',
+        '--strict-config',
+        ...CODEX_ISOLATION_ARGS,
+      ],
+    },
+    prompt: '',
+  });
+  return probe.code === 0 && probe.stdout.trim() === MCP_CHECK_OK;
 }
 
 /** @type {Record<AgentName, { bin: string, args: Record<Mode, string[]>, install: string }>} */

@@ -7,7 +7,7 @@ import {
   CALLER_HARNESS_ENV,
   assertAgyAllowed,
   buildCommand,
-  codexMcpEmpty,
+  codexReviewMcpEmpty,
 } from '../loop/adapters.js';
 import {
   envSecrets,
@@ -506,9 +506,9 @@ function askReview({
     };
     if (mode === 'oneshot' && execution.command.agent === 'codex') {
       const start = clock();
-      if (!codexMcpEmpty(options, runAgent)) {
+      if (!codexReviewMcpEmpty(options, runAgent)) {
         throw new Error(
-          'Cannot verify zero MCP servers for Codex oneshot review. Fix: remove the configured MCP servers or select read mode.'
+          'Cannot verify zero active MCP servers outside user configuration for Codex oneshot review. Fix: check the managed Codex configuration or select read mode.'
         );
       }
       options.timeoutMs -= clock() - start;

@@ -371,8 +371,7 @@ describe('main', () => {
         code: 0,
         signal: null,
         output: '',
-        stdout:
-          'No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.',
+        stdout: 'No active MCP servers outside user configuration.',
         durationMs: 1,
       });
 
