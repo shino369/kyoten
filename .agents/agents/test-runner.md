@@ -3,7 +3,7 @@ name: test-runner
 description: 'Runs tests and reports results in clean, actionable format. Invoke after code changes to verify functionality, check coverage, and identify failing tests. Returns summary with file paths, pass/fail status, and coverage metrics.'
 subagent: true
 mainAgent: false
-model: inherit
+model: flash
 tools:
   - read_file
   - run_command

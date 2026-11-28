@@ -184,8 +184,9 @@ commands it loads.
    regenerates `.codex/rules/workspace.rules`; `guard.js` reads the same file for DSH, Antigravity,
    and Codex patches.
 3. **Role.** Edit `.claude/agents/<role>.md`, then `pnpm harness sync`. It regenerates
-   `.codex/agents/<role>.toml` and `.agents/agents/<role>.md` (inheriting the main model). The
-   Antigravity file targets `agy` CLI and maps the role's Claude tools to the verified CLI names
+   `.codex/agents/<role>.toml` and `.agents/agents/<role>.md`. Haiku, Sonnet, and Opus map to
+   Codex reasoning efforts low, medium, and high, and to Antigravity tiers flash, flash, and pro.
+   The Antigravity file targets `agy` CLI and maps the role's Claude tools to the verified CLI names
    (`Read` → `read_file`, `Edit` → `edit_file`, `Write` → `write_file`, `Bash` → `run_command`;
    `Grep` and `Glob` are covered by `run_command`), because an omitted `tools:` defaults to `[]`
    there and an unmapped name can hang the subagent (note: Antigravity App/IDE uses different tool

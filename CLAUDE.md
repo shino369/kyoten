@@ -6,7 +6,8 @@
 
 Everything above (AGENTS.md) applies. These notes cover only what is specific to Claude Code.
 
-- **Subagents:** always inherit the main session's model (do not pick a cheaper one).
+- **Subagents:** use the model tiers declared in `.claude/agents/*.md`. The test runner uses
+  Haiku, and the other five workspace roles use Sonnet.
 - **Context:** quality degrades at 20–40% usage, long before the window is full. The
   `UserPromptSubmit` hook `.claude/hooks/context_monitor.js` injects `[Context Monitor]` warnings
   at 20/40/60% of the window (1M by default; set `CLAUDE_CONTEXT_WINDOW` to override), naming the

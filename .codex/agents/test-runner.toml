@@ -2,6 +2,7 @@
 name = "test-runner"
 description = "Runs tests and reports results in clean, actionable format. Invoke after code changes to verify functionality, check coverage, and identify failing tests. Returns summary with file paths, pass/fail status, and coverage metrics."
 sandbox_mode = "workspace-write"
+model_reasoning_effort = "low"
 developer_instructions = """
 You are a test execution and reporting specialist. Your role is to run tests, analyze results, and provide clear, actionable summaries to the main agent.
 
