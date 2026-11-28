@@ -882,8 +882,39 @@ describe('formatChange and formatRun', () => {
       })
     ).toEqual([
       'Consolidated memory:',
-      "  Sent notes from normal, unknown to this session's provider (dscc) because --allow-cross-side was given.",
+      '  Sent notes from normal, unknown to the selected provider (dscc) because --allow-cross-side was given.',
     ]);
+    expect(
+      formatRun({
+        job: 'consolidation',
+        status: 'consolidated',
+        side: 'dscc',
+        crossSide: ['normal'],
+        crossSideVia: '--force',
+        changes: [],
+        profile: 0,
+        quarantined: 0,
+        refused: 0,
+        invalid: [],
+      })
+    ).toEqual([
+      'Consolidated memory:',
+      '  Sent notes from normal to the selected provider (dscc) because --force was given.',
+    ]);
+    expect(
+      formatRun({
+        job: 'consolidation',
+        status: 'consolidated',
+        side: 'agy',
+        crossSide: ['normal'],
+        crossSideAuto: true,
+        changes: [],
+        profile: 0,
+        quarantined: 0,
+        refused: 0,
+        invalid: [],
+      })
+    ).toEqual(['Consolidated memory: nothing to change.']);
   });
 
   test('should report a consolidation that failed or had nothing to do', () => {
@@ -911,7 +942,7 @@ describe('formatChange and formatRun', () => {
         prompt: 'P',
       })[0]
     ).toBe(
-      "--allow-cross-side: notes from normal would go to this session's provider (dscc)."
+      '--allow-cross-side: notes from normal would go to the selected provider (dscc).'
     );
   });
 
@@ -1700,6 +1731,22 @@ describe('provider sides', () => {
     expect(readJournal(dir).map((entry) => entry.side)).toEqual(['agy']);
   });
 
+  test('should record the DSH provider side even when the transcript is from DSCC', () => {
+    richSession();
+    writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'dsh' });
+
+    const run = extractEntry(
+      queued({ kyotenAgent: 'dscc' }),
+      deps({ env: DSCC, runAgent: agentReturning({ ops: [] }) })
+    );
+
+    expect(run).toMatchObject({
+      status: 'applied',
+      agent: 'dsh',
+      side: 'normal',
+    });
+  });
+
   test('should extract an old entry without a side on a normal worker', () => {
     richSession();
     const entry = { ...queued() };
@@ -1779,11 +1826,13 @@ describe('provider sides', () => {
         job: 'consolidation',
         session: 'consolidation',
         side: 'dscc',
+        policy: 'disabled',
+        policyAgent: 'dscc',
         foreign: ['normal', 'unknown'],
       })
     ).toEqual([
-      "Deferred the consolidation: notes from normal, unknown would go to this session's provider (dscc).",
-      'Fix: pnpm memory consolidate --allow-cross-side',
+      'Deferred the consolidation: auto-consolidation is off for dscc (notes include normal, unknown).',
+      'Fix: pnpm memory set --auto-consolidate dscc=on (or one-shot: pnpm memory consolidate --allow-cross-side)',
     ]);
     expect(
       formatRun({
@@ -1791,10 +1840,23 @@ describe('provider sides', () => {
         job: 'consolidation',
         session: 'consolidation',
         side: 'agy',
-        foreign: ['normal'],
+        policy: 'disabled',
+        policyAgent: 'agy',
       })
     ).toEqual([
-      "Deferred the consolidation: notes from normal would go to this session's provider (agy).",
+      'Deferred the consolidation: auto-consolidation is off for agy.',
+      'Fix: pnpm memory set --auto-consolidate agy=on (or one-shot: pnpm memory consolidate --allow-cross-side)',
+    ]);
+    expect(
+      formatRun({
+        status: 'deferred',
+        job: 'consolidation',
+        session: 'consolidation',
+        side: 'dscc',
+        foreign: ['normal', 'unknown'],
+      })
+    ).toEqual([
+      'Deferred the consolidation: notes from normal, unknown would go to the selected provider (dscc).',
       'Fix: pnpm memory consolidate --allow-cross-side',
     ]);
   });
@@ -2066,5 +2128,24 @@ describe('announcement', () => {
     expect(text).toContain('- 2 changes held for review');
     expect(text).toContain('gave up on 2 sessions');
     expect(text).not.toContain('Saved to memory');
+  });
+
+  test('should announce a failed consolidation once without injecting agent error output', () => {
+    journal({
+      at: '2026-11-20T12:00:00.000Z',
+      job: 'consolidation',
+      session: 'consolidation',
+      status: 'failed',
+      error:
+        'the consolidation agent exited with code 1: no auth\nFix: pnpm memory set --extract-agent dsh',
+    });
+
+    const text = announcement(dir) ?? '';
+
+    expect(text).toContain('Consolidation failed');
+    expect(text).toContain('memory/extract/journal.jsonl');
+    expect(text).not.toContain('no auth');
+    expect(text).not.toContain('--extract-agent dsh');
+    expect(announcement(dir)).toBeNull();
   });
 });

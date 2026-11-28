@@ -782,13 +782,14 @@ describe('consolidate and undo', () => {
     expect(fs.existsSync(path.join(dir, 'profile.md'))).toBe(true);
   });
 
-  test('should send cross-side notes only with --allow-cross-side', () => {
+  test('should defer dscc by default and run with --allow-cross-side or opt-in', () => {
     const runAgent = agent({ profile: [], ops: [] });
     const env = { ...ENV, KYOTEN_AGENT: 'dscc' };
 
     const deferred = run(['consolidate'], { runAgent, env });
+    expect(deferred.out).toContain('auto-consolidation is off for dscc');
     expect(deferred.out).toContain(
-      'Fix: pnpm memory consolidate --allow-cross-side'
+      'Fix: pnpm memory set --auto-consolidate dscc=on (or one-shot: pnpm memory consolidate --allow-cross-side)'
     );
     expect(runAgent).not.toHaveBeenCalled();
 
@@ -797,7 +798,102 @@ describe('consolidate and undo', () => {
       env,
     });
     expect(allowed.out).toContain('because --allow-cross-side was given');
-    expect(runAgent).toHaveBeenCalled();
+    expect(runAgent).toHaveBeenCalledTimes(1);
+  });
+
+  test('should keep the explicit agent in the suggested one-shot retry', () => {
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, agy: false },
+    });
+    const runAgent = agent({ profile: [], ops: [] });
+
+    const deferred = run(['consolidate', '--agent', 'agy'], {
+      runAgent,
+      env: {},
+    });
+
+    expect(deferred.out).toContain(
+      'pnpm memory consolidate --agent agy --allow-cross-side'
+    );
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  test('should require an explicit agent for manual runs with conflicting harness IDs', () => {
+    const runAgent = agent({ profile: [], ops: [] });
+    const env = { CODEX_THREAD_ID: 'outer', CLAUDE_CODE_SESSION_ID: 'inner' };
+
+    const deferred = run(['consolidate'], { runAgent, env });
+
+    expect(deferred.code).toBe(1);
+    expect(deferred.out).toMatch(/multiple agent harnesses.*\nFix: .*--agent/);
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  test('should allow --dry-run preview even when auto-consolidation is off', () => {
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, agy: false },
+    });
+    const runAgent = agent({ profile: [], ops: [] });
+
+    const preview = run(['consolidate', '--agent', 'agy', '--dry-run'], {
+      runAgent,
+      env: {},
+    });
+
+    expect(preview.code).toBe(0);
+    expect(preview.out).toMatch(/^Would send the consolidation/);
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  test.each([['--allow-cross-side=false'], ['--allow-cross-side', 'false']])(
+    'should reject an explicit false value for cross-side consent (%j)',
+    (...args) => {
+      const runAgent = agent({ profile: [], ops: [] });
+
+      expect(() =>
+        run(['consolidate', '--agent', 'agy', ...args], { runAgent, env: {} })
+      ).toThrow();
+      expect(runAgent).not.toHaveBeenCalled();
+    }
+  );
+
+  test('should reject set-only consolidation flags before sending notes', () => {
+    const runAgent = agent({ profile: [], ops: [] });
+
+    expect(() =>
+      run(['consolidate', '--auto-consolidate', 'claude=off'], { runAgent })
+    ).toThrow(/--auto-consolidate is only supported on set/);
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  test('should allow manual consolidate --agent agy from a plain terminal and block other harnesses', () => {
+    const runAgent = agent({ profile: [], ops: [] });
+
+    const manual = run(['consolidate', '--agent', 'agy'], {
+      runAgent,
+      env: {},
+    });
+    expect(manual.code).toBe(0);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+    expect(runAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: expect.objectContaining({ agent: 'agy' }),
+      })
+    );
+
+    for (const foreignEnv of [
+      { CLAUDE_CODE_SESSION_ID: 'c1' },
+      { CODEX_THREAD_ID: 'x1' },
+      { DSH_SESSION_ID: 'd1' },
+      { KYOTEN_AGENT: 'dscc' },
+    ]) {
+      expect(() =>
+        run(['consolidate', '--agent', 'agy'], { runAgent, env: foreignEnv })
+      ).toThrow(/Google Antigravity Terms of Service/);
+    }
+    expect(runAgent).toHaveBeenCalledTimes(1);
   });
 
   test('should print JSON, and exit 1 when consolidation failed', () => {
@@ -865,23 +961,27 @@ describe('consolidate and undo', () => {
     expect(json.consolidation).toEqual({
       last: NOW.toISOString(),
       due: null,
+      agent: 'claude',
+      autoEnabled: true,
+      tosBlockedBy: null,
       foreign: [],
     });
   });
 
-  test('should name the provider sides that need --allow-cross-side', () => {
+  test('should show when auto-consolidation is off for dscc in status', () => {
     appendJournal(dir, { status: 'applied', side: 'normal' });
 
     const out = run(['status'], {
       env: { ...ENV, KYOTEN_AGENT: 'dscc' },
     }).out;
 
+    expect(out).toMatch(/^Consolidation: .*auto-consolidation off for dscc/m);
     expect(out).toMatch(
-      /^Consolidation: .*notes from normal need --allow-cross-side$/m
+      /^Auto-consolidation: claude on, codex on, dsh on, agy on, dscc off$/m
     );
   });
 
-  test('should follow the agent that will run when naming the sides', () => {
+  test('should follow the agent that will run when reporting consolidation policy', () => {
     appendJournal(dir, { status: 'applied', side: 'normal' });
     writeConfig(dir, { ...DEFAULT_CONFIG, extractAgent: 'dsh' });
 
@@ -889,29 +989,37 @@ describe('consolidate and undo', () => {
       env: { ...ENV, KYOTEN_AGENT: 'dscc' },
     });
 
+    expect(json.consolidation.agent).toBe('dsh');
+    expect(json.consolidation.autoEnabled).toBe(true);
     expect(json.consolidation.foreign).toEqual([]);
   });
 
-  test('should name the sides for a directly opened Antigravity session', () => {
+  test('should report auto-consolidation enabled for Antigravity by default even with mixed notes', () => {
     appendJournal(dir, { status: 'applied', side: 'normal' });
 
-    const out = run(['status'], {
+    const json = runJson(['status'], {
       env: { ...ENV, ANTIGRAVITY_CONVERSATION_ID: 'agy-1' },
-    }).out;
+    });
 
-    expect(out).toMatch(
-      /^Consolidation: .*notes from normal need --allow-cross-side$/m
-    );
+    expect(json.consolidation.agent).toBe('agy');
+    expect(json.consolidation.autoEnabled).toBe(true);
+    expect(json.consolidation.foreign).toEqual([]);
   });
 
-  test('should name the sides when KYOTEN_CALLER_HARNESS identifies agy', () => {
+  test('should report when KYOTEN_CALLER_HARNESS identifies agy and agy is disabled', () => {
     appendJournal(dir, { status: 'applied', side: 'normal' });
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, agy: false },
+    });
 
     const json = runJson(['status'], {
       env: { ...ENV, KYOTEN_CALLER_HARNESS: 'agy' },
     });
 
-    expect(json.consolidation.foreign).toEqual(['normal']);
+    expect(json.consolidation.agent).toBe('agy');
+    expect(json.consolidation.autoEnabled).toBe(false);
+    expect(json.consolidation.foreign).toEqual(['unknown']);
   });
 
   test('should say when consolidation is due', () => {
@@ -1465,6 +1573,25 @@ describe('personalize --compact and --audit', () => {
 });
 
 describe('status', () => {
+  test('should report foreign provenance for an archived task digest when auto-consolidation is off', () => {
+    save({
+      type: 'episode',
+      text: 'Completed setup of the sample workspace.',
+      source: { via: 'digest', task: 'sample' },
+    });
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_CONFIG.autoConsolidate, agy: false },
+    });
+
+    const status = runJson(['status'], {
+      env: { ANTIGRAVITY_CONVERSATION_ID: 'agy-1' },
+      now: () => new Date('2027-01-01T00:00:00Z'),
+    });
+
+    expect(status.consolidation.foreign).toEqual(['unknown']);
+  });
+
   test('should be the default command', () => {
     expect(run([]).out).toBe(run(['status']).out);
   });
@@ -2843,9 +2970,49 @@ describe('personalize', () => {
 describe('set', () => {
   test('should show the settings without flags', () => {
     expect(run(['set']).out).toBe(
-      "Memory agent: the session's own CLI\nExtraction model: the main session's model\nCore budget: 3000 characters (default)"
+      "Memory agent: the session's own CLI\nExtraction model: the main session's model\nCore budget: 3000 characters (default)\nAuto-consolidation: claude on, codex on, dsh on, agy on, dscc off"
     );
   });
+
+  test('should toggle per-agent auto-consolidation and restore defaults', () => {
+    const enabled = run([
+      'set',
+      '--auto-consolidate',
+      'dscc=on',
+      '--auto-consolidate',
+      'agy=off',
+    ]);
+    expect(enabled.out).toMatch(
+      /^Auto-consolidation: claude on, codex on, dsh on, agy off, dscc on$/m
+    );
+    expect(readConfig(dir).autoConsolidate).toEqual({
+      claude: true,
+      codex: true,
+      dsh: true,
+      agy: false,
+      dscc: true,
+    });
+
+    run(['set', '--auto-consolidate', 'agy=default']);
+    expect(readConfig(dir).autoConsolidate).toMatchObject({
+      agy: true,
+      dscc: true,
+    });
+
+    run(['set', '--auto-consolidate', 'default']);
+    expect(readConfig(dir).autoConsolidate).toEqual(
+      DEFAULT_CONFIG.autoConsolidate
+    );
+  });
+
+  test.each(['dscc', 'gemini=on', 'dscc=maybe', '=on'])(
+    'should refuse invalid --auto-consolidate value %s',
+    (bad) => {
+      expect(() => run(['set', '--auto-consolidate', bad])).toThrow(
+        /Invalid --auto-consolidate value/
+      );
+    }
+  );
 
   test('should set the extraction model', () => {
     expect(run(['set', '--extract-model', 'claude-haiku-5-5']).out).toMatch(
@@ -3220,9 +3387,12 @@ describe('personalize --for (per-agent personas)', () => {
     expect(() => run(['personalize', ...args])).toThrow(message);
   });
 
-  test('should refuse --for on other commands', () => {
+  test('should refuse --for and --agent on unsupported commands', () => {
     expect(() => run(['list', '--for', 'ds'])).toThrow(
-      /--compact, --audit, --agent, and --for are only supported on personalize/
+      /--compact, --audit, and --for are only supported on personalize/
+    );
+    expect(() => run(['list', '--agent', 'codex'])).toThrow(
+      /--agent is only supported on personalize and consolidate/
     );
   });
 

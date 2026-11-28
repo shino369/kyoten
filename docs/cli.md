@@ -203,12 +203,15 @@ Extraction and consolidation
                                 be sent to the model and changes nothing
   inbox [--reset]               Changes extraction held back for you to review (they read
                                 like instructions); --reset clears the list
-  consolidate [--dry-run] [--force] [--allow-cross-side]
+  consolidate [--agent claude|codex|dsh|agy] [--dry-run] [--force] [--allow-cross-side]
                                 Tidy the notes and rewrite the profile now (normally weekly,
                                 in the background; never while saving is off, --force
-                                overrides for a manual run). Notes from another provider
-                                side defer; --allow-cross-side sends them to this
-                                session's provider anyway
+                                overrides for a manual run). Auto-consolidation defaults on
+                                for claude/codex/dsh/agy and off for dscc (pnpm memory set
+                                --auto-consolidate <agent>=on|off). When off, --allow-cross-side
+                                or --force overrides once (--dry-run always previews without
+                                sending). --agent selects the CLI for a manual run (other
+                                harnesses cannot pass --agent agy)
   undo [--dry-run]              Revert the last extraction, consolidation, import, or persona
                                 compaction (notes saved since are kept)
 
@@ -265,8 +268,11 @@ Settings
                                 A new session loads the full settings after --on
   set [--extract-agent claude|codex|dsh|agy|default] [--extract-model <model>|default]
       [--budget <characters>|default]
+      [--auto-consolidate <claude|codex|dsh|agy|dscc>=on|off|default]…
                                 Agent CLI and model for memory jobs (default: the session's
-                                own CLI and model), and core block budget
+                                own CLI and model), core block budget, and per-agent automatic
+                                consolidation (default: on for claude/codex/dsh/agy, off for dscc).
+                                --auto-consolidate default resets all five settings
   off [--session] · on [--session]
                                 Pause automatic saving everywhere, or for this session
                                 (incognito); recall still works

@@ -150,13 +150,17 @@ export const agentSide = (agent, env) =>
       : null;
 
 /**
- * The side a journal run recorded; `unknown` for an entry written before
- * runs recorded one (an old or copied journal cannot be proven safe).
+ * The recipient side of a journal run. DSH and Codex are normal providers,
+ * even if an older extraction run reported the transcript's side instead.
+ * A missing side is unknown when the agent can use more than one side.
  *
- * @param {{ side?: string | null } | null | undefined} run
+ * @param {{ agent?: string, side?: string | null } | null | undefined} run
  * @returns {string}
  */
-export const runSide = (run) => run?.side ?? 'unknown';
+export const runSide = (run) =>
+  run?.agent === 'dsh' || run?.agent === 'codex'
+    ? 'normal'
+    : (run?.side ?? 'unknown');
 
 /**
  * Whether a `claude` call from this environment may handle `kyotenAgent`'s

@@ -7,6 +7,8 @@ import path from 'path';
 import {
   BUDGET_RANGE,
   CONFIG_FILE,
+  CONSOLIDATE_AGENTS,
+  DEFAULT_AUTO_CONSOLIDATE,
   DEFAULT_CONFIG,
   MAX_OFF_SESSIONS,
   normalizeConfig,
@@ -44,9 +46,39 @@ describe('normalizeConfig', () => {
       extractAgent: 'codex',
       budget: 4000,
       personalizationEnabled: false,
+      autoConsolidate: {
+        claude: true,
+        codex: false,
+        dsh: true,
+        agy: true,
+        dscc: true,
+      },
     };
 
     expect(normalizeConfig(config)).toEqual(config);
+  });
+
+  test('should default autoConsolidate on for claude/codex/dsh/agy and off for dscc', () => {
+    expect(CONSOLIDATE_AGENTS).toEqual([
+      'claude',
+      'codex',
+      'dsh',
+      'agy',
+      'dscc',
+    ]);
+    expect(DEFAULT_AUTO_CONSOLIDATE).toEqual({
+      claude: true,
+      codex: true,
+      dsh: true,
+      agy: true,
+      dscc: false,
+    });
+    expect(
+      normalizeConfig({ autoConsolidate: { dscc: true } }).autoConsolidate
+    ).toEqual({
+      ...DEFAULT_AUTO_CONSOLIDATE,
+      dscc: true,
+    });
   });
 
   test.each([
@@ -57,6 +89,16 @@ describe('normalizeConfig', () => {
     [
       { personalizationEnabled: 'off' },
       'personalizationEnabled must be true or false',
+    ],
+    [{ autoConsolidate: 'on' }, 'autoConsolidate must be an object'],
+    [{ autoConsolidate: [] }, 'autoConsolidate must be an object'],
+    [
+      { autoConsolidate: { gemini: true } },
+      'Unknown autoConsolidate agent "gemini"',
+    ],
+    [
+      { autoConsolidate: { dscc: 'yes' } },
+      'autoConsolidate.dscc must be true or false',
     ],
     [{ offSessions: 'abc' }, 'offSessions must be a list of session ids'],
     [{ offSessions: ['bad id'] }, 'offSessions must be a list of session ids'],
@@ -122,6 +164,21 @@ describe('readConfig / writeConfig', () => {
       JSON.parse(fs.readFileSync(path.join(dir, CONFIG_FILE), 'utf-8'))
     ).toEqual({
       extractModel: 'm1',
+    });
+
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoConsolidate: { ...DEFAULT_AUTO_CONSOLIDATE, dscc: true },
+    });
+
+    expect(
+      JSON.parse(fs.readFileSync(path.join(dir, CONFIG_FILE), 'utf-8'))
+    ).toEqual({
+      autoConsolidate: { dscc: true },
+    });
+    expect(readConfig(dir).autoConsolidate).toEqual({
+      ...DEFAULT_AUTO_CONSOLIDATE,
+      dscc: true,
     });
   });
 
