@@ -275,7 +275,7 @@ describe('decideQuality', () => {
     expect(result.reason).toContain(
       'Verify passes and every step of demo is done. Before stopping'
     );
-    expect(result.reason).toContain('1. pnpm task review');
+    expect(result.reason).toContain('Run pnpm task review run');
     expect(result.reason).toContain('this reminder is not repeated');
     expect(result.quality.nudged).toBe('review round 1:r0:fp2:');
   });

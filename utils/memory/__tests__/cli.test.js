@@ -433,7 +433,7 @@ describe('extract', () => {
 
     expect(code).toBe(0);
     expect(out).toMatch(
-      /^Would send sess-9 to the extraction model \(the agent's default model\):/
+      /^Would send sess-9 to the extraction model \(haiku\):/
     );
     expect(out).toContain('[user] Always answer me in English');
     expect(runAgent).not.toHaveBeenCalled();
@@ -871,7 +871,7 @@ describe('consolidate and undo', () => {
   test('should allow manual consolidate --agent agy from a plain terminal and block other harnesses', () => {
     const runAgent = agent({ profile: [], ops: [] });
 
-    const manual = run(['consolidate', '--agent', 'agy'], {
+    const manual = run(['consolidate', '--agent', 'agy', '--force'], {
       runAgent,
       env: {},
     });
@@ -977,7 +977,7 @@ describe('consolidate and undo', () => {
 
     expect(out).toMatch(/^Consolidation: .*auto-consolidation off for dscc/m);
     expect(out).toMatch(
-      /^Auto-consolidation: claude on, codex on, dsh on, agy on, dscc off$/m
+      /^Auto-consolidation: claude on, codex on, dsh on, agy off, dscc off$/m
     );
   });
 
@@ -994,7 +994,7 @@ describe('consolidate and undo', () => {
     expect(json.consolidation.foreign).toEqual([]);
   });
 
-  test('should report auto-consolidation enabled for Antigravity by default even with mixed notes', () => {
+  test('should report auto-consolidation disabled for Antigravity by default even with mixed notes', () => {
     appendJournal(dir, { status: 'applied', side: 'normal' });
 
     const json = runJson(['status'], {
@@ -1002,8 +1002,8 @@ describe('consolidate and undo', () => {
     });
 
     expect(json.consolidation.agent).toBe('agy');
-    expect(json.consolidation.autoEnabled).toBe(true);
-    expect(json.consolidation.foreign).toEqual([]);
+    expect(json.consolidation.autoEnabled).toBe(false);
+    expect(json.consolidation.foreign).toEqual(['unknown']);
   });
 
   test('should report when KYOTEN_CALLER_HARNESS identifies agy and agy is disabled', () => {
@@ -1250,7 +1250,7 @@ describe('personalize --compact and --audit', () => {
     run(['personalize', '--persona', 'Stored persona.']);
 
     expect(() => run(['personalize', '--audit'], { runAgent })).toThrow(
-      /Fix: use --agent codex\nFix: use --agent dsh\nFix: use --agent agy$/
+      /Fix: use --agent codex\nFix: use --agent dsh\nFix: use --agent agy\nFix: use --agent dscc$/
     );
   });
 
@@ -1665,7 +1665,9 @@ describe('status', () => {
       /^Personalization: on \(no settings, see pnpm memory personalize --presets\)$/m
     );
     expect(out).toMatch(/^Saving: on$/m);
-    expect(out).toMatch(/^Extraction model: the main session's model$/m);
+    expect(out).toMatch(
+      /^Extraction model: Haiku on Claude\/dscc; session model on other supported harnesses$/m
+    );
   });
 
   test('should show a session that is off', () => {
@@ -2968,9 +2970,36 @@ describe('personalize', () => {
 });
 
 describe('set', () => {
+  test('should persist only extraction policy overrides and reset them', () => {
+    const result = run([
+      'set',
+      '--extract-agent',
+      'dscc',
+      '--auto-extract',
+      'agy=on',
+      '--auto-extract',
+      'codex=off',
+    ]);
+    expect(result.out).toMatch(
+      /^Auto-extraction: claude on, codex off, dsh on, agy on, dscc on$/m
+    );
+    expect(
+      JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'))
+    ).toMatchObject({
+      extractAgent: 'dscc',
+      autoExtract: { agy: true, codex: false },
+    });
+    run(['set', '--auto-extract', 'agy=default']);
+    expect(readConfig(dir).autoExtract).toMatchObject({
+      agy: false,
+      codex: false,
+    });
+    run(['set', '--auto-extract', 'default']);
+    expect(readConfig(dir).autoExtract).toEqual(DEFAULT_CONFIG.autoExtract);
+  });
   test('should show the settings without flags', () => {
     expect(run(['set']).out).toBe(
-      "Memory agent: the session's own CLI\nExtraction model: the main session's model\nCore budget: 3000 characters (default)\nAuto-consolidation: claude on, codex on, dsh on, agy on, dscc off"
+      "Memory agent: the session's own CLI\nExtraction model: Haiku on Claude/dscc; session model on other supported harnesses\nCore budget: 3000 characters (default)\nAuto-consolidation: claude on, codex on, dsh on, agy off, dscc off\nAuto-extraction: claude on, codex on, dsh on, agy off, dscc on"
     );
   });
 
@@ -2980,22 +3009,22 @@ describe('set', () => {
       '--auto-consolidate',
       'dscc=on',
       '--auto-consolidate',
-      'agy=off',
+      'agy=on',
     ]);
     expect(enabled.out).toMatch(
-      /^Auto-consolidation: claude on, codex on, dsh on, agy off, dscc on$/m
+      /^Auto-consolidation: claude on, codex on, dsh on, agy on, dscc on$/m
     );
     expect(readConfig(dir).autoConsolidate).toEqual({
       claude: true,
       codex: true,
       dsh: true,
-      agy: false,
+      agy: true,
       dscc: true,
     });
 
     run(['set', '--auto-consolidate', 'agy=default']);
     expect(readConfig(dir).autoConsolidate).toMatchObject({
-      agy: true,
+      agy: false,
       dscc: true,
     });
 

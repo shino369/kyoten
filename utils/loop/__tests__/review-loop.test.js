@@ -294,7 +294,7 @@ describe('triageProblems', () => {
     expect(
       triageProblems([HIGH, LOW], [triaged(LOW, 'CONFIRMED'), LOW])
     ).toEqual([
-      'row 1: the triage changed the finding (file:line or claim)',
+      'row 1: the triage changed the finding (id, file:line, claim, or scenario)',
       'row 2: no verdict or no reason',
     ]);
   });
@@ -602,7 +602,7 @@ describe('runReviewLoop', () => {
     const failing = fakeAgents({ codes: { reviewer: 1 } });
     expect(review(makeDeps(failing.runAgent))).toMatchObject({
       reason: 'reviewer',
-      detail: 'the reviewer exited 1; round 1 stays open.',
+      detail: 'The reviewer failed: exited 1; round 1 stays open.',
     });
     expect(state().quality?.phase).toBe('review');
     const silent = vi.fn(() => ({
@@ -613,7 +613,7 @@ describe('runReviewLoop', () => {
       durationMs: 1,
     }));
     expect(review(makeDeps(silent)).detail).toBe(
-      `the reviewer printed no ${BEGIN} … ${END} block; round 1 stays open.`
+      `The reviewer failed: printed no ${BEGIN} … ${END} block; round 1 stays open.`
     );
   });
 
@@ -628,11 +628,11 @@ describe('runReviewLoop', () => {
     }));
     const result = review(makeDeps(killed));
     expect(result.detail).toBe(
-      'the reviewer exited SIGTERM; round 1 stays open.'
+      'The reviewer failed: exited SIGTERM; round 1 stays open.'
     );
     expect(
       fs.readFileSync(path.join(result.logDir, 'r1-reviewer.md'), 'utf-8')
-    ).toContain('- Exit: stopped by SIGTERM');
+    ).toContain('exit SIGTERM');
   });
 
   test('should run on an older code state without quality', () => {
@@ -649,11 +649,13 @@ describe('runReviewLoop', () => {
     const crashed = fakeAgents({ reviewer: [[HIGH]], codes: { triage: 2 } });
     expect(review(makeDeps(crashed.runAgent))).toMatchObject({
       reason: 'triage',
-      detail: 'the triage failed: exited 2; round 1 stays open.',
+      detail: 'The triage failed: exited 2; round 1 stays open.',
     });
-    const tampered = fakeAgents({ triage: [[triaged(LOW, 'REFUTED')]] });
+    const tampered = fakeAgents({
+      triage: Array.from({ length: 2 }, () => [triaged(LOW, 'REFUTED')]),
+    });
     expect(review(makeDeps(tampered.runAgent)).detail).toBe(
-      'the triage failed: row 1: the triage changed the finding (file:line or claim); round 1 stays open.'
+      'The triage failed: row 1: the triage changed the finding (id, file:line, claim, or scenario); round 1 stays open.'
     );
     const silent = vi.fn(() => ({
       code: 0,
@@ -663,34 +665,36 @@ describe('runReviewLoop', () => {
       durationMs: 1,
     }));
     expect(review(makeDeps(silent)).detail).toBe(
-      `the triage failed: printed no ${BEGIN} … ${END} block; round 1 stays open.`
+      `The triage failed: printed no ${BEGIN} … ${END} block; round 1 stays open.`
     );
   });
 
   test('should refuse malformed reviewer rows without writing them', () => {
     seedTask();
     const { runAgent, calls } = fakeAgents({
-      reviewer: [[HIGH.replace('| high |', '| severe |')]],
+      reviewer: Array.from({ length: 2 }, () => [
+        HIGH.replace('| high |', '| severe |'),
+      ]),
     });
     const result = review(makeDeps(runAgent));
     expect(result).toMatchObject({ ok: false, reason: 'reviewer' });
     expect(result.detail).toContain('severity "severe"');
-    expect(result.detail).toContain('nothing was written, round 1 stays open.');
+    expect(result.detail).toContain('round 1 stays open.');
+    expect(calls.reviewer).toBe(2);
     expect(calls.triage).toBe(0);
     const file = path.join(taskDir(), 'reviews', `REVIEW_${NAME}-r1.md`);
     expect(tableRows(fs.readFileSync(file, 'utf-8'))).toEqual([]);
   });
 
-  test('should report a findings table that record rejects', () => {
+  test('should reject invalid verdicts before recording', () => {
     seedTask();
     const { runAgent } = fakeAgents({
       reviewer: [[HIGH]],
-      triage: [[triaged(HIGH, 'MAYBE')]],
+      triage: Array.from({ length: 2 }, () => [triaged(HIGH, 'MAYBE')]),
     });
     const result = review(makeDeps(runAgent));
-    expect(result.reason).toBe('record');
-    expect(result.detail).toContain('pnpm task review record failed:');
-    expect(result.detail).toContain('verdict "MAYBE"');
+    expect(result.reason).toBe('triage');
+    expect(result.detail).toContain('verdict must be CONFIRMED or REFUTED');
   });
 
   test('should stop at the wall-clock cap', () => {

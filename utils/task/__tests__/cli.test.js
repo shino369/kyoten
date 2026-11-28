@@ -1108,6 +1108,191 @@ describe('check', () => {
 });
 
 describe('review', () => {
+  test('should require provider selection when Antigravity and Codex markers conflict', () => {
+    newTask(['--verify', 'pnpm test']);
+    const runAgent = vi.fn();
+    expect(() =>
+      run(['review', 'run', '--force'], {
+        env: {
+          CODEX_THREAD_ID: 'fixture',
+          ANTIGRAVITY_CONVERSATION_ID: 'fixture',
+        },
+        runAgent,
+      })
+    ).toThrow(/select a provider explicitly/);
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+  test('should run a private folder review from a self-contained pack and skip triage on zero findings', () => {
+    newTask(['--verify', 'pnpm test']);
+    const dir = path.join(tasksRoot(root), NAME);
+    fs.writeFileSync(
+      path.join(dir, 'scripts', 'source.js'),
+      'export const evidence = 42;\n'
+    );
+    const runAgent = vi.fn(
+      (
+        /** @type {Parameters<typeof import('../../loop/adapters.js').runAgent>[0]} */ opts
+      ) => {
+        expect(opts.prompt).toContain('export const evidence = 42;');
+        expect(opts.command.args).toContain('--tools');
+        expect(opts.cwd).not.toBe(root);
+        return {
+          code: 0,
+          signal: null,
+          durationMs: 5,
+          stdout: 'BEGIN FINDINGS\nEND FINDINGS',
+          output: '',
+        };
+      }
+    );
+
+    const result = run(['review', 'run', '--folder', '--force', '--json'], {
+      runAgent,
+    });
+
+    expect(result.code).toBe(0);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(result.out)).toMatchObject({
+      findings: 0,
+      recorded: true,
+    });
+    expect(read('reviews/PACK_demo-261117-r1.md')).toContain(
+      'export const evidence = 42;'
+    );
+    expect(read('reviews/RUN_demo-261117-r1.md')).toContain('claude');
+  });
+
+  test('should prefer round two changes since the prior snapshot', () => {
+    newTask(['--verify', 'pnpm test']);
+    const dir = path.join(tasksRoot(root), NAME, 'scripts');
+    fs.writeFileSync(path.join(dir, 'update.js'), 'export const update = 1;\n');
+    fs.writeFileSync(
+      path.join(dir, 'other.js'),
+      'export const firstRoundOnly = 5;\n'
+    );
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      durationMs: 5,
+      stdout: 'BEGIN FINDINGS\nEND FINDINGS',
+      output: '',
+    }));
+    run(['review', 'run', '--folder', '--force'], { runAgent });
+    fs.writeFileSync(path.join(dir, 'update.js'), 'export const update = 2;\n');
+
+    const result = run(['review', 'run', '--force', '--json'], { runAgent });
+
+    expect(JSON.parse(result.out)).toMatchObject({ round: 2, recorded: true });
+    const pack = read('reviews/PACK_demo-261117-r2.md');
+    expect(pack).toContain('Incremental diff since the previous round');
+    expect(pack).toContain('+export const update = 2;');
+    expect(pack).not.toContain('firstRoundOnly');
+  });
+
+  test('should retry a malformed response once and leave findings open with no triage', () => {
+    newTask(['--verify', 'pnpm test']);
+    fs.writeFileSync(
+      path.join(tasksRoot(root), NAME, 'scripts', 'source.js'),
+      'export {};\n'
+    );
+    const reply = { code: 0, signal: null, durationMs: 5, output: '' };
+    const runAgent = vi
+      .fn()
+      .mockReturnValueOnce({
+        ...reply,
+        stdout: 'BEGIN FINDINGS\nIndeterminate output\nEND FINDINGS',
+      })
+      .mockReturnValueOnce({
+        ...reply,
+        stdout:
+          'BEGIN FINDINGS\n| | source.js:1 | low | Claim | Scenario | | |\nEND FINDINGS',
+      });
+    const result = run(
+      ['review', 'run', '--folder', '--force', '--triage', 'none', '--json'],
+      { runAgent }
+    );
+    expect(runAgent).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(result.out)).toMatchObject({
+      findings: 1,
+      recorded: false,
+    });
+    expect(state().quality?.phase).toBe('review');
+    expect(read('reviews/REVIEW_demo-261117-r1.md')).toContain(
+      '| low | Claim | Scenario | | |'
+    );
+  });
+
+  test('should run an opt-in dscc review and redact its credential from artifacts', () => {
+    newTask(['--verify', 'pnpm test']);
+    const dir = path.join(tasksRoot(root), NAME);
+    const profile = path.join(root, 'fixture-review-profile');
+    const credential = 'fixture-only-profile-value';
+    fs.writeFileSync(
+      profile,
+      'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic\nANTHROPIC_AUTH_TOKEN=' +
+        credential +
+        '\n'
+    );
+    fs.writeFileSync(
+      path.join(dir, 'scripts', 'source.js'),
+      'export const fixture = "' + credential + '";\n'
+    );
+    const runAgent = vi.fn(
+      (
+        /** @type {Parameters<typeof import('../../loop/adapters.js').runAgent>[0]} */ opts
+      ) => {
+        expect(opts.env.KYOTEN_AGENT).toBe('dscc');
+        expect(opts.command.agent).toBe('claude');
+        expect(opts.prompt).not.toContain(credential);
+        return {
+          code: 0,
+          signal: null,
+          durationMs: 5,
+          stdout: 'BEGIN FINDINGS\nEND FINDINGS',
+          output: credential,
+        };
+      }
+    );
+    const { code } = run(
+      [
+        'review',
+        'run',
+        '--folder',
+        '--force',
+        '--reviewer',
+        'dscc',
+        '--no-record',
+      ],
+      {
+        runAgent,
+        env: { DSCC_PROFILE: profile, ANTIGRAVITY_CONVERSATION_ID: 'fixture' },
+      }
+    );
+
+    expect(code).toBe(0);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+    expect(state().quality?.phase).toBe('review');
+    const log = read('reviews/RUN_demo-261117-r1.md');
+    expect(log).toContain('dscc');
+    expect(log).not.toContain(credential);
+    expect(read('reviews/PACK_demo-261117-r1.md')).not.toContain(credential);
+  });
+
+  test.each(['--reviewer', '--triage'])(
+    'should reject foreign Antigravity dispatch through %s',
+    (flag) => {
+      newTask(['--verify', 'pnpm test']);
+      const runAgent = vi.fn();
+      expect(() =>
+        run(['review', 'run', flag, 'agy', '--force'], {
+          env: { CODEX_THREAD_ID: 'fixture' },
+          runAgent,
+        })
+      ).toThrow(/Antigravity Terms of Service/);
+      expect(runAgent).not.toHaveBeenCalled();
+      expect(state().quality?.reviewRounds).toBe(0);
+    }
+  );
   const finishSteps = () => {
     run(['step', 's1', 'done']);
     run(['step', 's2', 'done']);

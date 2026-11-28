@@ -837,6 +837,40 @@ describe('extraction hooks', () => {
     expect(kick).not.toHaveBeenCalled();
   });
 
+  test('should queue disabled Antigravity work without starting its worker', () => {
+    const options = {
+      harness: /** @type {const} */ ('agy'),
+      rootDir: root,
+      now: NOW,
+      env: { KYOTEN_AGENT: 'agy' },
+      kick,
+    };
+    const session = {
+      conversationId: 'agy-auto-extract',
+      transcriptPath: transcript,
+      cwd: root,
+    };
+    handleHook({ ...session, hookEventName: 'SessionEnd' }, options);
+    handleHook(
+      { conversationId: 'agy-next', hookEventName: 'SessionStart', cwd: root },
+      options
+    );
+    expect(readQueue(dir)).toMatchObject([
+      { session: 'agy-auto-extract', harness: 'agy' },
+    ]);
+    expect(kick).not.toHaveBeenCalled();
+
+    writeConfig(dir, {
+      ...DEFAULT_CONFIG,
+      autoExtract: { ...DEFAULT_CONFIG.autoExtract, agy: true },
+    });
+    handleHook(
+      { conversationId: 'agy-next', hookEventName: 'SessionStart', cwd: root },
+      options
+    );
+    expect(kick).toHaveBeenCalledTimes(1);
+  });
+
   test('should record the KYOTEN_AGENT side on open and queued entries', () => {
     lifecycle('SessionStart', {}, { env: { KYOTEN_AGENT: 'dscc' } });
 

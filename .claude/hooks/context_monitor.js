@@ -16,6 +16,8 @@
  * Codex records the model's window in its rollout, and that wins. DSH gives
  * hooks no transcript, so there the monitor stays silent.
  */
+import fs from 'fs';
+import path from 'path';
 import {
   agyInjectOutput,
   normalizeHookInput,
@@ -23,7 +25,15 @@ import {
   transcriptUsage,
 } from '#utils/harness/input.js';
 import { runIfMain } from '#utils/module-runner.js';
-import { sessionTask } from '#utils/task/store.js';
+import {
+  SESSIONS_DIR,
+  SESSION_ID_RE,
+  ensurePrivateDir,
+  readIfExists,
+  sessionTask,
+  tasksRoot,
+  writeFileAtomic,
+} from '#utils/task/store.js';
 import { ROOT_DIR } from '#utils/workspace-config.js';
 
 export const DEFAULT_CONTEXT_WINDOW = 1_000_000;
@@ -33,6 +43,45 @@ export const THRESHOLDS = {
   warn: 0.4,
   urgent: 0.6,
 };
+const TIERS = ['none', 'note', 'warn', 'urgent'];
+
+/** @param {number} usage */
+function contextTier(usage) {
+  if (usage >= THRESHOLDS.urgent) return 'urgent';
+  if (usage >= THRESHOLDS.warn) return 'warn';
+  return usage >= THRESHOLDS.note ? 'note' : 'none';
+}
+
+/**
+ * Record decreases silently so the same threshold can be raised again.
+ * @param {string} rootDir
+ * @param {unknown} session
+ * @param {string} tier
+ */
+function crossedThreshold(rootDir, session, tier) {
+  if (typeof session !== 'string' || !SESSION_ID_RE.test(session)) return true;
+  const dir = path.join(tasksRoot(rootDir), SESSIONS_DIR);
+  const file = path.join(dir, `${session}.context.json`);
+  try {
+    const raw = readIfExists(file);
+    const last = raw === null ? 'none' : JSON.parse(raw)?.lastTier;
+    // An existing task binding could have a session ID ending in ".context".
+    if (!TIERS.includes(last)) return true;
+    if (last === tier) {
+      if (raw !== null) {
+        // Pruning uses mtime; keep the state of an active long-lived session.
+        const now = new Date();
+        fs.utimesSync(file, now, now);
+      }
+      return false;
+    }
+    ensurePrivateDir(dir);
+    writeFileAtomic(file, JSON.stringify({ lastTier: tier }));
+    return TIERS.indexOf(tier) > TIERS.indexOf(last);
+  } catch {
+    return true;
+  }
+}
 
 /**
  * Read the context window from the environment, falling back to the default.
@@ -118,12 +167,14 @@ export function saveInstruction(activeTask) {
  * @param {number} usagePct
  * @param {number} [contextWindow]
  * @param {string | null} [activeTask]
+ * @param {import('#utils/harness/input.js').Harness} [harness]
  * @returns {string | null}
  */
 export function buildMessage(
   usagePct,
   contextWindow = DEFAULT_CONTEXT_WINDOW,
-  activeTask = null
+  activeTask = null,
+  harness = 'claude'
 ) {
   if (usagePct < THRESHOLDS.note) return null;
 
@@ -134,8 +185,12 @@ export function buildMessage(
     return `[Context Monitor] Usage at ${pctStr}% of ${windowLabel} context window. Monitor progress — consider saving notes if this conversation continues to grow.`;
   }
 
+  const guidance =
+    harness === 'agy'
+      ? 'Finish the current unit or save progress and use /compact or /clear. Avoid launching heavy subagents while the prefix cache is warm; waiting can evict it.'
+      : 'Finish the current unit or save progress and use /compact. Avoid inherited-model subagents for routine work.';
   if (usagePct < THRESHOLDS.urgent) {
-    return `[Context Monitor][WARNING] Usage at ${pctStr}% of ${windowLabel} context window. Save progress now: ${saveInstruction(activeTask)}. Prepare to urge the user to run /compact and start fresh if quality degrades. Delegate subtasks to subagents when possible.`;
+    return `[Context Monitor][WARNING] Usage at ${pctStr}% of ${windowLabel} context window. ${guidance} To save progress, ${saveInstruction(activeTask)}.`;
   }
 
   return `[Context Monitor][URGENT] Usage at ${pctStr}% of ${windowLabel} context window — context likely degraded. IMMEDIATE ACTION: save progress — ${saveInstruction(activeTask)} — then urge the user to run /compact, then /clear to restore quality. Do NOT continue in this session for complex tasks.`;
@@ -152,14 +207,15 @@ export function buildMessage(
  * @template {import('#utils/harness/input.js').Harness} [H='claude']
  * @param {{ transcript_path?: string, transcriptPath?: string, session_id?: string, conversationId?: string, invocationNum?: number }} [input]
  * @param {NodeJS.ProcessEnv} [env]
- * @param {{ activeTask?: (session: string | null) => string | null, harness?: H }} [options]
+ * @param {{ activeTask?: (session: string | null) => string | null, harness?: H, rootDir?: string }} [options]
  * @returns {(H extends 'agy' ? import('#utils/harness/input.js').AgyInjectOutput : StandardHookOutput) | null}
  */
 export function processHookInput(
   input,
   env = process.env,
   {
-    activeTask = (session) => getActiveTask(ROOT_DIR, session),
+    rootDir = ROOT_DIR,
+    activeTask = (session) => getActiveTask(rootDir, session),
     harness = /** @type {H} */ ('claude'),
   } = {}
 ) {
@@ -176,12 +232,15 @@ export function processHookInput(
 
   const contextWindow = usage.window ?? getContextWindow(env);
   const usagePct = usage.tokens / contextWindow;
+  if (!crossedThreshold(rootDir, normalized.session_id, contextTier(usagePct)))
+    return null;
   const message = buildMessage(
     usagePct,
     contextWindow,
     usagePct >= THRESHOLDS.warn
       ? activeTask(normalized.session_id ?? null)
-      : null
+      : null,
+    harness
   );
   if (!message) return null;
 

@@ -13,6 +13,11 @@ import {
   SNAPSHOT_MAX_FILE_BYTES,
   SEVERITY_RUBRIC,
   STATIC_PROTECTED_EXCLUDES,
+  PACK_MAX_TOTAL_BYTES,
+  buildReviewPack,
+  buildTriagePack,
+  classifyDiffFile,
+  sortReviewFiles,
   defaultRunGit,
   defaultRunGitStatus,
   diffStats,
@@ -53,6 +58,83 @@ const GREEN = {
   failed: null,
   summary: 'ok',
 };
+
+test('should review production before config, tests, and docs with tiered context', () => {
+  const files = [
+    'README.md',
+    'a.test.js',
+    '.claude/agents/reviewer.md',
+    'z.js',
+    'a.yml',
+  ];
+  expect(sortReviewFiles(files)).toEqual([
+    'z.js',
+    '.claude/agents/reviewer.md',
+    'a.yml',
+    'a.test.js',
+    'README.md',
+  ]);
+  expect(files.map((file) => classifyDiffFile(file).contextLines)).toEqual([
+    3, 3, 5, 8, 5,
+  ]);
+});
+
+test('should build a capped round 2 review pack from incremental evidence and the plan', () => {
+  const input = {
+    state: codeState(),
+    round: 2,
+    repoDir: '/unused',
+    scope: { base: 'main', since: 'base', files: ['app.js', 'docs/note.md'] },
+    planText:
+      'Goal: Fix this\nAcceptance: new test passes\n\n## Notes\nPrivate history\n',
+    diff: 'FULL ONLY',
+    incrementalDiff:
+      'diff --git a/app.js b/app.js\n@@ -1 +1 @@\n+incremental proof\ndiff --git a/docs/note.md b/docs/note.md\n+' +
+      'あ'.repeat(PACK_MAX_TOTAL_BYTES),
+  };
+  const pack = buildReviewPack(input);
+  expect(pack).toContain('BEGIN FINDINGS');
+  expect(pack).toContain('new test passes');
+  expect(pack).toContain('incremental proof');
+  expect(pack).not.toContain('FULL ONLY');
+  expect(pack).not.toContain('Private history');
+  expect(Buffer.byteLength(pack)).toBeLessThanOrEqual(PACK_MAX_TOTAL_BYTES);
+});
+
+test('should inline safe task code and deduplicate triage windows', () => {
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-pack-'));
+  try {
+    fs.writeFileSync(
+      path.join(repoDir, 'app.js'),
+      'export const evidence = 42;\n'
+    );
+    fs.writeFileSync(
+      path.join(repoDir, 'credentials.json'),
+      'protected payload'
+    );
+    const input = {
+      state: codeState(),
+      round: 1,
+      repoDir,
+      scope: { base: null, since: null, files: ['app.js', 'credentials.json'] },
+      planText: 'Acceptance: Evidence appears.',
+    };
+    const review = buildReviewPack(input);
+    expect(review).toContain('export const evidence = 42;');
+    expect(review).not.toContain('protected payload');
+    const rows = [
+      '| | app.js:1 | high | claim | scenario | | |',
+      '| | app.js:1 | medium | second claim | second scenario | | |',
+      '| | ../outside.js:1 | high | outside | scenario | | |',
+    ];
+    const triage = buildTriagePack({ ...input, rows });
+    expect(triage).toContain('Evidence appears.');
+    expect(triage.match(/export const evidence/g)).toHaveLength(1);
+    expect(triage).toContain('second claim');
+  } finally {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  }
+});
 
 /** @param {Partial<import('../state.js').TaskState>} [overrides] */
 function codeState(overrides = {}) {
@@ -132,12 +214,16 @@ describe('reviewFiles', () => {
       brief: `reviews/BRIEF_${NAME}-r2.md`,
       findings: `reviews/REVIEW_${NAME}-r2.md`,
       diff: `reviews/DIFF_${NAME}-r2.patch`,
+      pack: `reviews/PACK_${NAME}-r2.md`,
+      runLog: `reviews/RUN_${NAME}-r2.md`,
       incrementalDiff: `reviews/DIFF_${NAME}-r1-to-r2.patch`,
     });
     expect(reviewFiles(NAME, 1)).toEqual({
       brief: `reviews/BRIEF_${NAME}-r1.md`,
       findings: `reviews/REVIEW_${NAME}-r1.md`,
       diff: `reviews/DIFF_${NAME}-r1.patch`,
+      pack: `reviews/PACK_${NAME}-r1.md`,
+      runLog: `reviews/RUN_${NAME}-r1.md`,
     });
   });
 

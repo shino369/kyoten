@@ -88,12 +88,13 @@ describe('memoryCheck', () => {
     });
   });
 
-  test('should name the cost and the agent when saving is on', () => {
-    expect(memoryCheck(home)).toEqual({
+  test('should show which Antigravity jobs are off and how to enable them', () => {
+    expect(memoryCheck(home)).toMatchObject({
       id: 'memory',
       status: 'ok',
       detail:
-        "automatic saving is on: each session end runs one background agent call (the session's own CLI); opt out: kyoten run memory off",
+        'automatic saving is on; extraction and consolidation disabled for agy',
+      fix: expect.stringContaining('--auto-extract agy=on'),
     });
   });
 

@@ -7,6 +7,7 @@ import { defaultRunGit, defaultRunGitStatus } from './review.js';
 import { gitInfo } from './git.js';
 import { TEMPLATES_DIR } from './store.js';
 import { runCommands } from './verify.js';
+import { runAgent } from '../loop/adapters.js';
 
 /**
  * @typedef {{
@@ -20,6 +21,7 @@ import { runCommands } from './verify.js';
  *   runCheck: typeof runTaskCheck,
  *   runGit: import('./review.js').RunGit,
  *   runGitStatus: import('./review.js').RunGitStatus,
+ *   runAgent?: typeof runAgent,
  * }} Deps
  */
 
@@ -39,6 +41,7 @@ export function defaultDeps(overrides = {}) {
     runCheck: runTaskCheck,
     runGit: defaultRunGit,
     runGitStatus: defaultRunGitStatus,
+    runAgent,
     ...overrides,
   };
 }

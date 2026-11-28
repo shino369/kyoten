@@ -1,3 +1,4 @@
+import fs from 'fs';
 import { vi } from 'vitest';
 import { EXTRACT_ENV } from '../../memory/extract-env.js';
 import {
@@ -16,6 +17,43 @@ import {
 } from '../adapters.js';
 
 describe('buildCommand', () => {
+  test('should put Codex model and effort before stdin in oneshot mode', () => {
+    const { args } = buildCommand({
+      agent: 'codex',
+      mode: 'oneshot',
+      model: 'chosen-model',
+      effort: 'low',
+    });
+    expect(args.slice(-5)).toEqual([
+      '--model',
+      'chosen-model',
+      '-c',
+      'model_reasoning_effort=low',
+      '-',
+    ]);
+    expect(args).toContain('--ignore-user-config');
+    expect(args).not.toContain('--sandbox');
+  });
+
+  test.each([
+    [{ agent: 'dsh', model: 'm' }, /DSH selects its model/],
+    [{ agent: 'claude', effort: 'low' }, /effort is only supported/],
+    [{ agent: 'dsh', effort: 'low' }, /effort is only supported/],
+    [{ agent: 'agy', effort: 'invalid' }, /Unknown effort/],
+  ])('should reject unsupported model options for %j', (options, error) => {
+    expect(() => buildCommand(options)).toThrow(error);
+  });
+
+  test('should append Antigravity model and effort options', () => {
+    expect(
+      buildCommand({
+        agent: 'agy',
+        mode: 'oneshot',
+        model: 'selected',
+        effort: 'low',
+      }).args.slice(-4)
+    ).toEqual(['--model', 'selected', '--effort', 'low']);
+  });
   test('should build the claude command with the prompt on stdin', () => {
     expect(buildCommand({ agent: 'claude' })).toEqual({
       agent: 'claude',
@@ -390,6 +428,53 @@ describe('AGY permission settings', () => {
 });
 
 describe('parseAgyStreamJson', () => {
+  test('should count unique tool steps and use uncached input for the hit rate', () => {
+    const tool = (/** @type {number} */ step_index) => ({
+      event: 'step_update',
+      step_index,
+      step_update: { step_type: 'tool' },
+    });
+    const raw = [
+      null,
+      tool(0),
+      tool(0),
+      tool(3),
+      { event: 'result', result: { usage: { input_tokens: 900 } } },
+      {
+        event: 'result',
+        result: {
+          status: 'SUCCESS',
+          response: 'answer',
+          num_turns: 2,
+          duration_seconds: 5.1,
+          usage: {
+            input_tokens: 25,
+            cache_read_tokens: 75,
+            output_tokens: 4,
+            thinking_tokens: 2,
+            total_tokens: 106,
+          },
+        },
+      },
+    ]
+      .map((event) => JSON.stringify(event))
+      .join('\n');
+    expect(parseAgyStreamJson(raw)).toEqual({
+      stdout: 'answer',
+      failed: false,
+      usage: {
+        toolCallsCount: 2,
+        inputTokens: 25,
+        cachedTokens: 75,
+        outputTokens: 4,
+        thinkingTokens: 2,
+        totalTokens: 106,
+        numTurns: 2,
+        durationSeconds: 5.1,
+        cacheHitRate: 0.75,
+      },
+    });
+  });
   test('should extract the last result response on success', () => {
     const raw = [
       'not json',
@@ -510,6 +595,39 @@ describe('runAgent', () => {
   const command = buildCommand({ agent: 'codex' });
   let clock = 0;
   const now = () => (clock += 1000);
+
+  test.each([false, true])(
+    'should clean the private settings file after spawn throws=%s',
+    (throws) => {
+      const command = buildCommand({ agent: 'claude', mode: 'oneshot' });
+      const at = command.args.indexOf('--settings') + 1;
+      let settingsFile = '';
+      const invoke = () =>
+        runAgent({
+          command,
+          cwd: '/wt',
+          prompt: 'p',
+          timeoutMs: 5000,
+          env: {},
+          platform: 'win32',
+          spawn: (_bin, args) => {
+            settingsFile = args[at];
+            expect(settingsFile).not.toContain('"');
+            expect(fs.readFileSync(settingsFile, 'utf-8')).toBe(
+              command.args[at]
+            );
+            if (process.platform !== 'win32')
+              expect(fs.statSync(settingsFile).mode & 0o777).toBe(0o600);
+            if (throws) throw new Error('spawn failed');
+            return { status: 0 };
+          },
+        });
+      if (throws) expect(invoke).toThrow('spawn failed');
+      else expect(invoke().code).toBe(0);
+      expect(fs.existsSync(settingsFile)).toBe(false);
+      expect(command.args[at]).toBe('{"disableAllHooks":true}');
+    }
+  );
 
   test('should refuse to start DSH from a dir its hook commands cannot carry', () => {
     const spawn = vi.fn();
@@ -692,7 +810,7 @@ describe('runAgent', () => {
     });
     expect(spawn).toHaveBeenCalledWith(
       'agy',
-      agyCmd.args,
+      [...agyCmd.args.slice(0, -1), expect.stringMatching(/settings\.json$/)],
       expect.objectContaining({
         input: `${JSON.stringify({ event: 'user', message: { content: 'review this' } })}\n`,
       })
@@ -843,7 +961,9 @@ describe('runAgent', () => {
     expect(spawn).toHaveBeenCalledWith(
       'myclaude',
       expect.any(Array),
-      expect.any(Object)
+      expect.objectContaining({
+        env: expect.not.objectContaining({ CLAUDECODE: '1' }),
+      })
     );
   });
 });

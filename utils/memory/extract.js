@@ -35,7 +35,12 @@ import {
   headlessCommand,
   jsonObjectOf,
 } from './agent-call.js';
-import { readConfig, savingOff } from './config.js';
+import {
+  AGY_MEMORY_FIX,
+  memoryPolicyKey,
+  readConfig,
+  savingOff,
+} from './config.js';
 import { looksLikeInstruction } from './instructions.js';
 import {
   ANNOUNCE_CHARS,
@@ -131,7 +136,8 @@ const CHANGE_FIELDS = /** @type {const} */ ([
  * @property {typeof defaultRunAgent} runAgent
  * @property {() => string} tmpdir
  * @property {boolean} [dryRun] build the prompt, call and change nothing
- * @property {boolean} [force] override the saving-off guard for manual runs
+ * @property {boolean} [force] override the automatic policy for manual runs
+ * @property {string} [forceSession] limit an extraction policy override to one session
  * @property {boolean} [allowCrossSide] send notes from other provider sides
  * @property {string} [agent] explicit agent CLI override for manual consolidation
  * @property {import('./queue.js').LockOptions} [lock]
@@ -598,6 +604,9 @@ const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
  * @param {string} name
  */
 function deferredMessage(run, name) {
+  if (run.job !== 'consolidation' && run.policy === 'disabled') {
+    return `Deferred ${name}: auto-extraction is off for ${run.policyAgent}.`;
+  }
   if (run.job === 'consolidation' && run.policy === 'disabled') {
     const extra =
       Array.isArray(run.foreign) && run.foreign.length > 0
@@ -736,6 +745,14 @@ export function formatRun(run, { agent, force, dryRun } = {}) {
     nothing: 'Nothing to consolidate yet.',
   };
   if (run.status === 'deferred') {
+    if (run.job !== 'consolidation' && run.policy === 'disabled') {
+      return [
+        deferredMessage(run, name),
+        run.policyAgent === 'agy'
+          ? `Fix: ${AGY_MEMORY_FIX}; or once: pnpm memory extract ${session} --force`
+          : `Fix: pnpm memory set --auto-extract ${run.policyAgent}=on; or once: pnpm memory extract ${session} --force`,
+      ];
+    }
     if (run.policy === 'ambiguous-harness') {
       return [
         'Deferred the consolidation: multiple agent harnesses are present.',
@@ -768,7 +785,7 @@ export function formatRun(run, { agent, force, dryRun } = {}) {
  * The headless command for one extraction call, on any memory-job agent.
  *
  * @param {{ agent: string, model: string | null, rootDir: string }} input
- * @returns {import('../loop/adapters.js').AgentCommand}
+ * @returns {import('./agent-call.js').MemoryCommand}
  */
 export function extractCommand({ agent, model, rootDir }) {
   if (!CALL_AGENTS.includes(/** @type {any} */ (agent))) {
@@ -780,8 +797,8 @@ export function extractCommand({ agent, model, rootDir }) {
 }
 
 /**
- * The model a memory job passes: `extractModel` when the agent is the
- * configured one (claude when none is configured), else `ownModel`.
+ * The model a memory job passes: explicit configuration first, then the
+ * provider's default or session model.
  *
  * @param {{
  *   agent: string, configured: string | null, extractModel: string | null,
@@ -792,8 +809,12 @@ export function extractCommand({ agent, model, rootDir }) {
 export function modelFor({ agent, configured, extractModel, ownModel }) {
   if (agent === 'dsh') return null;
   if (extractModel && agent === (configured ?? 'claude')) return extractModel;
+  if (agent === 'claude' || agent === 'dscc')
+    return DEFAULT_CLAUDE_MEMORY_MODEL;
   return ownModel;
 }
+
+export const DEFAULT_CLAUDE_MEMORY_MODEL = 'haiku';
 
 /**
  * Extract one queued session. Without `dryRun`, the entry leaves the queue
@@ -833,6 +854,18 @@ export function extractEntry(entry, deps) {
   if (!off) {
     const deferred = deferredRun(agent, entry.kyotenAgent, deps.env, base);
     if (deferred) return deferred;
+    const policyAgent = memoryPolicyKey(agent, deps.env);
+    const forced =
+      deps.force && (!deps.forceSession || deps.forceSession === session);
+    if (!deps.dryRun && !forced && !config.autoExtract[policyAgent]) {
+      return {
+        ...base,
+        status: 'deferred',
+        side,
+        policy: 'disabled',
+        policyAgent,
+      };
+    }
   }
 
   const from = readOffsets(dir)[session]?.offset ?? 0;

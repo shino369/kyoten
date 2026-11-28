@@ -32,6 +32,8 @@ import { trashPaths } from '../task/trash.js';
 import { ROOT_DIR } from '../workspace-config.js';
 import {
   CONSOLIDATE_AGENTS,
+  AGY_MEMORY_FIX,
+  DEFAULT_AUTO_EXTRACT,
   DEFAULT_AUTO_CONSOLIDATE,
   readConfig,
   savingOff,
@@ -167,18 +169,19 @@ Find
                                 The journal of changes, oldest first (default: the last 20)
 
 Extraction and consolidation
-  extract [<session>] [--dry-run]
+  extract [<session>] [--dry-run] [--force]
                                 Extract notes from the queued sessions now (the worker
                                 normally does this in the background). <session> extracts
                                 a session that is still open; --dry-run prints what would
-                                be sent to the model and changes nothing
+                                be sent to the model and changes nothing; --force overrides
+                                the selected agent's auto-extraction policy once
   inbox [--reset]               Changes extraction held back for you to review (they read
                                 like instructions); --reset clears the list
   consolidate [--agent ${CALL_AGENTS.join('|')}] [--dry-run] [--force] [--allow-cross-side]
                                 Tidy the notes and rewrite the profile now (normally weekly,
                                 in the background; never while saving is off, --force
                                 overrides for a manual run). Auto-consolidation defaults on
-                                for ${CALL_AGENTS.join('/')} and off for dscc (pnpm memory set
+                                for claude/codex/dsh and off for agy/dscc (pnpm memory set
                                 --auto-consolidate <agent>=on|off). When off, --allow-cross-side
                                 or --force overrides once (--dry-run always previews without
                                 sending). --agent selects the CLI for a manual run (other
@@ -240,10 +243,12 @@ Settings
   set [--extract-agent ${CALL_AGENTS.join('|')}|default] [--extract-model <model>|default]
       [--budget <characters>|default]
       [--auto-consolidate <${CONSOLIDATE_AGENTS.join('|')}>=on|off|default]…
-                                Agent CLI and model for memory jobs (default: the session's
-                                own CLI and model), core block budget, and per-agent automatic
-                                consolidation (default: on for ${CALL_AGENTS.join('/')}, off for dscc).
-                                --auto-consolidate default resets all five settings
+      [--auto-extract <${CONSOLIDATE_AGENTS.join('|')}>=on|off|default]…
+                                Memory jobs use the session's CLI by default, with Haiku on
+                                Claude/dscc. Also sets the core budget and per-agent policies.
+                                Auto-consolidation defaults off for agy/dscc and on elsewhere.
+                                --auto-extract defaults to off for agy and on elsewhere;
+                                either policy accepts default to reset all five settings
   off [--session] · on [--session]
                                 Pause automatic saving everywhere, or for this session
                                 (incognito); recall still works
@@ -281,11 +286,17 @@ const VALUE_FLAGS = {
   '--extract-agent': 'extractAgent',
   '--budget': 'budget',
   '--auto-consolidate': 'autoConsolidate',
+  '--auto-extract': 'autoExtract',
   '--include': 'include',
   '--tasks': 'tasks',
   '--out': 'out',
 };
-const REPEATABLE = new Set(['cues', 'triggers', 'autoConsolidate']);
+const REPEATABLE = new Set([
+  'cues',
+  'triggers',
+  'autoConsolidate',
+  'autoExtract',
+]);
 const PERSONALIZATION_TOGGLE_FLAG = /^--(?:on|off)(?:=|$)/;
 const BOOLEAN_FLAGS = {
   '--pin': 'pin',
@@ -341,7 +352,7 @@ const FIRST_NOTE =
  *   include?: string, tasks?: string, out?: string, personaFile?: string, agent?: string, for?: string,
  *   triggers: string[],
  *   cues: string[],
- *   autoConsolidate: string[],
+ *   autoConsolidate: string[], autoExtract: string[],
  *   triggerMode?: string,
  *   pin: boolean, force: boolean, failure: boolean, pinned: boolean,
  *   stale: boolean, all: boolean, archived: boolean, reset: boolean, show: boolean,
@@ -376,6 +387,7 @@ export function parseArgs(argv) {
     triggers: [],
     cues: [],
     autoConsolidate: [],
+    autoExtract: [],
     pin: false,
     force: false,
     failure: false,
@@ -544,6 +556,7 @@ function checkPersonaOptions(options) {
       triggers,
       cues,
       autoConsolidate: _autoConsolidate,
+      autoExtract: _autoExtract,
       ...other
     } = options;
     if (on && off) {
@@ -615,8 +628,8 @@ function agentLine(agent) {
 }
 
 /** @param {import('./config.js').AutoConsolidateConfig} autoConsolidate */
-function autoConsolidateLine(autoConsolidate) {
-  return `Auto-consolidation: ${CONSOLIDATE_AGENTS.map(
+function autoPolicyLine(autoConsolidate, label = 'Auto-consolidation') {
+  return `${label}: ${CONSOLIDATE_AGENTS.map(
     (agent) => `${agent} ${autoConsolidate[agent] ? 'on' : 'off'}`
   ).join(', ')}`;
 }
@@ -628,11 +641,13 @@ function autoConsolidateLine(autoConsolidate) {
  * @param {import('./config.js').AutoConsolidateConfig} current
  * @returns {import('./config.js').AutoConsolidateConfig}
  */
-function parseAutoConsolidate(values, current) {
+function parseAutoPolicy(values, current, flag = '--auto-consolidate') {
+  const defaults =
+    flag === '--auto-extract' ? DEFAULT_AUTO_EXTRACT : DEFAULT_AUTO_CONSOLIDATE;
   const next = { ...current };
   for (const raw of values) {
     if (raw === 'default') {
-      Object.assign(next, DEFAULT_AUTO_CONSOLIDATE);
+      Object.assign(next, defaults);
       continue;
     }
     const eq = raw.indexOf('=');
@@ -643,12 +658,11 @@ function parseAutoConsolidate(values, current) {
       (mode !== 'on' && mode !== 'off' && mode !== 'default')
     ) {
       throw new Error(
-        `Invalid --auto-consolidate value ${JSON.stringify(raw)}: use <${CONSOLIDATE_AGENTS.join('|')}>=on|off|default, or default.`
+        `Invalid ${flag} value ${JSON.stringify(raw)}: use <${CONSOLIDATE_AGENTS.join('|')}>=on|off|default, or default.`
       );
     }
     const key = /** @type {import('./config.js').ConsolidateAgent} */ (agent);
-    next[key] =
-      mode === 'default' ? DEFAULT_AUTO_CONSOLIDATE[key] : mode === 'on';
+    next[key] = mode === 'default' ? defaults[key] : mode === 'on';
   }
   return next;
 }
@@ -1049,6 +1063,8 @@ export const COMMANDS = {
       dryRun: options.dryRun,
     });
     const session = options.positionals[1];
+    extractDeps.force = options.force;
+    extractDeps.forceSession = session;
     let entries = readQueue(dir);
     if (session !== undefined) {
       if (!SESSION_ID_RE.test(session)) {
@@ -1340,6 +1356,7 @@ export const COMMANDS = {
         extractModel,
         extractAgent,
         autoConsolidate: core.config.autoConsolidate,
+        autoExtract: core.config.autoExtract,
         extraction,
         consolidation,
         missing,
@@ -1357,8 +1374,19 @@ export const COMMANDS = {
           ...[hint].filter(Boolean),
           `Saving: ${saving}${off ? ' (pnpm memory on)' : ''}`,
           agentLine(extractAgent),
-          `Extraction model: ${extractModel ?? "the main session's model"}`,
-          autoConsolidateLine(core.config.autoConsolidate),
+          `Extraction model: ${extractModel ?? 'Haiku on Claude/dscc; session model on other supported harnesses'}`,
+          autoPolicyLine(core.config.autoExtract, 'Auto-extraction'),
+          autoPolicyLine(core.config.autoConsolidate),
+          ...(!core.config.autoExtract.agy || !core.config.autoConsolidate.agy
+            ? [
+                `Fix: ${AGY_MEMORY_FIX}${!core.config.autoConsolidate.agy ? '; enable consolidation with --auto-consolidate agy=on' : ''}`,
+              ]
+            : []),
+          ...(policyKey &&
+          policyKey !== 'agy' &&
+          !core.config.autoExtract[policyKey]
+            ? [`Fix: pnpm memory set --auto-extract ${policyKey}=on`]
+            : []),
           `Extraction: ${plural(extraction.queued, 'session')} queued; ${lastRun}`,
           `Consolidation: ${consolidation.last ? `last ${localTime(consolidation.last)}` : 'not yet'}${consolidation.due ? `; due (${consolidation.due})` : ''}${consolidation.agent === null ? '; multiple agent harnesses (choose --agent for manual runs)' : ''}${consolidation.autoEnabled === false ? `; auto-consolidation off for ${consolidation.agent} (pnpm memory set --auto-consolidate ${consolidation.agent}=on or --allow-cross-side)` : ''}${consolidation.tosBlockedBy ? `; agy blocked from ${consolidation.tosBlockedBy} (ToS)` : ''}${consolidation.foreign.length > 0 ? `; notes from ${consolidation.foreign.join(', ')} need --allow-cross-side` : ''}`,
           ...(extraction.inbox > 0
@@ -1850,16 +1878,27 @@ export const COMMANDS = {
     }
     const autoConsolidateValues = options.autoConsolidate;
     const hasUpdates =
-      Object.keys(updates).length > 0 || autoConsolidateValues.length > 0;
+      Object.keys(updates).length > 0 ||
+      autoConsolidateValues.length > 0 ||
+      options.autoExtract.length > 0;
     const { config, warnings } = hasUpdates
       ? changeConfig(
           deps,
           (current) => ({
             ...current,
             ...updates,
+            ...(options.autoExtract.length > 0
+              ? {
+                  autoExtract: parseAutoPolicy(
+                    options.autoExtract,
+                    current.autoExtract,
+                    '--auto-extract'
+                  ),
+                }
+              : {}),
             ...(autoConsolidateValues.length > 0
               ? {
-                  autoConsolidate: parseAutoConsolidate(
+                  autoConsolidate: parseAutoPolicy(
                     autoConsolidateValues,
                     current.autoConsolidate
                   ),
@@ -1883,9 +1922,10 @@ export const COMMANDS = {
       withWarnings(
         [
           agentLine(config.extractAgent),
-          `Extraction model: ${config.extractModel ?? "the main session's model"}`,
+          `Extraction model: ${config.extractModel ?? 'Haiku on Claude/dscc; session model on other supported harnesses'}`,
           `Core budget: ${config.budget ?? CORE_BUDGET} characters${config.budget === null ? ' (default)' : ''}`,
-          autoConsolidateLine(config.autoConsolidate),
+          autoPolicyLine(config.autoConsolidate),
+          autoPolicyLine(config.autoExtract, 'Auto-extraction'),
         ].join('\n'),
         warnings
       )
@@ -1941,6 +1981,9 @@ export function main({ argv = process.argv.slice(2), deps = {} } = {}) {
   }
   if (command !== 'personalize' && (options.on || options.off)) {
     throw new Error('--on and --off are only supported on personalize.');
+  }
+  if (command !== 'set' && options.autoExtract.length > 0) {
+    throw new Error('--auto-extract is only supported on set.');
   }
   if (command !== 'set' && options.autoConsolidate.length > 0) {
     throw new Error('--auto-consolidate is only supported on set.');

@@ -7,14 +7,14 @@
  */
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { stripVTControlCharacters } from 'util';
 import {
-  DSH_PATCH,
+  CODEX_ISOLATION_ARGS,
   buildCommand,
   foreignHarnessForAgy,
 } from '../loop/adapters.js';
-import { redactSecrets } from '../redact.js';
+import { writePrivate } from '../kyoten/dscc.js';
+import { prepareAgentExecution, scrubSecrets } from '../loop/dscc.js';
 import { INNER_LOOP_ENV } from '../task/loop.js';
 import { commandFor } from '../tools/registry.js';
 import { EXTRACT_ENV } from './queue.js';
@@ -26,58 +26,16 @@ export const CALL_AGENTS = /** @type {const} */ ([
   'codex',
   'dsh',
   'agy',
+  'dscc',
 ]);
 const ERROR_TAIL = 300;
-const AGY_ISOLATION_SETTINGS = JSON.stringify({
-  toolPermission: 'strict',
-  permissions: {
-    deny: [
-      'command(*)',
-      'write_file(*)',
-      'read_file(*)',
-      'read_url(*)',
-      'execute_url(*)',
-      'mcp(*)',
-    ],
-  },
-});
-const DSH_PERSONA_PATCH = fileURLToPath(
-  new URL('./dsh-persona.patch.yml', import.meta.url)
-);
-const CODEX_DISABLED_FEATURES = [
-  'apps',
-  'browser_use',
-  'hooks',
-  'in_app_browser',
-  'multi_agent',
-  'multi_agent_v2',
-  'plugins',
-  'shell_snapshot',
-  'shell_tool',
-  'skill_mcp_dependency_install',
-  'skill_search',
-  'view_image',
-];
-// No double quote in any argument: Windows .cmd shims cannot pass one (spawn.js
-// quoteCmdArg). Codex parses a -c value as TOML and keeps it as a raw string
-// when that fails, so bare words work, and TOML literal strings use single
-// quotes. Checked against codex 0.170: a wrong value still fails to load.
-const CODEX_ISOLATION_ARGS = [
-  '-c',
-  'default_permissions=memory-persona',
-  '-c',
-  "permissions.memory-persona.filesystem={':root'='deny'}",
-  '-c',
-  'web_search=disabled',
-  ...CODEX_DISABLED_FEATURES.flatMap((feature) => ['--disable', feature]),
-];
-const CLAUDE_ISOLATION_SETTINGS = JSON.stringify({ disableAllHooks: true });
 /** The settings file callAgent writes into the job's folder for claude and agy. */
 export const SETTINGS_FILE = 'memory-job-settings.json';
 const CODEX_EMPTY_MCP_LIST =
   'No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.';
 /**
  * @typedef {typeof CALL_AGENTS[number]} CallAgent
+ * @typedef {import('../loop/adapters.js').AgentCommand & { provider?: 'dscc' }} MemoryCommand
  * @typedef {{
  *   env: NodeJS.ProcessEnv,
  *   runAgent: typeof import('../loop/adapters.js').runAgent,
@@ -90,7 +48,7 @@ const CODEX_EMPTY_MCP_LIST =
  * when one is given.
  *
  * @param {{ agent: string, model?: string | null, rootDir: string }} input
- * @returns {import('../loop/adapters.js').AgentCommand}
+ * @returns {MemoryCommand}
  */
 export function headlessCommand({ agent, model = null, rootDir }) {
   if (!CALL_AGENTS.includes(/** @type {CallAgent} */ (agent))) {
@@ -98,61 +56,14 @@ export function headlessCommand({ agent, model = null, rootDir }) {
       `Memory jobs run on ${CALL_AGENTS.join(', ')} (got ${agent}).\n${CALL_AGENTS.map((name) => `Fix: use --agent ${name}`).join('\n')}`
     );
   }
-  if (model && agent === 'dsh') {
-    throw new Error(
-      'DSH selects its model in its profile, not with --model.\nFix: drop --extract-model, or choose another memory agent'
-    );
-  }
+  const adapter = agent === 'dscc' ? 'claude' : agent;
   const command = buildCommand({
-    agent,
-    argv: commandFor(rootDir, agent),
-    mode: 'read',
+    agent: adapter,
+    argv: commandFor(rootDir, adapter),
+    mode: 'oneshot',
+    model,
   });
-  // Codex starts outside a checkout. DSH needs its overlay before app flags.
-  const args = [...command.args];
-  switch (command.agent) {
-    case 'claude':
-      args.push(
-        '--strict-mcp-config',
-        '--settings',
-        CLAUDE_ISOLATION_SETTINGS,
-        '--tools',
-        ''
-      );
-      break;
-    case 'codex':
-      // A legacy --sandbox flag would override the named permissions.
-      args.splice(args.lastIndexOf('exec') + 1, 2);
-      args.splice(
-        -1,
-        0,
-        '--skip-git-repo-check',
-        '--ignore-user-config',
-        ...CODEX_ISOLATION_ARGS
-      );
-      break;
-    case 'dsh':
-      args.splice(args.lastIndexOf(DSH_PATCH) - 1, 2);
-      args.splice(
-        args.lastIndexOf('--permission-mode'),
-        0,
-        '--patch',
-        DSH_PERSONA_PATCH
-      );
-      break;
-    case 'agy':
-      args.splice(
-        args.lastIndexOf('--settings'),
-        2,
-        '--settings',
-        AGY_ISOLATION_SETTINGS
-      );
-      break;
-  }
-  return {
-    ...command,
-    args: [...args, ...(model ? ['--model', model] : [])],
-  };
+  return agent === 'dscc' ? { ...command, provider: 'dscc' } : command;
 }
 
 /**
@@ -185,7 +96,8 @@ function settingsAsFile(command, cwd) {
   const at = command.args.lastIndexOf('--settings');
   if ((command.agent !== 'claude' && command.agent !== 'agy') || at === -1)
     return command;
-  fs.writeFileSync(path.join(cwd, SETTINGS_FILE), command.args[at + 1]);
+  if (!command.args[at + 1]?.trimStart().startsWith('{')) return command;
+  writePrivate(path.join(cwd, SETTINGS_FILE), command.args[at + 1]);
   const args = [...command.args];
   args[at + 1] = SETTINGS_FILE;
   return { ...command, args };
@@ -198,7 +110,7 @@ function settingsAsFile(command, cwd) {
  * pre-flight probe), no prompt is sent and `{ cancelled: true }` is returned.
  *
  * @param {CallDeps} deps
- * @param {import('../loop/adapters.js').AgentCommand} command
+ * @param {MemoryCommand} command
  * @param {string} prompt
  * @param {{ job?: string, timeoutMs?: number, cancel?: () => boolean }} [options]
  * @returns {import('../loop/adapters.js').AgentResult & { cancelled?: boolean }}
@@ -217,8 +129,13 @@ export function callAgent(
       );
     }
   }
+  const execution = prepareAgentExecution({
+    agent: command.provider ?? command.agent,
+    command,
+    env: deps.env,
+  });
   const cwd = fs.mkdtempSync(path.join(deps.tmpdir(), `memory-${job}-`));
-  const env = { ...deps.env, [EXTRACT_ENV]: '1', [INNER_LOOP_ENV]: 'off' };
+  const env = { ...execution.env, [EXTRACT_ENV]: '1', [INNER_LOOP_ENV]: 'off' };
   let result;
   try {
     if (command.agent === 'codex') {
@@ -264,7 +181,7 @@ export function callAgent(
       error instanceof Error &&
       /was not found \(agent /.test(error.message)
     ) {
-      error.message += `\n${switchFix(job, command.agent)}`;
+      error.message += `\n${switchFix(job, command.provider ?? command.agent)}`;
     }
     throw error;
   } finally {
@@ -275,7 +192,15 @@ export function callAgent(
       ? `was stopped by ${result.signal}`
       : `exited with code ${result.code}`;
     throw new Error(
-      `the ${job} agent ${how}: ${redactSecrets(stripVTControlCharacters(result.output)).trim().slice(-ERROR_TAIL)}`
+      `the ${job} agent ${how}: ${scrubSecrets(stripVTControlCharacters(result.output), execution.secrets).trim().slice(-ERROR_TAIL)}`
+    );
+  }
+  // Successful structured answers still go through their original validators.
+  // Reject an echoed literal credential even when its format is unknown.
+  const answer = result.stdout.trim() ? result.stdout : result.output;
+  if (execution.secrets.some((secret) => answer.includes(secret))) {
+    throw new Error(
+      `the ${job} agent returned a credential; its answer was discarded`
     );
   }
   return result;

@@ -110,6 +110,10 @@ Notes:
   task loop limits retries across continuations.
   `PreInvocation` resets `invocationNum` to `0` at the start of every user turn, so prompt-scoped
   hooks (`context_monitor`, `task_loop --reset`, memory prompt recall) act only on `invocationNum === 0`.
+  The context monitor warns once per crossing of 20%, 40%, and 60% for each session, and
+  re-arms a threshold when usage drops below it. Antigravity's warning at 40% advises
+  finishing the current unit or saving progress before compacting or clearing. Waiting on
+  a heavy subagent can evict a warm prefix cache. Memory recall still uses `PreInvocation`.
   Antigravity does not pass a subagent's role name in hook payloads, so clean-context enforcement
   for `reviewer`/`verifier` subagents relies on the role prompts (headless `pnpm loop --review`
   runs them in isolated read-only mode).
@@ -510,10 +514,11 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   addition resembles a note outside the prompt, a follow-up call checks for a duplicate.
   `--extract-model`
   pairs with the configured agent (claude by default; cleared when switching `--extract-agent`
-  alone, and not accepted for DSH, which chooses its model in its profile); otherwise the session's
-  own model is used.
+  alone). Claude and dscc use Haiku by default. Codex and Antigravity may reuse their session model.
+  DSH chooses its model in its profile. `--extract-agent dscc` opts into DeepSeek through the
+  configured dscc profile.
   Consolidation runs on the current session's CLI (claude, codex, dsh, or agy), on the agent
-  `--extract-agent` assigns, or on an explicit manual `--agent <claude|codex|dsh|agy>` (foreign
+  `--extract-agent` assigns, or on an explicit manual `--agent <claude|codex|dsh|agy|dscc>` (foreign
   agent harnesses are refused `--agent agy` under the Antigravity ToS). A manual run with
   conflicting session markers and no known caller or configured agent requires `--agent`.
   Consolidation never inherits the last run's agent. Persona compaction and audit
@@ -525,22 +530,23 @@ undo` restores it). kyoten sets `KYOTEN_AGENT=<claude|codex|dsh|dscc|agy>` in th
   Every run records its provider side: `dscc` (Claude Code on DeepSeek), `agy` (Google), or
   `normal` (anything else); journal lines from before sides were recorded read as `unknown`.
   The `claude` CLI sends a transcript to the provider its environment names. When extraction uses
-  the Claude CLI, dscc sessions are extracted by dscc workers and other sessions by workers outside
+  the default Claude CLI, dscc sessions are extracted by dscc workers and other sessions by workers outside
   dscc. A mismatching entry stays queued for a matching worker without recording an attempt.
-  Automatic consolidation is controlled per agent via
-  `pnpm memory set --auto-consolidate <claude|codex|dsh|agy|dscc>=on|off|default`: `claude`,
-  `codex`, `dsh`, and `agy` default **on** (consolidating mixed notes automatically), while `dscc`
-  defaults **off** (opt-in, because `dscc` runs through the Claude Code harness against DeepSeek).
-  A bare `--auto-consolidate default` restores all five defaults.
+  `pnpm memory set --auto-extract <agent>=on|off|default` controls background extraction.
+  Antigravity defaults off and its transcripts stay queued until the user opts in or chooses
+  another extraction agent. `pnpm memory extract [<session>] --force` overrides the extraction
+  policy once. Saving pauses and provider restrictions still apply.
+  `pnpm memory set --auto-consolidate <agent>=on|off|default` controls automatic consolidation.
+  Claude, Codex, and DSH default on. Antigravity and dscc default off. A bare `default` resets
+  all settings for the selected policy.
   When auto-consolidation is off for the resolved agent, background and default manual runs defer
   with a Fix line (reporting any foreign or unknown note sides from the selected notes' history);
   `pnpm memory set --auto-consolidate <agent>=on` opts in, or
   `pnpm memory consolidate --allow-cross-side` (or `--force`) runs once. Consolidation is paused
   while saving is off everywhere (`pnpm memory off`; it stays due and runs once saving is back on);
   a manual `pnpm memory consolidate` then refuses with a Fix line unless `--force` (a `--dry-run`
-  is always allowed and never calls a model). Consolidation reuses the last run's model only when
-  that run used the same agent and side as the worker. `pnpm memory status` shows the per-agent
-  auto-consolidation settings, any sides that need `--allow-cross-side` while an agent is off, and
+  is always allowed and never calls a model). Codex and Antigravity reuse the last run's model
+  only for the same agent and provider side. `pnpm memory status` shows both per-agent policies, any sides that need `--allow-cross-side` while an agent is off, and
   whether consolidation is off or ToS-blocked for the current session.
   Consolidation rotates batches of similar notes and can archive old task digests and stale,
   unused facts after taking a snapshot. Use `pnpm memory recall <query> --archived` to search
@@ -618,25 +624,27 @@ plan ─▶ build test-first ─▶ e2e (if required) ─▶ review round N ─�
 | medium   | A real but local problem                                                     | no     |
 | low      | Cleanup, naming, style                                                       | no     |
 
-**Who drives it:**
+**Run a round.** `pnpm task review run` opens or resumes a round, runs a clean-context
+review, triages any findings in a separate fresh session, and records the result. The default
+`oneshot` mode uses a self-contained pack with zero tools. The pack prioritizes production
+changes and uses the incremental patch on round 2. The triage pack includes relevant hunks and
+bounded source windows. The files `PACK_<task>-rN.md` and `RUN_<task>-rN.md` contain the
+redacted reviewer input and execution telemetry. Antigravity telemetry includes tool calls and
+cache hit rate based on cached plus uncached prompt tokens.
 
-- **Claude Code, interactive.** After verify passes, the Stop hook works out the next action:
-  finish the open round, fix the confirmed findings, or run `pnpm task review`. It blocks the stop
-  once with that instruction, and each reminder fires only once per situation. Claude runs the
-  reviewer as a `reviewer` subagent and the triage as a `verifier` subagent, each given only the
-  brief path. When everything is done it writes a NOTES entry listing the recorded medium/low items.
-- **Any harness, unattended.** `pnpm loop <task> --agent <a> --review [--reviewer <b>]` runs the
-  build loop to green, then each round. The reviewer and triage run as read-only agents that print
-  their rows between `BEGIN FINDINGS` / `END FINDINGS`. The loop validates the rows and writes them
-  into the findings file, so a reviewer never edits anything. Then the fixer `<a>` runs until verify
-  is green and every `fix:` step is marked done.
-- **Manual / other harnesses.** The same commands by hand, with
-  `pnpm agent ask --agent <other> "…"` as the clean-context reviewer. The reviewer and the triage
-  need not run on the session's model: `pnpm agent ask --agent dscc - < <brief>` runs read-only on
-  DeepSeek through the `claude` CLI (paste its Markdown rows into the findings table before
-  `pnpm task review record`), `--agent dsh` runs DeepSeek Harness, and a lighter model
-  (an Antigravity flash subagent) is fine for the triage. This keeps the primary model's quota for
-  fixing; the findings table and the triage rules stay the same.
+- The caller's provider is used by default. Choose another with `--reviewer` or
+  `KYOTEN_REVIEWER`. Triage defaults to the reviewer provider and can be set with `--triage`
+  or `KYOTEN_TRIAGE`. Each call starts a fresh session. Antigravity can only be invoked from
+  Antigravity or a plain terminal. Claude defaults to Sonnet for review and Haiku for triage.
+  The reviewer and triage flags and their `KYOTEN_*` equivalents can select a model or effort.
+- Zero findings skips triage. `--triage none` leaves a round with findings open for manual
+  triage. `--no-record` leaves recording to the caller. `--mode read` allows the agents to load
+  the brief and its evidence on demand. For native reviews, use `pnpm task review` and give
+  only the brief path to the reviewer and triage subagents, then run `pnpm task review record`.
+- `pnpm loop <task> --agent <a> --review` uses the same review and triage prompts after verify
+  passes and fixes confirmed must-fix/high findings. Select `--reviewer dscc` to opt into DeepSeek
+  through Claude Code, or use `--no-oneshot-review` to allow read-only inspection. The loop logs
+  the same usage telemetry.
 
 **The `done` gate.** `pnpm task done` refuses any task with a step not done (drop out-of-scope
 steps with `pnpm task step <id> done -m "dropped: …"`), and a code task until:

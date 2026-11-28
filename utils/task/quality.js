@@ -308,7 +308,7 @@ export function decideQuality({ state, fingerprint, pendingAgents = [] }) {
     if (pendingAgents.length > 0) return allow();
     return nudge('the open review round', [
       `Review round ${rounds}/${max} for ${state.name} is open but not recorded.`,
-      'Finish it before stopping: the reviewer and then the triage, in clean contexts, as `pnpm task review` printed (run it again to see the brief), then: pnpm task review record',
+      'Finish it with pnpm task review run (resumes the open round, skips triage for zero findings, and records). For native review, follow the brief and then run pnpm task review record.',
     ]);
   }
   if (openFixes.length > 0) {
@@ -335,9 +335,8 @@ export function decideQuality({ state, fingerprint, pendingAgents = [] }) {
   if (rounds < max && fingerprint !== quality.reviewedDiff) {
     return nudge(`review round ${rounds + 1}`, [
       `Verify passes and every step of ${state.name} is done${waiting.length > 0 ? ` or waiting on someone else (${waiting.join(', ')})` : ''}. Before stopping, run review round ${rounds + 1}/${max} in clean contexts:`,
-      '1. pnpm task review — writes the brief and the findings file',
-      '2. the reviewer, then the triage, as its output says (not yourself: you wrote the code)',
-      '3. pnpm task review record — confirmed must-fix/high findings become fix: steps',
+      'Run pnpm task review run for automated reviewer and triage sessions. Zero findings skips triage. Confirmed must-fix/high findings become fix: steps.',
+      'For native review, open the brief with pnpm task review, then run the reviewer and triage in clean contexts before pnpm task review record.',
     ]);
   }
   if (phase === 'complete') return allow();

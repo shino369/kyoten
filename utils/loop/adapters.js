@@ -3,7 +3,7 @@
  * array; the prompt always goes on stdin and nothing runs through a shell, so
  * task text can never become a command.
  *
- * Two modes. `write` (the default, used by `pnpm loop`) configures agents
+ * The `write` mode (the default, used by `pnpm loop`) configures agents
  * for work in a worktree:
  * - claude: `acceptEdits` auto-approves file edits; Bash still follows the
  *   project allow/deny lists (anything else is denied in -p mode).
@@ -15,7 +15,13 @@
  * `read` (the default for `pnpm agent ask`) selects claude `plan` mode,
  * codex `read-only` sandbox, dsh `read-only` preset, or agy `--settings`
  * with `write_file(*)` and protected-path deny rules and inspection grants.
+ * `oneshot` disables tools for self-contained prompts.
  */
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { writePrivate } from '../kyoten/dscc.js';
 import { EXTRACT_ENV } from '../memory/extract-env.js';
 import { crossSpawn } from '../spawn.js';
 import { HARNESS_SESSION_VARS } from '../task/store.js';
@@ -203,9 +209,61 @@ export function dshDirProblem(dir, platform = process.platform) {
 
 /** @typedef {typeof AGENTS[number]} AgentName */
 
-export const MODES = /** @type {const} */ (['write', 'read']);
+export const MODES = /** @type {const} */ (['write', 'read', 'oneshot']);
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 /** @typedef {typeof MODES[number]} Mode */
+
+export const AGY_ISOLATION_SETTINGS = JSON.stringify({
+  toolPermission: 'strict',
+  permissions: {
+    deny: [
+      'command(*)',
+      'write_file(*)',
+      'edit_file(*)',
+      'read_file(*)',
+      'view_file(*)',
+      'read_url(*)',
+      'execute_url(*)',
+      'search_web(*)',
+      'invoke_subagent(*)',
+      'mcp(*)',
+    ],
+  },
+});
+export const DSH_ONESHOT_PATCH = fileURLToPath(
+  new URL('../memory/dsh-persona.patch.yml', import.meta.url)
+);
+const CODEX_DISABLED_FEATURES = [
+  'apps',
+  'browser_use',
+  'hooks',
+  'in_app_browser',
+  'multi_agent',
+  'multi_agent_v2',
+  'plugins',
+  'shell_snapshot',
+  'shell_tool',
+  'skill_mcp_dependency_install',
+  'skill_search',
+  'view_image',
+];
+// No double quote in any argument: Windows .cmd shims cannot pass one (spawn.js
+// quoteCmdArg). Codex parses a -c value as TOML and keeps it as a raw string
+// when that fails, so bare words work, and TOML literal strings use single
+// quotes. Checked against codex 0.170: a wrong value still fails to load.
+export const CODEX_ISOLATION_ARGS = [
+  '-c',
+  'default_permissions=memory-persona',
+  '-c',
+  "permissions.memory-persona.filesystem={':root'='deny'}",
+  '-c',
+  'web_search=disabled',
+  ...CODEX_DISABLED_FEATURES.flatMap((feature) => ['--disable', feature]),
+];
+export const CLAUDE_ISOLATION_SETTINGS = JSON.stringify({
+  disableAllHooks: true,
+});
 
 /** @type {Record<AgentName, { bin: string, args: Record<Mode, string[]>, install: string }>} */
 const ADAPTERS = {
@@ -228,6 +286,19 @@ const ADAPTERS = {
         'text',
         '--no-session-persistence',
       ],
+      oneshot: [
+        '-p',
+        '--permission-mode',
+        'plan',
+        '--output-format',
+        'text',
+        '--no-session-persistence',
+        '--strict-mcp-config',
+        '--settings',
+        CLAUDE_ISOLATION_SETTINGS,
+        '--tools',
+        '',
+      ],
     },
     install: 'https://code.claude.com/docs (then: claude --version)',
   },
@@ -236,6 +307,14 @@ const ADAPTERS = {
     args: {
       write: ['exec', '--sandbox', 'workspace-write', '--ephemeral', '-'],
       read: ['exec', '--sandbox', 'read-only', '--ephemeral', '-'],
+      oneshot: [
+        'exec',
+        '--ephemeral',
+        '--skip-git-repo-check',
+        '--ignore-user-config',
+        ...CODEX_ISOLATION_ARGS,
+        '-',
+      ],
     },
     install: 'install the Codex CLI (see its docs), or pass --bin <path>',
   },
@@ -269,6 +348,17 @@ const ADAPTERS = {
         'never',
         '-',
       ],
+      oneshot: [
+        '--profile',
+        'headless',
+        '--patch',
+        DSH_ONESHOT_PATCH,
+        '--permission-mode',
+        'read-only',
+        '--approval-policy',
+        'never',
+        '-',
+      ],
     },
     install: 'pass --bin "npx -y @deepseek-ai/dsh" (Node ^22.19 or >=24)',
   },
@@ -295,6 +385,15 @@ const ADAPTERS = {
         '--settings',
         AGY_READ_SETTINGS,
       ],
+      oneshot: [
+        '--input-format',
+        'stream-json',
+        '--output-format',
+        'stream-json',
+        '--disable-slash-commands',
+        '--settings',
+        AGY_ISOLATION_SETTINGS,
+      ],
     },
     install:
       'https://antigravity.google/docs/cli/reference (then: agy --version)',
@@ -312,7 +411,7 @@ const ADAPTERS = {
  * shell, so `npx -y @deepseek-ai/dsh` works) > `argv` (an argv prefix from the
  * tool registry, kept as-is so paths with spaces survive) > the default.
  *
- * @param {{ agent: string, bin?: string, argv?: string[] | null, mode?: string, maxBudgetUsd?: number }} options
+ * @param {{ agent: string, bin?: string, argv?: string[] | null, mode?: string, model?: string | null, effort?: string | null, maxBudgetUsd?: number }} options
  * @returns {AgentCommand}
  */
 export function buildCommand({
@@ -320,6 +419,8 @@ export function buildCommand({
   bin,
   argv,
   mode = 'write',
+  model,
+  effort,
   maxBudgetUsd,
 }) {
   if (!AGENTS.includes(/** @type {AgentName} */ (agent))) {
@@ -348,6 +449,34 @@ export function buildCommand({
     }
     args.push('--max-budget-usd', String(maxBudgetUsd));
   }
+  const selection = [];
+  if (model) {
+    if (name === 'dsh') {
+      throw new Error(
+        'DSH selects its model in its profile.\nFix: drop the model flag or select another agent'
+      );
+    }
+    selection.push('--model', model);
+  }
+  if (effort !== null && effort !== undefined) {
+    if (!EFFORTS.includes(effort)) {
+      throw new Error(
+        `Unknown effort "${effort}".\nFix: use ${EFFORTS.join('|')}`
+      );
+    }
+    if (name === 'codex')
+      selection.push('-c', `model_reasoning_effort=${effort}`);
+    else if (name === 'agy') selection.push('--effort', effort);
+    else
+      throw new Error(
+        '--effort is only supported by Codex and Antigravity.\nFix: drop the effort flag or select another agent'
+      );
+  }
+  args.splice(
+    args.at(-1) === '-' ? args.length - 1 : args.length,
+    0,
+    ...selection
+  );
   return { agent: name, bin: exe, args };
 }
 
@@ -363,7 +492,8 @@ export function installHint(agent) {
 
 /**
  * @typedef {(bin: string, args: string[], options: object) => { status: number | null, signal?: string | null, stdout?: string | Buffer | null, stderr?: string | Buffer | null, error?: Error & { code?: string } }} AgentSpawn
- * @typedef {{ code: number | null, signal: string | null, output: string, stdout: string, durationMs: number }} AgentResult
+ * @typedef {{ toolCallsCount: number, inputTokens: number, cachedTokens: number, outputTokens: number, thinkingTokens: number, totalTokens: number, numTurns: number | null, durationSeconds: number | null, cacheHitRate: number | null }} AgentUsage
+ * @typedef {{ code: number | null, signal: string | null, output: string, stdout: string, durationMs: number, usage?: AgentUsage }} AgentResult
  *   `output` is everything (stdout, stderr, spawn errors, a timeout note);
  *   `stdout` alone is the final answer for harnesses that log progress to
  *   stderr (codex exec, dsh headless).
@@ -375,12 +505,13 @@ export function installHint(agent) {
  * or an empty response caused by auto-denied headless tool actions.
  *
  * @param {string} raw
- * @returns {{ stdout: string, failed: boolean }}
+ * @returns {{ stdout: string, failed: boolean, usage?: AgentUsage }}
  */
 export function parseAgyStreamJson(raw) {
-  const lines = raw.split(/\r?\n/);
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
+  const tools = new Set();
+  let result;
+  for (const entry of raw.split(/\r?\n/)) {
+    const line = entry.trim();
     if (!line) continue;
     let parsed;
     try {
@@ -390,22 +521,75 @@ export function parseAgyStreamJson(raw) {
     }
     if (
       parsed?.event === 'result' &&
-      typeof parsed.result === 'object' &&
-      parsed.result !== null
+      parsed.result &&
+      typeof parsed.result === 'object'
+    )
+      result = parsed.result;
+    if (
+      parsed?.event === 'step_update' &&
+      parsed.step_update?.step_type === 'tool'
     ) {
-      const response =
-        typeof parsed.result.response === 'string'
-          ? parsed.result.response
-          : '';
-      const denied =
-        Array.isArray(parsed.result.denied_actions) &&
-        parsed.result.denied_actions.length > 0;
-      const failed =
-        parsed.result.status !== 'SUCCESS' || (!response && denied);
-      return { stdout: response, failed };
+      const index = parsed.step_index ?? parsed.step_update.step_index;
+      if (Number.isInteger(index)) tools.add(index);
     }
   }
-  return { stdout: raw, failed: false };
+  const response = typeof result?.response === 'string' ? result.response : '';
+  const denied =
+    Array.isArray(result?.denied_actions) && result.denied_actions.length > 0;
+  const answer = result
+    ? {
+        stdout: response,
+        failed: result.status !== 'SUCCESS' || (!response && denied),
+      }
+    : { stdout: raw, failed: false };
+  const counts = result?.usage;
+  if ((!counts || typeof counts !== 'object') && !tools.size) return answer;
+  const number = (/** @type {unknown} */ value) =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0
+      ? value
+      : null;
+  const inputTokens = number(counts?.input_tokens) ?? 0;
+  const cachedTokens = number(counts?.cache_read_tokens) ?? 0;
+  const promptTotal = inputTokens + cachedTokens;
+  return {
+    ...answer,
+    usage: {
+      inputTokens,
+      cachedTokens,
+      outputTokens: number(counts?.output_tokens) ?? 0,
+      thinkingTokens: number(counts?.thinking_tokens) ?? 0,
+      totalTokens: number(counts?.total_tokens) ?? 0,
+      numTurns: number(result?.num_turns),
+      durationSeconds: number(result?.duration_seconds),
+      cacheHitRate: promptTotal > 0 ? cachedTokens / promptTotal : null,
+      toolCallsCount: tools.size,
+    },
+  };
+}
+
+/**
+ * Pass file paths to Windows shims and leave pre-staged settings alone.
+ * @param {AgentCommand} command
+ * @param {(args: string[]) => ReturnType<AgentSpawn>} spawn
+ */
+function spawnWithSettings(command, spawn) {
+  const at = command.args.lastIndexOf('--settings');
+  const settings = at < 0 ? undefined : command.args[at + 1];
+  if (
+    (command.agent !== 'claude' && command.agent !== 'agy') ||
+    !settings?.trimStart().startsWith('{')
+  )
+    return spawn(command.args);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kyoten-agent-settings-'));
+  try {
+    const file = path.join(dir, 'settings.json');
+    writePrivate(file, settings);
+    const args = [...command.args];
+    args[at + 1] = file;
+    return spawn(args);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -451,6 +635,7 @@ export function runAgent({
       Object.entries(env).filter(
         ([key]) =>
           !HARNESS_SESSION_VARS.includes(key) &&
+          key !== 'CLAUDECODE' &&
           key !== CALLER_HARNESS_ENV &&
           (keepKyotenAgent || key !== 'KYOTEN_AGENT')
       )
@@ -458,18 +643,20 @@ export function runAgent({
     [EXTRACT_ENV]: '1',
     ...(command.agent !== 'agy' ? { [CALLER_HARNESS_ENV]: command.agent } : {}),
   };
-  const result = spawn(command.bin, command.args, {
-    cwd,
-    input,
-    encoding: 'utf-8',
-    timeout: timeoutMs,
-    killSignal: 'SIGTERM',
-    maxBuffer: 64 * 1024 * 1024,
-    // A detached caller (the memory worker, queue.js) has no console, so
-    // Windows would give every headless child a new, visible console window.
-    windowsHide: true,
-    env: childEnv,
-  });
+  const result = spawnWithSettings(command, (args) =>
+    spawn(command.bin, args, {
+      cwd,
+      input,
+      encoding: 'utf-8',
+      timeout: timeoutMs,
+      killSignal: 'SIGTERM',
+      maxBuffer: 64 * 1024 * 1024,
+      // A detached caller (the memory worker, queue.js) has no console, so
+      // Windows would give every headless child a new, visible console window.
+      windowsHide: true,
+      env: childEnv,
+    })
+  );
   if (result.error?.code === 'ENOENT') {
     throw new Error(
       `${command.bin} was not found (agent ${command.agent}).\nFix: ${installHint(command.agent)}`
@@ -490,5 +677,6 @@ export function runAgent({
       : output,
     stdout: parsed ? parsed.stdout : rawStdout,
     durationMs: now() - started,
+    ...(parsed?.usage ? { usage: parsed.usage } : {}),
   };
 }

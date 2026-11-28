@@ -47,6 +47,7 @@ import {
   appendNotes,
   currentTask,
   ensurePrivateDir,
+  withLock,
   listTaskNames,
   loadTask,
   readActive,
@@ -87,9 +88,12 @@ import {
   roundBase,
   snapshotDirFor,
   snapshotUnusable,
+  splitRow,
   taskFolderNotes,
   taskReviewScope,
 } from './review.js';
+import { resolveReviewExecution, runReviewAgents } from './review-run.js';
+import { runAgent } from '../loop/adapters.js';
 import { trashPaths } from './trash.js';
 import { summarize, tail } from './verify.js';
 import { writePrivate } from '../kyoten/dscc.js';
@@ -156,6 +160,13 @@ Work
                                 for work committed on it, the commit the task started from;
                                 an explicit --base is used as given). --folder: the task
                                 folder's code, this round and the next
+  review run [--base <ref> | --folder] [--force]
+      [--reviewer dscc|dsh|claude|codex|agy] [--reviewer-model <model>]
+      [--reviewer-effort low|medium|high|xhigh|max] [--triage dscc|dsh|claude|codex|agy|none]
+      [--triage-model <model>] [--triage-effort low|medium|high|xhigh|max]
+      [--mode oneshot|read] [--timeout-min <n>] [--no-record]
+                                Run a clean-context review (oneshot by default), skip triage
+                                for zero findings, and record the results
   review record [file]          Read the triaged findings table; CONFIRMED must-fix/high
                                 findings become fix: steps
   rm <path>…                    Delete files or folders inside this workspace or the task's
@@ -200,6 +211,14 @@ const VALUE_FLAGS = {
   '--kind': 'kind',
   '--e2e': 'e2e',
   '--base': 'base',
+  '--reviewer': 'reviewer',
+  '--reviewer-model': 'reviewerModel',
+  '--reviewer-effort': 'reviewerEffort',
+  '--triage': 'triage',
+  '--triage-model': 'triageModel',
+  '--triage-effort': 'triageEffort',
+  '--mode': 'mode',
+  '--timeout-min': 'timeoutMin',
   '--repo': 'repo',
   '--learn': 'learn',
 };
@@ -213,6 +232,7 @@ const BOOLEAN_FLAGS = {
   '--folder': 'folder',
   '--fix': 'fix',
   '--no-check': 'noCheck',
+  '--no-record': 'noRecord',
   '--help': 'help',
   '-h': 'help',
 };
@@ -227,7 +247,7 @@ const BOOLEAN_FLAGS = {
  *   step: string[], verify: string[], verifyFast: string[], learn: string[],
  *   json: boolean, fast: boolean, all: boolean, force: boolean, help: boolean,
  *   fix: boolean, noCheck: boolean, folder: boolean, gate: boolean,
- * }} Options
+ * } & import('./review-run.js').ReviewOptions} Options
  * @typedef {import('./deps.js').Deps} Deps
  */
 
@@ -1162,170 +1182,25 @@ export const COMMANDS = {
   review(options, deps) {
     const sub = options.positionals[1];
     if (sub === 'record') return recordReview(options, deps);
+    if (sub === 'run') return runReview(options, deps);
     if (sub !== undefined) {
       throw new Error(
-        'Usage: pnpm task review [--base <ref> | --folder] [--force] | pnpm task review record [file]'
+        'Usage: pnpm task review [--base <ref> | --folder] [--force] | pnpm task review run | pnpm task review record [file]'
       );
     }
-    const name = pickTask(options, deps, { engage: true });
-    const task = loadTask(deps.rootDir, name);
-    if (!task.state) {
-      throw new Error(
-        `${name} has no ${STATE_FILE}.\nFix: pnpm task init ${name} --verify "<test command>"`
-      );
-    }
-    if (options.folder && options.base !== undefined) {
-      throw new Error(
-        'Review the task folder or git changes: --folder or --base, not both.\nFix: pnpm task review --folder (the task folder) or pnpm task review --base <ref> (git changes)'
-      );
-    }
-    const quality = task.state.quality ?? freshQuality();
-    if (
-      quality.phase === 'review' &&
-      (options.folder || options.base !== undefined)
-    ) {
-      throw new Error(
-        `Round ${quality.reviewRounds} is open with its own scope; --folder and --base choose the scope of the next round.\nFix: finish it (reviewer, triage, pnpm task review record), then pnpm task review ${options.folder ? '--folder' : `--base ${options.base}`}`
-      );
-    }
-    const taskRel = path
-      .relative(deps.rootDir, task.dir)
-      .split(path.sep)
-      .join('/');
-    const scope = taskReviewScope({
-      rootDir: deps.rootDir,
-      taskDir: task.dir,
-      state: task.state,
-      base: options.folder ? null : options.base,
-      runGit: deps.runGit,
-    });
-    const reviewsDir = path.join(task.dir, 'reviews');
-    const preflight = reviewPreflight({
-      rootDir: deps.rootDir,
-      taskDir: task.dir,
-      state: task.state,
-      scope,
-      runGitStatus: deps.runGitStatus,
-    });
-    if (!preflight.eligible) {
-      if (scope.base === null) {
-        throw new Error(
-          `Nothing to review for ${name}: its task folder has no code (${taskRel}/).\nFix: pnpm task review --base <ref> to review git changes instead`
-        );
-      }
-      const noStart =
-        task.state.startCommit === undefined && options.base === undefined
-          ? ` ${name} has no recorded start commit (it predates them), so work committed on ${scope.base} itself cannot be found.`
-          : '';
-      throw new Error(
-        `Nothing to review for ${name}: no files changed since ${scope.base} (commit ${String(scope.since).slice(0, 7)}).${noStart} If the work is already committed there, review against the commit before it.\nFix: pnpm task review --base <the commit before the task's first commit>`
-      );
-    }
-    const print = /** @type {string} */ (preflight.fingerprint);
-    const now = deps.now();
-    const agent = detectAgent(options, deps.env);
-    let round = 0;
-    let reopened = false;
-    const state = updateState(
-      deps.rootDir,
+    const {
       name,
-      (current) => {
-        const result = openRound(current, {
-          fingerprint: print,
-          // The base actually used (the start commit when the work is on main;
-          // FOLDER_BASE when the folder was chosen)
-          base: roundBase(
-            scope,
-            current.quality ?? freshQuality(),
-            options.folder
-          ),
-          force: options.force,
-        });
-        round = result.round;
-        reopened = result.reopened;
-        return result.state;
-      },
-      { now, agent }
-    );
-    const files = reviewFiles(name, round);
-    ensurePrivateDir(reviewsDir);
-    const scopeDir = scopeRoot(deps.rootDir, state, scope);
-    const stats = diffStats({ repoDir: scopeDir, scope, runGit: deps.runGit });
-    // The snapshot lets the next round show only what changed since this one;
-    // reopening an open round keeps it (the reviewed code must not move).
-    const snapshotDir = snapshotDirFor(reviewsDir, round);
-    if (!reopened && scope.files.length > 0) {
-      saveSnapshot({ repoDir: scopeDir, dir: snapshotDir, files: scope.files });
-    }
-    const patch = generateReviewDiff({
-      repoDir: scopeDir,
+      quality,
+      round,
+      reopened,
       scope,
-      runGit: deps.runGit,
-    });
-    if (patch !== null) {
-      writePrivate(path.join(task.dir, files.diff), patch);
-    }
-    const previousSnapshot =
-      round > 1 ? previousSnapshotDir(reviewsDir, round - 1) : null;
-    let incremental = null;
-    if (round > 1 && files.incrementalDiff && previousSnapshot !== null) {
-      incremental =
-        preflight.incremental ??
-        generateIncrementalDiff({
-          repoDir: scopeDir,
-          snapshotDir: previousSnapshot,
-          files: [
-            ...new Set([
-              ...scope.files,
-              ...listSnapshotScope(previousSnapshot),
-            ]),
-          ].sort(),
-          runGitStatus: deps.runGitStatus,
-        });
-      if (incremental !== null) {
-        writePrivate(path.join(task.dir, files.incrementalDiff), incremental);
-      }
-    }
-    const diffPath = patch === null ? null : `${taskRel}/${files.diff}`;
-    const incrementalPath =
-      incremental === null || !files.incrementalDiff
-        ? null
-        : `${taskRel}/${files.incrementalDiff}`;
-    writePrivate(
-      path.join(task.dir, files.brief),
-      formatReviewBrief({
-        state,
-        round,
-        scope,
-        taskRel,
-        diffPath,
-        incrementalDiffPath: incrementalPath,
-        incrementalUnavailable: round > 1 && snapshotUnusable(previousSnapshot),
-        stats,
-        folder: taskFolderNotes({
-          rootDir: deps.rootDir,
-          taskDir: task.dir,
-          scope,
-        }),
-      })
-    );
-    const findingsPath = path.join(task.dir, files.findings);
-    if (!fs.existsSync(findingsPath)) {
-      writePrivate(
-        findingsPath,
-        findingsTemplate({ name, round, brief: `${taskRel}/${files.brief}` })
-      );
-    }
-    if (!reopened) {
-      writeNote(deps, task, {
-        at: now,
-        agent,
-        label: `review r${round} opened`,
-        message: `Review round ${round}/${quality.maxRounds} opened: ${scope.files.length} file(s), fingerprint ${print}.`,
-      });
-    }
-    const brief = `${taskRel}/${files.brief}`;
-    const findings = `${taskRel}/${files.findings}`;
+      brief,
+      findings,
+      diff: diffPath,
+      incrementalDiff: incrementalPath,
+      incrementalUnavailable,
+      stats,
+    } = openReviewArtifacts(options, deps);
     output(
       deps,
       options,
@@ -1339,6 +1214,8 @@ export const COMMANDS = {
         findings,
         diff: diffPath,
         incrementalDiff: incrementalPath,
+        incrementalUnavailable,
+        stats,
       },
       [
         `${reopened ? 'Review round still open' : 'Opened review round'} ${round}/${quality.maxRounds} for ${name} (${scope.files.length} file(s)).`,
@@ -1346,7 +1223,8 @@ export const COMMANDS = {
         `Findings: ${findings}`,
         ...(diffPath ? [`Diff: ${diffPath}`] : []),
         ...(incrementalPath ? [`Incremental diff: ${incrementalPath}`] : []),
-        'Run the review and the triage in clean contexts, not yourself (you wrote the code):',
+        'Automated review: pnpm task review run (0 findings skips triage).',
+        'For native review, run the reviewer and triage in clean contexts:',
         `  Claude Code: Agent tool, subagent_type "reviewer", prompt "Follow ${brief}"; then subagent_type "verifier", prompt "Triage ${findings} as step 2 of ${brief} says".`,
         `  Codex: spawn_agent with agent_type "reviewer", message "Follow ${brief}", then wait_agent before you end the turn; then the same with agent_type "verifier" and "Triage ${findings} as step 2 of ${brief} says".`,
         `  DSH: subagent with prompt "Follow .claude/agents/reviewer.md, then ${brief}"; wait for its notice before you end the turn; then one with "Follow .claude/agents/verifier.md (triage mode), then triage ${findings} as step 2 of ${brief} says".`,
@@ -1648,6 +1526,185 @@ function removeStepCommand(options, deps, name) {
 }
 
 /**
+ * Open the same private artifacts for native and automated review.
+ * @param {Options} options
+ * @param {Deps} deps
+ */
+function openReviewArtifacts(options, deps) {
+  const name = pickTask(options, deps, { engage: true });
+  const task = loadTask(deps.rootDir, name);
+  if (!task.state) {
+    throw new Error(
+      `${name} has no ${STATE_FILE}.\nFix: pnpm task init ${name} --verify "<test command>"`
+    );
+  }
+  if (options.folder && options.base !== undefined) {
+    throw new Error(
+      'Review the task folder or git changes: --folder or --base, not both.\nFix: pnpm task review --folder (the task folder) or pnpm task review --base <ref> (git changes)'
+    );
+  }
+  const quality = task.state.quality ?? freshQuality();
+  if (
+    quality.phase === 'review' &&
+    (options.folder || options.base !== undefined)
+  ) {
+    throw new Error(
+      `Round ${quality.reviewRounds} is open with its own scope; --folder and --base choose the scope of the next round.\nFix: finish it (reviewer, triage, pnpm task review record), then pnpm task review ${options.folder ? '--folder' : `--base ${options.base}`}`
+    );
+  }
+  const taskRel = path
+    .relative(deps.rootDir, task.dir)
+    .split(path.sep)
+    .join('/');
+  const scope = taskReviewScope({
+    rootDir: deps.rootDir,
+    taskDir: task.dir,
+    state: task.state,
+    base: options.folder ? null : options.base,
+    runGit: deps.runGit,
+  });
+  const reviewsDir = path.join(task.dir, 'reviews');
+  const preflight = reviewPreflight({
+    rootDir: deps.rootDir,
+    taskDir: task.dir,
+    state: task.state,
+    scope,
+    runGitStatus: deps.runGitStatus,
+  });
+  if (!preflight.eligible) {
+    if (scope.base === null) {
+      throw new Error(
+        `Nothing to review for ${name}: its task folder has no code (${taskRel}/).\nFix: pnpm task review --base <ref> to review git changes instead`
+      );
+    }
+    const noStart =
+      task.state.startCommit === undefined && options.base === undefined
+        ? ` ${name} has no recorded start commit (it predates them), so work committed on ${scope.base} itself cannot be found.`
+        : '';
+    throw new Error(
+      `Nothing to review for ${name}: no files changed since ${scope.base} (commit ${String(scope.since).slice(0, 7)}).${noStart} If the work is already committed there, review against the commit before it.\nFix: pnpm task review --base <the commit before the task's first commit>`
+    );
+  }
+  const print = /** @type {string} */ (preflight.fingerprint);
+  const now = deps.now();
+  const agent = detectAgent(options, deps.env);
+  let round = 0;
+  let reopened = false;
+  const state = updateState(
+    deps.rootDir,
+    name,
+    (current) => {
+      const result = openRound(current, {
+        fingerprint: print,
+        // The base actually used (the start commit when the work is on main;
+        // FOLDER_BASE when the folder was chosen)
+        base: roundBase(
+          scope,
+          current.quality ?? freshQuality(),
+          options.folder
+        ),
+        force: options.force,
+      });
+      round = result.round;
+      reopened = result.reopened;
+      return result.state;
+    },
+    { now, agent }
+  );
+  const files = reviewFiles(name, round);
+  ensurePrivateDir(reviewsDir);
+  const scopeDir = scopeRoot(deps.rootDir, state, scope);
+  const stats = diffStats({ repoDir: scopeDir, scope, runGit: deps.runGit });
+  // The snapshot lets the next round show only what changed since this one;
+  // reopening an open round keeps it (the reviewed code must not move).
+  const snapshotDir = snapshotDirFor(reviewsDir, round);
+  if (!reopened && scope.files.length > 0) {
+    saveSnapshot({ repoDir: scopeDir, dir: snapshotDir, files: scope.files });
+  }
+  const patch = generateReviewDiff({
+    repoDir: scopeDir,
+    scope,
+    runGit: deps.runGit,
+  });
+  if (patch !== null) {
+    writePrivate(path.join(task.dir, files.diff), patch);
+  }
+  const previousSnapshot =
+    round > 1 ? previousSnapshotDir(reviewsDir, round - 1) : null;
+  let incremental = null;
+  if (round > 1 && files.incrementalDiff && previousSnapshot !== null) {
+    incremental =
+      preflight.incremental ??
+      generateIncrementalDiff({
+        repoDir: scopeDir,
+        snapshotDir: previousSnapshot,
+        files: [
+          ...new Set([...scope.files, ...listSnapshotScope(previousSnapshot)]),
+        ].sort(),
+        runGitStatus: deps.runGitStatus,
+      });
+    if (incremental !== null) {
+      writePrivate(path.join(task.dir, files.incrementalDiff), incremental);
+    }
+  }
+  const diffPath = patch === null ? null : `${taskRel}/${files.diff}`;
+  const incrementalPath =
+    incremental === null || !files.incrementalDiff
+      ? null
+      : `${taskRel}/${files.incrementalDiff}`;
+  writePrivate(
+    path.join(task.dir, files.brief),
+    formatReviewBrief({
+      state,
+      round,
+      scope,
+      taskRel,
+      diffPath,
+      incrementalDiffPath: incrementalPath,
+      incrementalUnavailable: round > 1 && snapshotUnusable(previousSnapshot),
+      stats,
+      folder: taskFolderNotes({
+        rootDir: deps.rootDir,
+        taskDir: task.dir,
+        scope,
+      }),
+    })
+  );
+  const findingsPath = path.join(task.dir, files.findings);
+  if (!fs.existsSync(findingsPath)) {
+    writePrivate(
+      findingsPath,
+      findingsTemplate({ name, round, brief: `${taskRel}/${files.brief}` })
+    );
+  }
+  if (!reopened) {
+    writeNote(deps, task, {
+      at: now,
+      agent,
+      label: `review r${round} opened`,
+      message: `Review round ${round}/${quality.maxRounds} opened: ${scope.files.length} file(s), fingerprint ${print}.`,
+    });
+  }
+  const brief = `${taskRel}/${files.brief}`;
+  const findings = `${taskRel}/${files.findings}`;
+  return {
+    name,
+    task,
+    state,
+    quality,
+    round,
+    reopened,
+    scope,
+    brief,
+    findings,
+    diff: diffPath,
+    incrementalDiff: incrementalPath,
+    incrementalUnavailable: round > 1 && snapshotUnusable(previousSnapshot),
+    stats: [...stats],
+  };
+}
+
+/**
  * `pnpm task review record [file]`: close the open round with its findings.
  *
  * @param {Options} options
@@ -1739,6 +1796,70 @@ function recordReview(options, deps) {
     ].join('\n')
   );
   return 0;
+}
+
+/**
+ * @param {Options} options
+ * @param {Deps} deps
+ */
+function runReview(options, deps) {
+  if (options.positionals.length !== 2)
+    throw new Error('review run does not take positional arguments.');
+  const selection = resolveReviewExecution(options, deps);
+  const name = pickTask(options, deps, { engage: true });
+  const { dir } = loadTask(deps.rootDir, name);
+  const reviewsDir = path.join(dir, 'reviews');
+  ensurePrivateDir(reviewsDir);
+  return withLock(
+    reviewsDir,
+    () => {
+      const opened = openReviewArtifacts(options, deps);
+      const { rows, failure } = runReviewAgents({
+        rootDir: deps.rootDir,
+        taskDir: dir,
+        state: opened.state,
+        opened,
+        selection,
+        runAgent: deps.runAgent ?? runAgent,
+      });
+      const untriaged = rows.some((row) => !splitRow(row)[5]);
+      const recorded =
+        !failure &&
+        !untriaged &&
+        !options.noRecord &&
+        (rows.length === 0 || selection.triage !== null);
+      if (recorded) recordReview(options, { ...deps, log: () => {} });
+      const summary = [
+        `Review round ${opened.round} for ${name} (${selection.mode}).`,
+        `Reviewer: ${selection.reviewer.agent}; ${rows.length} finding(s).`,
+        failure
+          ? `Stopped at ${failure.stage}: ${failure.message.split('\n')[0]}`
+          : rows.length === 0
+            ? 'Triage skipped (zero findings).'
+            : selection.triage
+              ? `Triage: ${selection.triage.agent}.`
+              : 'Triage skipped (--triage none).',
+        `${recorded ? 'Recorded' : 'Round remains open'}; telemetry: ${relPosix(deps.rootDir, path.join(dir, reviewFiles(name, opened.round).runLog))}.`,
+        ...(selection.tip ? [selection.tip] : []),
+      ];
+      output(
+        deps,
+        options,
+        {
+          ok: !failure,
+          task: name,
+          round: opened.round,
+          findings: rows.length,
+          recorded,
+          failure,
+          mode: selection.mode,
+        },
+        summary.join('\n')
+      );
+      return failure ? 1 : 0;
+    },
+    { staleMs: selection.timeoutMs + 60_000, label: 'Review run' }
+  );
 }
 
 /**

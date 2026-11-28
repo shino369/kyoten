@@ -7,6 +7,11 @@
  */
 import fs from 'fs';
 import path from 'path';
+import {
+  AGY_MEMORY_FIX,
+  memoryPolicyKey,
+  readConfig,
+} from '../memory/config.js';
 import { readIfExists, writeFileAtomic } from '../task/store.js';
 
 export const MEMORY_CONFIG = path.join('memory', 'config.json');
@@ -79,6 +84,32 @@ export function savingState(home) {
 export function memoryCheck(home) {
   try {
     const { off, agent } = savingState(home);
+    if (!off) {
+      const { autoExtract, autoConsolidate } = readConfig(
+        path.join(home, 'memory')
+      );
+      const key = memoryPolicyKey(agent ?? 'agy', {});
+      const disabled = [
+        ...(!autoExtract[key] ? ['extraction'] : []),
+        ...(!autoConsolidate[key] ? ['consolidation'] : []),
+      ];
+      if (disabled.length > 0) {
+        const fix =
+          key === 'agy' && !autoExtract.agy
+            ? [AGY_MEMORY_FIX]
+            : !autoExtract[key]
+              ? [`pnpm memory set --auto-extract ${key}=on`]
+              : [];
+        if (!autoConsolidate[key])
+          fix.push(`pnpm memory set --auto-consolidate ${key}=on`);
+        return {
+          id: 'memory',
+          status: 'ok',
+          detail: `automatic saving is on; ${disabled.join(' and ')} disabled for ${key}`,
+          fix: fix.join('; '),
+        };
+      }
+    }
     return {
       id: 'memory',
       status: 'ok',

@@ -319,7 +319,15 @@ describe('main', () => {
         'Review: reviewer + triage: claude -p --permission-mode plan'
       );
       expect(
-        run(['--agent', 'dsh', '--review', '--bin', 'mydsh', '--dry-run']).out
+        run([
+          '--agent',
+          'dsh',
+          '--review',
+          '--no-oneshot-review',
+          '--bin',
+          'mydsh',
+          '--dry-run',
+        ]).out
       ).toContain(
         'reviewer + triage: mydsh --profile headless --patch .dsh/workspace.patch.yml --permission-mode read-only'
       );

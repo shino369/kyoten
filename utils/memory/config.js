@@ -4,8 +4,8 @@
  *
  * - `off`: automatic saving is paused everywhere; `offSessions`: paused for
  *   these sessions only (an "incognito" session). Recall still works.
- * - `extractModel`: the model extraction uses; null means the main session's
- *   model (the workspace rule).
+ * - `extractModel`: the model extraction uses. The default is Haiku for
+ *   Claude and dscc, or the session's model when applicable elsewhere.
  * - `extractAgent`: the agent CLI memory jobs run on; null means the
  *   session's own CLI (consolidation: the last run's).
  * - `budget`: the core block's size in characters; null means CORE_BUDGET.
@@ -25,16 +25,21 @@ export const BUDGET_RANGE = { min: 1000, max: 10000 };
 export const MAX_OFF_SESSIONS = 50;
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$/;
 /** Agents with per-agent automatic consolidation switches. */
-export const CONSOLIDATE_AGENTS = /** @type {const} */ ([
-  ...CALL_AGENTS,
-  'dscc',
-]);
-/** Default automatic consolidation policy per agent (opt-in for dscc). */
+export const CONSOLIDATE_AGENTS = CALL_AGENTS;
+/** Default automatic extraction policy, opt-in for Antigravity. */
+export const DEFAULT_AUTO_EXTRACT = Object.freeze({
+  claude: true,
+  codex: true,
+  dsh: true,
+  agy: false,
+  dscc: true,
+});
+/** Default automatic consolidation policy, opt-in for Antigravity and dscc. */
 export const DEFAULT_AUTO_CONSOLIDATE = Object.freeze({
   claude: true,
   codex: true,
   dsh: true,
-  agy: true,
+  agy: false,
   dscc: false,
 });
 
@@ -49,6 +54,7 @@ export const DEFAULT_AUTO_CONSOLIDATE = Object.freeze({
  * @property {number | null} budget
  * @property {boolean} personalizationEnabled
  * @property {AutoConsolidateConfig} autoConsolidate
+ * @property {AutoConsolidateConfig} autoExtract
  */
 
 /** @type {Readonly<MemoryConfig>} */
@@ -60,6 +66,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   budget: null,
   personalizationEnabled: true,
   autoConsolidate: DEFAULT_AUTO_CONSOLIDATE,
+  autoExtract: DEFAULT_AUTO_EXTRACT,
 });
 const KEYS = Object.keys(DEFAULT_CONFIG);
 
@@ -89,23 +96,24 @@ function normalizeSessions(value) {
 
 /**
  * @param {unknown} value
+ * @param {'autoConsolidate' | 'autoExtract'} key
  * @returns {AutoConsolidateConfig}
  */
-function normalizeAutoConsolidate(value) {
+function normalizePolicy(value, key) {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    invalid('autoConsolidate must be an object.');
+    invalid(`${key} must be an object.`);
   }
   const result = /** @type {AutoConsolidateConfig} */ ({
-    ...DEFAULT_AUTO_CONSOLIDATE,
+    ...DEFAULT_CONFIG[key],
   });
   for (const [agent, setting] of Object.entries(value)) {
     if (!CONSOLIDATE_AGENTS.includes(/** @type {any} */ (agent))) {
       invalid(
-        `Unknown autoConsolidate agent ${JSON.stringify(agent)}; agents: ${CONSOLIDATE_AGENTS.join(', ')}.`
+        `Unknown ${key} agent ${JSON.stringify(agent)}; agents: ${CONSOLIDATE_AGENTS.join(', ')}.`
       );
     }
     if (typeof setting !== 'boolean') {
-      invalid(`autoConsolidate.${agent} must be true or false.`);
+      invalid(`${key}.${agent} must be true or false.`);
     }
     result[/** @type {ConsolidateAgent} */ (agent)] = setting;
   }
@@ -180,7 +188,8 @@ export function normalizeConfig(input, { allowLegacyDshModel = false } = {}) {
     extractAgent,
     budget,
     personalizationEnabled: config.personalizationEnabled,
-    autoConsolidate: normalizeAutoConsolidate(config.autoConsolidate),
+    autoConsolidate: normalizePolicy(config.autoConsolidate, 'autoConsolidate'),
+    autoExtract: normalizePolicy(config.autoExtract, 'autoExtract'),
   };
 }
 
@@ -195,6 +204,7 @@ export function readConfig(dir) {
       ...DEFAULT_CONFIG,
       offSessions: [],
       autoConsolidate: { ...DEFAULT_AUTO_CONSOLIDATE },
+      autoExtract: { ...DEFAULT_AUTO_EXTRACT },
     };
   }
   let parsed;
@@ -218,15 +228,13 @@ export function writeConfig(dir, config) {
   /** @type {Record<string, unknown>} */
   const changed = {};
   for (const key of KEYS) {
-    if (key === 'autoConsolidate') {
+    if (key === 'autoConsolidate' || key === 'autoExtract') {
       const diff = Object.fromEntries(
         CONSOLIDATE_AGENTS.filter(
-          (agent) =>
-            normalized.autoConsolidate[agent] !==
-            DEFAULT_AUTO_CONSOLIDATE[agent]
-        ).map((agent) => [agent, normalized.autoConsolidate[agent]])
+          (agent) => normalized[key][agent] !== DEFAULT_CONFIG[key][agent]
+        ).map((agent) => [agent, normalized[key][agent]])
       );
-      if (Object.keys(diff).length > 0) changed.autoConsolidate = diff;
+      if (Object.keys(diff).length > 0) changed[key] = diff;
       continue;
     }
     const value = normalized[/** @type {keyof MemoryConfig} */ (key)];
@@ -241,6 +249,21 @@ export function writeConfig(dir, config) {
   );
   return normalized;
 }
+
+/**
+ * The policy of the selected provider, including Claude on a dscc session.
+ * @param {string} agent
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {ConsolidateAgent}
+ */
+export function memoryPolicyKey(agent, env) {
+  return agent === 'claude' && env.KYOTEN_AGENT === 'dscc'
+    ? 'dscc'
+    : /** @type {ConsolidateAgent} */ (agent);
+}
+
+export const AGY_MEMORY_FIX =
+  'pnpm memory set --extract-agent dscc (or dsh, claude, codex); for Antigravity, use pnpm memory set --extract-agent agy --extract-model <light-model> --auto-extract agy=on';
 
 /**
  * Whether automatic saving is paused: everywhere, for this session, or not.

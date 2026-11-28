@@ -141,8 +141,14 @@ Options
                               fresh agents), fix confirmed must-fix/high
                               findings, at most 2 rounds (AGENTS.md §4.5);
                               needs every step done before the first round
-  --reviewer <name>           Agent for the reviewer and the triage (default:
-                              --agent; a different one gives a second opinion)
+  --reviewer <name>           Reviewer (claude|codex|dsh|agy|dscc; default: --agent)
+  --triage <name>             Triage agent (default: reviewer; none leaves findings open)
+  --reviewer-model <model>    Override the reviewer's model
+  --triage-model <model>      Override the triage model
+  --reviewer-effort <effort>  low|medium|high|xhigh|max (Codex or Antigravity)
+  --triage-effort <effort>    low|medium|high|xhigh|max (Codex or Antigravity)
+  --oneshot-review            Use self-contained, zero-tool prompts (default)
+  --no-oneshot-review         Allow review agents to read review files
   --max <n>                   Agent iterations at most (default 5; with
                               --review, per build or fix phase)
   --stall <n>                 Stop after n iterations in a row with no progress
@@ -198,18 +204,19 @@ Find
                                 The journal of changes, oldest first (default: the last 20)
 
 Extraction and consolidation
-  extract [<session>] [--dry-run]
+  extract [<session>] [--dry-run] [--force]
                                 Extract notes from the queued sessions now (the worker
                                 normally does this in the background). <session> extracts
                                 a session that is still open; --dry-run prints what would
-                                be sent to the model and changes nothing
+                                be sent to the model and changes nothing; --force overrides
+                                the selected agent's auto-extraction policy once
   inbox [--reset]               Changes extraction held back for you to review (they read
                                 like instructions); --reset clears the list
-  consolidate [--agent claude|codex|dsh|agy] [--dry-run] [--force] [--allow-cross-side]
+  consolidate [--agent claude|codex|dsh|agy|dscc] [--dry-run] [--force] [--allow-cross-side]
                                 Tidy the notes and rewrite the profile now (normally weekly,
                                 in the background; never while saving is off, --force
                                 overrides for a manual run). Auto-consolidation defaults on
-                                for claude/codex/dsh/agy and off for dscc (pnpm memory set
+                                for claude/codex/dsh and off for agy/dscc (pnpm memory set
                                 --auto-consolidate <agent>=on|off). When off, --allow-cross-side
                                 or --force overrides once (--dry-run always previews without
                                 sending). --agent selects the CLI for a manual run (other
@@ -247,9 +254,9 @@ Settings
                                 (or workspace:setup) applies your edits; persona changes
                                 here and by import rewrite it
   personalize [--persona … | --persona-file <file.md>] --compact [--dry-run]
-      [--agent claude|codex|dsh|agy] Shorten the persona to fit, then audit it in a fresh context.
+      [--agent claude|codex|dsh|agy|dscc] Shorten the persona to fit, then audit it in a fresh context.
                                 --dry-run writes only memory/persona.candidate.md
-  personalize [--persona … | --persona-file <file.md>] --audit [--agent claude|codex|dsh|agy]
+  personalize [--persona … | --persona-file <file.md>] --audit [--agent claude|codex|dsh|agy|dscc]
                                 Check the persona without changing it. Both commands default
                                 to the memory agent (pnpm memory set --extract-agent), else
                                 the session's own CLI, else Claude, and use
@@ -268,13 +275,15 @@ Settings
                                 restores it). Pausing personalization (--off) wins
   personalize --off | --on      Pause or resume applying saved personalization across sessions.
                                 A new session loads the full settings after --on
-  set [--extract-agent claude|codex|dsh|agy|default] [--extract-model <model>|default]
+  set [--extract-agent claude|codex|dsh|agy|dscc|default] [--extract-model <model>|default]
       [--budget <characters>|default]
       [--auto-consolidate <claude|codex|dsh|agy|dscc>=on|off|default]…
-                                Agent CLI and model for memory jobs (default: the session's
-                                own CLI and model), core block budget, and per-agent automatic
-                                consolidation (default: on for claude/codex/dsh/agy, off for dscc).
-                                --auto-consolidate default resets all five settings
+      [--auto-extract <claude|codex|dsh|agy|dscc>=on|off|default]…
+                                Memory jobs use the session's CLI by default, with Haiku on
+                                Claude/dscc. Also sets the core budget and per-agent policies.
+                                Auto-consolidation defaults off for agy/dscc and on elsewhere.
+                                --auto-extract defaults to off for agy and on elsewhere;
+                                either policy accepts default to reset all five settings
   off [--session] · on [--session]
                                 Pause automatic saving everywhere, or for this session
                                 (incognito); recall still works
@@ -426,6 +435,13 @@ Work
                                 for work committed on it, the commit the task started from;
                                 an explicit --base is used as given). --folder: the task
                                 folder's code, this round and the next
+  review run [--base <ref> | --folder] [--force]
+      [--reviewer dscc|dsh|claude|codex|agy] [--reviewer-model <model>]
+      [--reviewer-effort low|medium|high|xhigh|max] [--triage dscc|dsh|claude|codex|agy|none]
+      [--triage-model <model>] [--triage-effort low|medium|high|xhigh|max]
+      [--mode oneshot|read] [--timeout-min <n>] [--no-record]
+                                Run a clean-context review (oneshot by default), skip triage
+                                for zero findings, and record the results
   review record [file]          Read the triaged findings table; CONFIRMED must-fix/high
                                 findings become fix: steps
   rm <path>…                    Delete files or folders inside this workspace or the task's
