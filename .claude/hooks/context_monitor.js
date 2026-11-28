@@ -26,12 +26,11 @@ import {
 } from '#utils/harness/input.js';
 import { runIfMain } from '#utils/module-runner.js';
 import {
-  SESSIONS_DIR,
   SESSION_ID_RE,
   ensurePrivateDir,
   readIfExists,
+  sessionContextDir,
   sessionTask,
-  tasksRoot,
   writeFileAtomic,
 } from '#utils/task/store.js';
 import { ROOT_DIR } from '#utils/workspace-config.js';
@@ -60,12 +59,11 @@ function contextTier(usage) {
  */
 function crossedThreshold(rootDir, session, tier) {
   if (typeof session !== 'string' || !SESSION_ID_RE.test(session)) return true;
-  const dir = path.join(tasksRoot(rootDir), SESSIONS_DIR);
-  const file = path.join(dir, `${session}.context.json`);
+  const dir = sessionContextDir(rootDir);
+  const file = path.join(dir, `${session}.json`);
   try {
     const raw = readIfExists(file);
     const last = raw === null ? 'none' : JSON.parse(raw)?.lastTier;
-    // An existing task binding could have a session ID ending in ".context".
     if (!TIERS.includes(last)) return true;
     if (last === tier) {
       if (raw !== null) {

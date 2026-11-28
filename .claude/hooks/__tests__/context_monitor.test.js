@@ -5,7 +5,7 @@ import fs from 'fs';
 import { vi } from 'vitest';
 import os from 'os';
 import path from 'path';
-import { writeSession } from '#utils/task/store.js';
+import { readSession, writeSession } from '#utils/task/store.js';
 import {
   DEFAULT_CONTEXT_WINDOW,
   THRESHOLDS,
@@ -257,6 +257,23 @@ describe('context_monitor', () => {
   });
 
   describe('processHookInput', () => {
+    test('keeps threshold state when a session with a .context suffix binds a task', () => {
+      const file = transcript([
+        { type: 'assistant', message: { usage: { input_tokens: 500_000 } } },
+      ]);
+      const rootDir = path.dirname(file);
+      const input = { transcript_path: file, session_id: 'work' };
+      const binding = { task: 'demo-261117', engaged: true };
+
+      expect(processHookInput(input, {}, { rootDir })?.systemMessage).toContain(
+        '[WARNING]'
+      );
+      writeSession(rootDir, 'work.context', binding);
+
+      expect(processHookInput(input, {}, { rootDir })).toBeNull();
+      expect(readSession(rootDir, 'work.context')).toMatchObject(binding);
+    });
+
     test('warns only on a higher threshold and re-arms after compaction', () => {
       const file = transcript([]);
       const rootDir = path.dirname(file);

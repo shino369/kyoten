@@ -17,17 +17,11 @@ import { writePrivate } from '../kyoten/dscc.js';
 import { prepareAgentExecution, scrubSecrets } from '../loop/dscc.js';
 import { INNER_LOOP_ENV } from '../task/loop.js';
 import { commandFor } from '../tools/registry.js';
+import { CALL_AGENTS } from './config.js';
 import { EXTRACT_ENV } from './queue.js';
 
+export { CALL_AGENTS };
 export const AGENT_CALL_TIMEOUT_MS = 5 * 60 * 1000;
-/** The agents a memory job can call. */
-export const CALL_AGENTS = /** @type {const} */ ([
-  'claude',
-  'codex',
-  'dsh',
-  'agy',
-  'dscc',
-]);
 const ERROR_TAIL = 300;
 /** The settings file callAgent writes into the job's folder for claude and agy. */
 export const SETTINGS_FILE = 'memory-job-settings.json';

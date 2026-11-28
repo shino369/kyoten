@@ -425,7 +425,7 @@ export function taskReviewScope({
  * folds in the incremental diff, so the quality loop sees the change instead
  * of comparing the constant empty-scope hash with round 1's fingerprint.
  *
- * @param {{ rootDir: string, taskDir: string, state: TaskState, scope: Scope, runGitStatus?: RunGitStatus }} options
+ * @param {{ rootDir: string, taskDir: string, state: TaskState, scope: Scope, runGitStatus?: RunGitStatus, scrub?: (text: string) => string }} options
  * @returns {{ eligible: boolean, paths: string[], fingerprint: string | null, incremental: string | null }}
  */
 export function reviewPreflight({
@@ -434,6 +434,7 @@ export function reviewPreflight({
   state,
   scope,
   runGitStatus = defaultRunGitStatus,
+  scrub,
 }) {
   const quality = state.quality ?? freshQuality();
   const dir = scopeRoot(rootDir, state, scope);
@@ -464,6 +465,7 @@ export function reviewPreflight({
         snapshotDir: priorSnapshot,
         files: priorFiles,
         runGitStatus,
+        scrub,
       });
       if (incremental !== null) {
         const digest = crypto
@@ -1104,7 +1106,7 @@ export function diffStats({ repoDir, scope, runGit = defaultRunGit }) {
  * cap lists the remaining files with their stats. Null for a task-folder scope
  * (no base) or nothing to show.
  *
- * @param {{ repoDir: string, scope: Scope, runGit?: RunGit, maxFileBytes?: number, maxTotalBytes?: number, tieredContext?: boolean }} options
+ * @param {{ repoDir: string, scope: Scope, runGit?: RunGit, maxFileBytes?: number, maxTotalBytes?: number, tieredContext?: boolean, scrub?: (text: string) => string }} options
  * @returns {string | null}
  */
 export function generateReviewDiff({
@@ -1114,6 +1116,7 @@ export function generateReviewDiff({
   maxFileBytes = MAX_DIFF_FILE_BYTES,
   maxTotalBytes = MAX_DIFF_TOTAL_BYTES,
   tieredContext = true,
+  scrub = redactSecrets,
 }) {
   if (scope.base === null || scope.since === null || scope.files.length === 0) {
     return null;
@@ -1196,7 +1199,7 @@ export function generateReviewDiff({
       if (diff) text = `${diff}\n`;
     }
     if (text === null) continue;
-    text = capFileDiff(redactSecrets(text), file, maxFileBytes);
+    text = capFileDiff(scrub(text), file, maxFileBytes);
     if (chunks.length > 0 && total + text.length > maxTotalBytes) {
       omitted.push(file);
       continue;
@@ -1353,10 +1356,10 @@ function snapshotCopy(layout, file) {
  * path inventory, including paths absent from the working tree (deleted
  * tracked files). Returns the number of files saved.
  *
- * @param {{ repoDir: string, dir: string, files: string[] }} options
+ * @param {{ repoDir: string, dir: string, files: string[], scrub?: (text: string) => string }} options
  * @returns {number}
  */
-export function saveSnapshot({ repoDir, dir, files }) {
+export function saveSnapshot({ repoDir, dir, files, scrub }) {
   fs.rmSync(dir, { recursive: true, force: true });
   const filesRoot = path.join(dir, SNAPSHOT_FILES_DIR);
   ensurePrivateDir(filesRoot);
@@ -1369,6 +1372,7 @@ export function saveSnapshot({ repoDir, dir, files }) {
     const file = normalizedRelPath(raw);
     const target = file === null ? null : resolveInside(filesRoot, file);
     if (file === null || target === null) continue;
+    if (scrub && scrub(file) !== file) continue;
     inventory.push(file);
     const entry = inspectWorkingFile(repoDir, file);
     if (entry.kind === 'secret') {
@@ -1400,7 +1404,12 @@ export function saveSnapshot({ repoDir, dir, files }) {
     } catch {
       continue;
     }
-    if (isBinary(buffer) || containsSecret(buffer.toString('utf-8'))) {
+    const text = buffer.toString('utf-8');
+    if (
+      isBinary(buffer) ||
+      containsSecret(text) ||
+      (scrub && scrub(text) !== text)
+    ) {
       skipped.push(file);
       continue;
     }
@@ -1494,7 +1503,7 @@ function rewriteNoIndexHeaders(patch, file) {
  * so a file that appeared, disappeared, or was restored still shows. Null when
  * nothing changed or the snapshot is unusable (see `snapshotLayout`).
  *
- * @param {{ repoDir: string, snapshotDir: string, files: string[], runGitStatus?: RunGitStatus, maxFileBytes?: number, maxTotalBytes?: number, tieredContext?: boolean }} options
+ * @param {{ repoDir: string, snapshotDir: string, files: string[], runGitStatus?: RunGitStatus, maxFileBytes?: number, maxTotalBytes?: number, tieredContext?: boolean, scrub?: (text: string) => string }} options
  * @returns {string | null}
  */
 export function generateIncrementalDiff({
@@ -1505,6 +1514,7 @@ export function generateIncrementalDiff({
   maxFileBytes = MAX_DIFF_FILE_BYTES,
   maxTotalBytes = MAX_DIFF_TOTAL_BYTES,
   tieredContext = true,
+  scrub = redactSecrets,
 }) {
   const layout = snapshotLayout(snapshotDir);
   if (layout === null) return null;
@@ -1605,7 +1615,7 @@ export function generateIncrementalDiff({
       }
     }
     if (text === null) continue;
-    text = capFileDiff(redactSecrets(text), file, maxFileBytes);
+    text = capFileDiff(scrub(text), file, maxFileBytes);
     if (chunks.length > 0 && total + text.length > maxTotalBytes) {
       omitted.push(file);
       continue;
@@ -2097,14 +2107,14 @@ export function readReviewText(repoDir, file) {
   }
 }
 
-/** @param {string} repoDir @param {string} file @param {number} line */
-export function extractFileWindow(repoDir, file, line) {
+/** @param {string} repoDir @param {string} file @param {number} line @param {(text: string) => string} [scrub] */
+export function extractFileWindow(repoDir, file, line, scrub = redactSecrets) {
   const text = readReviewText(repoDir, file);
   if (text === null) return null;
   const start = Math.max(0, line - TRIAGE_CONTEXT_RADIUS - 1);
   const end = line + TRIAGE_CONTEXT_RADIUS;
   return (
-    text
+    scrub(text)
       .split(/\r?\n/)
       .slice(start, end)
       .map((content, index) => `${start + index + 1}  ${content}`)
@@ -2123,9 +2133,16 @@ export function extractFileWindow(repoDir, file, line) {
 /** @param {ReviewPackInput} input */
 function packDiff(input) {
   return (
-    (input.round > 1 && !input.incrementalUnavailable
-      ? input.incrementalDiff
-      : input.diff) ?? ''
+    (hasIncrementalEvidence(input) ? input.incrementalDiff : input.diff) ?? ''
+  );
+}
+
+/** @param {ReviewPackInput} input */
+function hasIncrementalEvidence(input) {
+  return (
+    input.round > 1 &&
+    !input.incrementalUnavailable &&
+    Boolean(input.incrementalDiff)
   );
 }
 
@@ -2145,7 +2162,7 @@ function packLimit(text, limit) {
 export function buildReviewPack(input) {
   const { state, round, repoDir, scope, planText, stats } = input;
   const scrub = input.scrub ?? redactSecrets;
-  const incremental = round > 1 && !input.incrementalUnavailable;
+  const incremental = hasIncrementalEvidence(input);
   const inline = scope.base === null && !incremental;
   const files = sortReviewFiles(scope.files).filter(
     (file) => !isSecretFile(file)
@@ -2167,25 +2184,29 @@ export function buildReviewPack(input) {
       PACK_INSTRUCTIONS,
       'Leave id, verdict and reason blank. Include a concrete fix suggestion in each must-fix claim.',
       `## Review round ${round}\nGoal: ${state.goal}\nE2E: ${state.e2e ?? 'no'}`,
-      clipBytes(extractPlanSummary(planText), 16 * 1024),
+      clipBytes(extractPlanSummary(scrub(planText)), 16 * 1024),
       '## Earlier refuted or fixed findings',
       clipBytes(
-        earlier
-          .map(
-            (finding) =>
-              `- ${finding.verdict === 'REFUTED' ? 'Refuted' : 'Fixed'} ${finding.file}:${finding.line} ${finding.claim} (${finding.reason})`
-          )
-          .join('\n'),
+        scrub(
+          earlier
+            .map(
+              (finding) =>
+                `- ${finding.verdict === 'REFUTED' ? 'Refuted' : 'Fixed'} ${finding.file}:${finding.line} ${finding.claim} (${finding.reason})`
+            )
+            .join('\n')
+        ),
         6 * 1024
       ),
       '## Scope',
       clipBytes(
-        files
-          .map(
-            (file) =>
-              `- ${file}${stats ? ` (${statLabel(stats.get(file))})` : ''}`
-          )
-          .join('\n'),
+        scrub(
+          files
+            .map(
+              (file) =>
+                `- ${file}${stats ? ` (${statLabel(stats.get(file))})` : ''}`
+            )
+            .join('\n')
+        ),
         8 * 1024
       ),
       inline
@@ -2234,6 +2255,7 @@ export function buildReviewPack(input) {
  */
 export function buildTriagePack(input) {
   const { rows, repoDir, scope, state, planText } = input;
+  const scrub = input.scrub ?? redactSecrets;
   const triageRules =
     /^## Triage mode[^\n]*\n([\s\S]*?)(?=^## Output)/m.exec(
       roleText(verifierRole)
@@ -2244,7 +2266,7 @@ export function buildTriagePack(input) {
     PACK_INSTRUCTIONS,
     'Return every original row in order. Fill only verdict and reason; you may lower severity. When unsure, mark REFUTED.',
     `Goal: ${state.goal}`,
-    clipBytes(extractPlanSummary(planText), 9 * 1024),
+    clipBytes(extractPlanSummary(scrub(planText)), 9 * 1024),
     '## Reviewer findings',
     rows.join('\n'),
     '## Evidence by finding',
@@ -2263,19 +2285,17 @@ export function buildTriagePack(input) {
     const hunks = extractHunksForFile(patch, file, line);
     for (const hunk of hunks)
       evidence.add(
-        `### ${file} (diff)\n${packLimit(hunk, PACK_MAX_FILE_BYTES)}`
+        `### ${file} (diff)\n${packLimit(scrub(hunk), PACK_MAX_FILE_BYTES)}`
       );
     if (!inScope.has(file)) continue;
-    const window = extractFileWindow(repoDir, file, line);
+    const window = extractFileWindow(repoDir, file, line, scrub);
     if (window)
       evidence.add(
         `### ${file} (working source)\n${packLimit(window, PACK_MAX_FILE_BYTES)}`
       );
   }
   return packLimit(
-    (input.scrub ?? redactSecrets)(
-      `${prefix}\n\n${[...evidence].join('\n\n')}`
-    ),
+    scrub(`${prefix}\n\n${[...evidence].join('\n\n')}`),
     TRIAGE_MAX_TOTAL_BYTES
   );
 }

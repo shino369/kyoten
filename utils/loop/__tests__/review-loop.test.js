@@ -6,6 +6,7 @@ import { main as taskMain } from '../../task/cli.js';
 import { scopeFingerprint } from '../../task/loop.js';
 import { createState, makeSteps } from '../../task/state.js';
 import { loadTask, saveState, tasksRoot } from '../../task/store.js';
+import { resolveReviewExecution } from '../../task/review-run.js';
 import { buildCommand } from '../adapters.js';
 import {
   BEGIN,
@@ -252,6 +253,38 @@ describe('tableRows / replaceRows', () => {
     expect(replaceRows('# R\n', [HIGH])).toBe(
       `# R\n\n${HEADER}\n${SEP}\n${HIGH}\n`
     );
+  });
+});
+
+describe('resolveReviewExecution', () => {
+  test.each(['codex', 'dsh'])(
+    'should keep a %s launcher on its own provider without a session marker',
+    (agent) => {
+      const selection = resolveReviewExecution(
+        {},
+        { rootDir: root, env: { KYOTEN_AGENT: agent } }
+      );
+      expect(selection.reviewer.agent).toBe(agent);
+    }
+  );
+
+  test('should resolve matching session and launcher markers to one provider', () => {
+    const env = { KYOTEN_AGENT: 'codex', CODEX_THREAD_ID: 'fixture' };
+    const selection = resolveReviewExecution({}, { rootDir: root, env });
+
+    expect(selection.reviewer.agent).toBe('codex');
+  });
+
+  test('should require a reviewer choice when session markers disagree', () => {
+    const env = { KYOTEN_AGENT: 'claude', CODEX_THREAD_ID: 'fixture' };
+    expect(() => resolveReviewExecution({}, { rootDir: root, env })).toThrow(
+      'select a provider explicitly with --reviewer'
+    );
+
+    expect(
+      resolveReviewExecution({ reviewer: 'codex' }, { rootDir: root, env })
+        .reviewer.agent
+    ).toBe('codex');
   });
 });
 
@@ -644,6 +677,85 @@ describe('runReviewLoop', () => {
     });
   });
 
+  test('should complete a clean review without loading an unused triage profile', () => {
+    seedTask();
+    const env = { DSCC_PROFILE: path.join(root, 'missing-dscc-profile') };
+    const { runAgent, calls } = fakeAgents({});
+    const selection = resolveReviewExecution(
+      { mode: 'read', reviewer: 'claude', triage: 'dscc' },
+      { rootDir: root, env }
+    );
+
+    const result = review(makeDeps(runAgent, { env }), { selection });
+
+    expect(result).toMatchObject({ ok: true, rounds: 1 });
+    expect(calls).toMatchObject({ reviewer: 1, triage: 0 });
+  });
+
+  test('should dispatch explicitly selected Claude roles outside the inherited dscc profile', () => {
+    seedTask();
+    const credential = 'fixture-inherited-auth-value';
+    const env = {
+      KYOTEN_AGENT: 'dscc',
+      ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic',
+      ANTHROPIC_AUTH_TOKEN: credential,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-flash',
+    };
+    const selection = resolveReviewExecution(
+      { mode: 'read', reviewer: 'claude' },
+      { rootDir: root, env }
+    );
+    const { runAgent: scripted } = fakeAgents({
+      reviewer: [[LOW]],
+      triage: [[triaged(LOW, 'CONFIRMED')]],
+    });
+    const runAgent = vi.fn(
+      /** @type {import('../driver.js').LoopDeps['runAgent']} */
+      ((options) => scripted(options))
+    );
+
+    const result = review(makeDeps(runAgent, { env }), { selection });
+
+    expect(result).toMatchObject({ ok: true, rounds: 1 });
+    expect(runAgent).toHaveBeenCalledTimes(2);
+    for (const [options] of runAgent.mock.calls) {
+      expect(options.command.agent).toBe('claude');
+      expect(options.env).not.toHaveProperty('KYOTEN_AGENT');
+      expect(options.env).not.toHaveProperty('ANTHROPIC_BASE_URL');
+      expect(options.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
+      expect(options.env).not.toHaveProperty('ANTHROPIC_DEFAULT_SONNET_MODEL');
+    }
+    expect(selection.reviewer.secrets).toContain(credential);
+  });
+
+  test('should keep findings open when the needed triage profile cannot load', () => {
+    seedTask();
+    const env = { DSCC_PROFILE: path.join(root, 'missing-dscc-profile') };
+    const { runAgent, calls } = fakeAgents({ reviewer: [[LOW]] });
+    const selection = resolveReviewExecution(
+      { mode: 'read', reviewer: 'claude', triage: 'dscc' },
+      { rootDir: root, env }
+    );
+
+    const result = review(makeDeps(runAgent, { env }), { selection });
+
+    expect(result).toMatchObject({ ok: false, reason: 'triage' });
+    expect(result.detail).toContain('no dscc profile');
+    expect(calls).toMatchObject({ reviewer: 1, triage: 0 });
+    const findings = path.join(taskDir(), 'reviews', `REVIEW_${NAME}-r1.md`);
+    expect(tableRows(fs.readFileSync(findings, 'utf8'))).toEqual([LOW]);
+  });
+
+  test('should validate triage options before a reviewer can run', () => {
+    const env = { DSCC_PROFILE: path.join(root, 'missing-dscc-profile') };
+    expect(() =>
+      resolveReviewExecution(
+        { reviewer: 'claude', triage: 'dscc', triageEffort: 'xhigh' },
+        { rootDir: root, env }
+      )
+    ).toThrow('--effort is only supported');
+  });
+
   test('should keep the round open when the triage fails or tampers', () => {
     seedTask();
     const crashed = fakeAgents({ reviewer: [[HIGH]], codes: { triage: 2 } });
@@ -686,6 +798,23 @@ describe('runReviewLoop', () => {
     expect(tableRows(fs.readFileSync(file, 'utf-8'))).toEqual([]);
   });
 
+  test('should retry reviewer output with assigned IDs before writing findings', () => {
+    seedTask();
+    const { runAgent, calls } = fakeAgents({
+      reviewer: [
+        [HIGH, LOW].map((row) => row.replace('|  |', '| duplicate |')),
+        [LOW],
+      ],
+      triage: [[triaged(LOW, 'CONFIRMED')]],
+    });
+
+    const result = review(makeDeps(runAgent));
+
+    expect(result).toMatchObject({ ok: true, rounds: 1 });
+    expect(calls).toMatchObject({ reviewer: 2, triage: 1 });
+    expect(state().quality?.findings).toMatchObject([{ claim: 'Odd name' }]);
+  });
+
   test('should reject invalid verdicts before recording', () => {
     seedTask();
     const { runAgent } = fakeAgents({
@@ -707,4 +836,36 @@ describe('runReviewLoop', () => {
       reason: 'timeout',
     });
   });
+
+  test.each([
+    [60, 20],
+    [22, 3],
+  ])(
+    'should give triage its own cap within a %i-minute loop budget',
+    (loopMinutes, triageMinutes) => {
+      seedTask();
+      const minute = 60_000;
+      let time = 0;
+      /** @type {number[]} */
+      const budgets = [];
+      const { runAgent: scripted } = fakeAgents({
+        reviewer: [[LOW]],
+        triage: [[triaged(LOW, 'CONFIRMED')]],
+      });
+      /** @type {import('../driver.js').LoopDeps['runAgent']} */
+      const runAgent = (options) => {
+        budgets.push(options.timeoutMs);
+        if (budgets.length === 1) time += 19 * minute;
+        return scripted(options);
+      };
+
+      const result = review(makeDeps(runAgent, { clock: () => time }), {
+        timeoutMs: loopMinutes * minute,
+        iterationTimeoutMs: 20 * minute,
+      });
+
+      expect(result).toMatchObject({ ok: true, rounds: 1 });
+      expect(budgets).toEqual([20 * minute, triageMinutes * minute]);
+    }
+  );
 });

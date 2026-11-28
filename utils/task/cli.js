@@ -87,13 +87,13 @@ import {
   scopeRoot,
   roundBase,
   snapshotDirFor,
-  snapshotUnusable,
   splitRow,
   taskFolderNotes,
   taskReviewScope,
 } from './review.js';
 import { resolveReviewExecution, runReviewAgents } from './review-run.js';
 import { runAgent } from '../loop/adapters.js';
+import { envSecrets, scrubSecrets } from '../loop/dscc.js';
 import { trashPaths } from './trash.js';
 import { summarize, tail } from './verify.js';
 import { writePrivate } from '../kyoten/dscc.js';
@@ -1556,6 +1556,10 @@ function openReviewArtifacts(options, deps) {
     .relative(deps.rootDir, task.dir)
     .split(path.sep)
     .join('/');
+  const secrets = [
+    ...new Set([...envSecrets(deps.env), ...(deps.reviewSecrets ?? [])]),
+  ].sort((a, b) => b.length - a.length);
+  const scrub = (/** @type {string} */ text) => scrubSecrets(text, secrets);
   const scope = taskReviewScope({
     rootDir: deps.rootDir,
     taskDir: task.dir,
@@ -1563,6 +1567,7 @@ function openReviewArtifacts(options, deps) {
     base: options.folder ? null : options.base,
     runGit: deps.runGit,
   });
+  scope.files = scope.files.filter((file) => scrub(file) === file);
   const reviewsDir = path.join(task.dir, 'reviews');
   const preflight = reviewPreflight({
     rootDir: deps.rootDir,
@@ -1570,6 +1575,7 @@ function openReviewArtifacts(options, deps) {
     state: task.state,
     scope,
     runGitStatus: deps.runGitStatus,
+    scrub,
   });
   if (!preflight.eligible) {
     if (scope.base === null) {
@@ -1619,15 +1625,21 @@ function openReviewArtifacts(options, deps) {
   // reopening an open round keeps it (the reviewed code must not move).
   const snapshotDir = snapshotDirFor(reviewsDir, round);
   if (!reopened && scope.files.length > 0) {
-    saveSnapshot({ repoDir: scopeDir, dir: snapshotDir, files: scope.files });
+    saveSnapshot({
+      repoDir: scopeDir,
+      dir: snapshotDir,
+      files: scope.files,
+      scrub,
+    });
   }
   const patch = generateReviewDiff({
     repoDir: scopeDir,
     scope,
     runGit: deps.runGit,
+    scrub,
   });
   if (patch !== null) {
-    writePrivate(path.join(task.dir, files.diff), patch);
+    writePrivate(path.join(task.dir, files.diff), scrub(patch));
   }
   const previousSnapshot =
     round > 1 ? previousSnapshotDir(reviewsDir, round - 1) : null;
@@ -1642,9 +1654,13 @@ function openReviewArtifacts(options, deps) {
           ...new Set([...scope.files, ...listSnapshotScope(previousSnapshot)]),
         ].sort(),
         runGitStatus: deps.runGitStatus,
+        scrub,
       });
     if (incremental !== null) {
-      writePrivate(path.join(task.dir, files.incrementalDiff), incremental);
+      writePrivate(
+        path.join(task.dir, files.incrementalDiff),
+        scrub(incremental)
+      );
     }
   }
   const diffPath = patch === null ? null : `${taskRel}/${files.diff}`;
@@ -1652,23 +1668,26 @@ function openReviewArtifacts(options, deps) {
     incremental === null || !files.incrementalDiff
       ? null
       : `${taskRel}/${files.incrementalDiff}`;
+  const incrementalUnavailable = round > 1 && incrementalPath === null;
   writePrivate(
     path.join(task.dir, files.brief),
-    formatReviewBrief({
-      state,
-      round,
-      scope,
-      taskRel,
-      diffPath,
-      incrementalDiffPath: incrementalPath,
-      incrementalUnavailable: round > 1 && snapshotUnusable(previousSnapshot),
-      stats,
-      folder: taskFolderNotes({
-        rootDir: deps.rootDir,
-        taskDir: task.dir,
+    scrub(
+      formatReviewBrief({
+        state,
+        round,
         scope,
-      }),
-    })
+        taskRel,
+        diffPath,
+        incrementalDiffPath: incrementalPath,
+        incrementalUnavailable,
+        stats,
+        folder: taskFolderNotes({
+          rootDir: deps.rootDir,
+          taskDir: task.dir,
+          scope,
+        }),
+      })
+    )
   );
   const findingsPath = path.join(task.dir, files.findings);
   if (!fs.existsSync(findingsPath)) {
@@ -1699,7 +1718,7 @@ function openReviewArtifacts(options, deps) {
     findings,
     diff: diffPath,
     incrementalDiff: incrementalPath,
-    incrementalUnavailable: round > 1 && snapshotUnusable(previousSnapshot),
+    incrementalUnavailable,
     stats: [...stats],
   };
 }
@@ -1813,7 +1832,10 @@ function runReview(options, deps) {
   return withLock(
     reviewsDir,
     () => {
-      const opened = openReviewArtifacts(options, deps);
+      const opened = openReviewArtifacts(options, {
+        ...deps,
+        reviewSecrets: selection.reviewer.secrets,
+      });
       const { rows, failure } = runReviewAgents({
         rootDir: deps.rootDir,
         taskDir: dir,

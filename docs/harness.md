@@ -111,8 +111,9 @@ Notes:
   `PreInvocation` resets `invocationNum` to `0` at the start of every user turn, so prompt-scoped
   hooks (`context_monitor`, `task_loop --reset`, memory prompt recall) act only on `invocationNum === 0`.
   The context monitor warns once per crossing of 20%, 40%, and 60% for each session, and
-  re-arms a threshold when usage drops below it. Antigravity's warning at 40% advises
-  finishing the current unit or saving progress before compacting or clearing. Waiting on
+  re-arms a threshold when usage drops below it. Warning state lives under
+  `tasks/.sessions/.context/` and uses the session retention period. At 40%, Antigravity's warning
+  advises finishing the current unit or saving progress before compacting or clearing. Waiting on
   a heavy subagent can evict a warm prefix cache. Memory recall still uses `PreInvocation`.
   Antigravity does not pass a subagent's role name in hook payloads, so clean-context enforcement
   for `reviewer`/`verifier` subagents relies on the role prompts (headless `pnpm loop --review`
@@ -627,8 +628,8 @@ plan ─▶ build test-first ─▶ e2e (if required) ─▶ review round N ─�
 **Run a round.** `pnpm task review run` opens or resumes a round, runs a clean-context
 review, triages any findings in a separate fresh session, and records the result. The default
 `oneshot` mode uses a self-contained pack with zero tools. The pack prioritizes production
-changes and uses the incremental patch on round 2. The triage pack includes relevant hunks and
-bounded source windows. The files `PACK_<task>-rN.md` and `RUN_<task>-rN.md` contain the
+changes and uses the incremental patch on round 2 when available. The triage pack includes
+relevant hunks and bounded source windows. `PACK_<task>-rN.md` and `RUN_<task>-rN.md` contain the
 redacted reviewer input and execution telemetry. Antigravity telemetry includes tool calls and
 cache hit rate based on cached plus uncached prompt tokens.
 
@@ -637,6 +638,7 @@ cache hit rate based on cached plus uncached prompt tokens.
   or `KYOTEN_TRIAGE`. Each call starts a fresh session. Antigravity can only be invoked from
   Antigravity or a plain terminal. Claude defaults to Sonnet for review and Haiku for triage.
   The reviewer and triage flags and their `KYOTEN_*` equivalents can select a model or effort.
+  The task command has a two-minute total budget by default, adjustable with `--timeout-min`.
 - Zero findings skips triage. `--triage none` leaves a round with findings open for manual
   triage. `--no-record` leaves recording to the caller. `--mode read` allows the agents to load
   the brief and its evidence on demand. For native reviews, use `pnpm task review` and give

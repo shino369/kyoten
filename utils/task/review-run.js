@@ -6,9 +6,15 @@ import {
   AGENTS,
   CALLER_HARNESS_ENV,
   assertAgyAllowed,
+  buildCommand,
 } from '../loop/adapters.js';
-import { prepareAgentExecution, scrubSecrets } from '../loop/dscc.js';
-import { profilePath, writePrivate } from '../kyoten/dscc.js';
+import {
+  envSecrets,
+  prepareAgentExecution,
+  profileEnv,
+  scrubSecrets,
+} from '../loop/dscc.js';
+import { DSCC_DROP, profilePath, writePrivate } from '../kyoten/dscc.js';
 import { INNER_LOOP_ENV } from './loop.js';
 import { SEVERITIES, VERDICTS } from './quality.js';
 import {
@@ -105,8 +111,8 @@ export function replaceRows(markdown, rows) {
 
 /**
  * Problems with the reviewer's rows (empty = fine): every row has all cells,
- * a known severity, a location, a claim, and a scenario, and no verdict
- * (verdicts are the triage's job). Checked before anything is written, so a
+ * a known severity, a location, a claim, and a scenario. Recording assigns
+ * IDs and triage assigns verdicts. Checked before anything is written, so a
  * bad reply never sticks in the findings file.
  *
  * @param {string[]} rows
@@ -124,7 +130,8 @@ export function reviewerProblems(rows) {
       );
       return;
     }
-    const [, location, severity, claim, scenario, verdict, reason] = cells;
+    const [id, location, severity, claim, scenario, verdict, reason] = cells;
+    if (id) problems.push(`${at}: id must stay empty until recording`);
     if (!SEVERITIES.includes(severity.toLowerCase())) {
       problems.push(
         `${at}: severity "${severity}" is not one of ${SEVERITIES.join(', ')}`
@@ -245,7 +252,9 @@ export const REVIEW_AGENTS = [...AGENTS, 'dscc'];
  * @typedef {ReturnType<typeof prepareAgentExecution> & {
  *    agent: string, model: string | null, effort: string | null,
  * }} ReviewExecution
- * @typedef {{ reviewer: ReviewExecution, triage: ReviewExecution | null,
+ * @typedef {{ agent: string, model: string | null, effort: string | null,
+ *    prepare: () => ReviewExecution }} ReviewAgentPlan
+ * @typedef {{ reviewer: ReviewExecution, triage: ReviewAgentPlan | null,
  *    mode: 'oneshot' | 'read', timeoutMs: number, tip: string | null }} ReviewExecutionPlan
  */
 
@@ -267,26 +276,31 @@ export function resolveReviewExecution(
     throw new Error('--timeout-min must be a positive number.');
   }
 
-  const caller =
-    env.KYOTEN_AGENT === 'dscc'
-      ? 'dscc'
-      : (env[CALLER_HARNESS_ENV] ??
-        sessionHarnesses(env)[0] ??
-        (env.KYOTEN_AGENT === 'agy' ? 'agy' : 'claude'));
-  const reviewer =
-    options.reviewer ?? env.KYOTEN_REVIEWER ?? defaultAgent ?? caller;
-  if (
-    !options.reviewer &&
-    !env.KYOTEN_REVIEWER &&
-    !defaultAgent &&
-    reviewer !== 'agy' &&
-    (env.ANTIGRAVITY_CONVERSATION_ID || env.KYOTEN_AGENT === 'agy')
-  ) {
+  const launcher = env.KYOTEN_AGENT?.trim() ?? '';
+  const markers = [
+    REVIEW_AGENTS.includes(launcher) ? launcher : '',
+    env[CALLER_HARNESS_ENV]?.trim() ?? '',
+    ...sessionHarnesses(env),
+  ].filter(Boolean);
+  // dscc runs on Claude Code and therefore has Claude's session markers.
+  const callers = [
+    ...new Set(
+      markers.map((agent) =>
+        launcher === 'dscc' && agent === 'claude' ? 'dscc' : agent
+      )
+    ),
+  ];
+  const caller = callers[0] ?? 'claude';
+  const requestedReviewer = options.reviewer ?? env.KYOTEN_REVIEWER;
+  const selectedReviewer = requestedReviewer ?? defaultAgent;
+  if (selectedReviewer === undefined && callers.length > 1) {
     throw new Error(
-      'Conflicting harness markers include Antigravity.\nFix: select a provider explicitly with --reviewer'
+      'Conflicting harness markers identify multiple providers.\nFix: select a provider explicitly with --reviewer'
     );
   }
-  const triage = options.triage ?? env.KYOTEN_TRIAGE ?? reviewer;
+  const reviewer = selectedReviewer ?? caller;
+  const requestedTriage = options.triage ?? env.KYOTEN_TRIAGE;
+  const triage = requestedTriage ?? reviewer;
   for (const [flag, agent] of [
     ['reviewer', reviewer],
     ['triage', triage],
@@ -297,33 +311,76 @@ export function resolveReviewExecution(
         `Invalid --${flag} ${JSON.stringify(agent)}.\nFix: use ${REVIEW_AGENTS.join('|')}${flag === 'triage' ? '|none' : ''}`
       );
     }
-    if (agent === 'agy') {
-      const guardEnv =
-        defaultAgent && defaultAgent !== 'agy'
-          ? { ...env, [CALLER_HARNESS_ENV]: defaultAgent }
-          : env;
-      assertAgyAllowed(agent, guardEnv, `--${flag} agy`);
-    }
   }
+  const guardEnv =
+    defaultAgent && defaultAgent !== 'agy'
+      ? { ...env, [CALLER_HARNESS_ENV]: defaultAgent }
+      : env;
   /**
+   * @param {'reviewer' | 'triage'} role
    * @param {string} agent
    * @param {string | null} model
    * @param {string | null} effort
+   * @returns {ReviewAgentPlan}
    */
-  const prepare = (agent, model, effort) => ({
-    ...prepareAgentExecution({
-      agent,
-      rootDir,
-      env,
-      bin: agent === defaultAgent ? bin : undefined,
+  const plan = (role, agent, model, effort) => {
+    const adapter = agent === 'dscc' ? 'claude' : agent;
+    const requestedBin = agent === defaultAgent ? bin : undefined;
+    const command = buildCommand({
+      agent: adapter,
+      bin: requestedBin,
+      argv: requestedBin ? null : commandFor(rootDir, adapter),
       mode,
       model,
       effort,
-    }),
-    agent,
-    model,
-    effort,
-  });
+    });
+    assertAgyAllowed(command.agent, guardEnv, `--${role} agy`, command.bin);
+    const settings = { agent, model, effort };
+    const requested =
+      role === 'triage'
+        ? (requestedTriage ?? requestedReviewer)
+        : requestedReviewer;
+    const nativeClaude = launcher === 'dscc' && requested === 'claude';
+    return {
+      ...settings,
+      prepare: () => {
+        const dispatchEnv = nativeClaude
+          ? profileEnv(env, { drop: [...DSCC_DROP, 'KYOTEN_AGENT'], set: {} })
+          : env;
+        const execution = prepareAgentExecution({
+          agent,
+          env: dispatchEnv,
+          command,
+        });
+        return {
+          ...execution,
+          ...settings,
+          secrets: nativeClaude ? envSecrets(env) : execution.secrets,
+        };
+      },
+    };
+  };
+  const reviewerPlan = plan(
+    'reviewer',
+    reviewer,
+    options.reviewerModel ??
+      env.KYOTEN_REVIEWER_MODEL ??
+      (reviewer === 'claude' ? 'sonnet' : null),
+    options.reviewerEffort ?? env.KYOTEN_REVIEWER_EFFORT ?? null
+  );
+  const triagePlan =
+    triage === 'none'
+      ? null
+      : plan(
+          'triage',
+          triage,
+          options.triageModel ??
+            env.KYOTEN_TRIAGE_MODEL ??
+            (triage === 'claude' ? 'haiku' : null),
+          options.triageEffort ??
+            env.KYOTEN_TRIAGE_EFFORT ??
+            (triage === 'codex' || triage === 'agy' ? 'low' : null)
+        );
   const runningAgy = caller === 'agy' && [reviewer, triage].includes('agy');
   const hasAlternate =
     runningAgy &&
@@ -334,25 +391,8 @@ export function resolveReviewExecution(
   return {
     mode,
     timeoutMs,
-    reviewer: prepare(
-      reviewer,
-      options.reviewerModel ??
-        env.KYOTEN_REVIEWER_MODEL ??
-        (reviewer === 'claude' ? 'sonnet' : null),
-      options.reviewerEffort ?? env.KYOTEN_REVIEWER_EFFORT ?? null
-    ),
-    triage:
-      triage === 'none'
-        ? null
-        : prepare(
-            triage,
-            options.triageModel ??
-              env.KYOTEN_TRIAGE_MODEL ??
-              (triage === 'claude' ? 'haiku' : null),
-            options.triageEffort ??
-              env.KYOTEN_TRIAGE_EFFORT ??
-              (triage === 'codex' || triage === 'agy' ? 'low' : null)
-          ),
+    reviewer: reviewerPlan.prepare(),
+    triage: triagePlan,
     tip: hasAlternate
       ? 'Tip: pass --reviewer dscc or dsh to opt into a different provider next time.'
       : null,
@@ -441,7 +481,7 @@ function askReview({ rootDir, mode, execution, prompt, timeoutMs, runAgent }) {
  *   rootDir: string, taskDir: string, state: import('./state.js').TaskState,
  *   opened: OpenedReview, selection: ReviewExecutionPlan,
  *   runAgent: typeof import('../loop/adapters.js').runAgent,
- *   runLogDir?: string,
+ *   runLogDir?: string, perAttemptMs?: number, clock?: () => number,
  * }} options
  * @returns {{ rows: string[], failure: { stage: 'reviewer' | 'triage', message: string } | null }}
  */
@@ -453,11 +493,12 @@ export function runReviewAgents({
   selection,
   runAgent,
   runLogDir,
+  perAttemptMs = Infinity,
+  clock = Date.now,
 }) {
   const { reviewer, triage, mode, timeoutMs } = selection;
-  const secrets = [
-    ...new Set([...reviewer.secrets, ...(triage?.secrets ?? [])]),
-  ].sort((a, b) => b.length - a.length);
+  const deadline = clock() + timeoutMs;
+  let secrets = reviewer.secrets;
   const scrub = (/** @type {string} */ text) => scrubSecrets(text, secrets);
   const paths = reviewFiles(state.name, opened.round);
   const findingsFile = path.join(rootDir, opened.findings);
@@ -485,7 +526,6 @@ export function runReviewAgents({
         })
       );
   if (input) writePrivate(path.join(taskDir, paths.pack), reviewPrompt);
-  const deadline = Date.now() + timeoutMs;
 
   /**
    * @param {ReviewAttempt['stage']} stage
@@ -497,7 +537,7 @@ export function runReviewAgents({
   const ask = (stage, execution, prompt, validate) => {
     let problem = 'timeout';
     for (let attempt = 1; attempt <= 2; attempt++) {
-      const remaining = deadline - Date.now();
+      const remaining = deadline - clock();
       if (remaining <= 0) break;
       const { agent, model, effort } = execution;
       const entry = { stage, agent, model, effort, attempt };
@@ -508,7 +548,7 @@ export function runReviewAgents({
           mode,
           execution,
           prompt,
-          timeoutMs: remaining,
+          timeoutMs: Math.min(remaining, perAttemptMs),
           runAgent,
         });
       } catch (error) {
@@ -576,6 +616,31 @@ export function runReviewAgents({
       save();
     }
     if (triage && rows.some((row) => !splitRow(row)[5])) {
+      let execution;
+      try {
+        execution = triage.prepare();
+      } catch (error) {
+        const message = scrub(
+          error instanceof Error ? error.message : String(error)
+        );
+        attempts.push({
+          stage: 'triage',
+          agent: triage.agent,
+          model: triage.model,
+          effort: triage.effort,
+          attempt: 1,
+          error: message,
+        });
+        return { rows, failure: { stage: 'triage', message } };
+      }
+      secrets = [...new Set([...secrets, ...execution.secrets])].sort(
+        (a, b) => b.length - a.length
+      );
+      const safeRows = rows.map(scrub);
+      if (safeRows.some((row, i) => row !== rows[i])) {
+        rows = safeRows;
+        save();
+      }
       const prompt = input
         ? buildTriagePack({ ...input, rows })
         : scrub(
@@ -586,7 +651,7 @@ export function runReviewAgents({
               rows,
             })
           );
-      const response = ask('triage', triage, prompt, (after) =>
+      const response = ask('triage', execution, prompt, (after) =>
         triageProblems(rows, after)
       );
       if ('problem' in response)

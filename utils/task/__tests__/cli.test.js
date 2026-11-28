@@ -1189,6 +1189,30 @@ describe('review', () => {
     expect(pack).not.toContain('firstRoundOnly');
   });
 
+  test('should inline round two folder evidence when the incremental patch fails', () => {
+    newTask(['--verify', 'pnpm test']);
+    const file = path.join(tasksRoot(root), NAME, 'scripts', 'source.js');
+    fs.writeFileSync(file, 'export const before = 1;\n');
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      durationMs: 5,
+      stdout: 'BEGIN FINDINGS\nEND FINDINGS',
+      output: '',
+    }));
+    run(['review', 'run', '--folder', '--force'], { runAgent });
+    fs.writeFileSync(file, 'export const after = 2;\n');
+
+    run(['review', 'run', '--force'], {
+      runAgent,
+      runGitStatus: () => ({ status: null, stdout: '' }),
+    });
+
+    const pack = read('reviews/PACK_demo-261117-r2.md');
+    expect(pack).toContain('## Task files');
+    expect(pack).toContain('export const after = 2;');
+  });
+
   test('should retry a malformed response once and leave findings open with no triage', () => {
     newTask(['--verify', 'pnpm test']);
     fs.writeFileSync(
@@ -1223,10 +1247,10 @@ describe('review', () => {
   });
 
   test('should run an opt-in dscc review and redact its credential from artifacts', () => {
-    newTask(['--verify', 'pnpm test']);
+    const credential = 'fixture-only-profile-value';
+    newTask(['--verify', 'pnpm test', '--goal', 'Inspect ' + credential]);
     const dir = path.join(tasksRoot(root), NAME);
     const profile = path.join(root, 'fixture-review-profile');
-    const credential = 'fixture-only-profile-value';
     fs.writeFileSync(
       profile,
       'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic\nANTHROPIC_AUTH_TOKEN=' +
@@ -1276,6 +1300,44 @@ describe('review', () => {
     expect(log).toContain('dscc');
     expect(log).not.toContain(credential);
     expect(read('reviews/PACK_demo-261117-r1.md')).not.toContain(credential);
+    expect(read('reviews/BRIEF_demo-261117-r1.md')).not.toContain(credential);
+    const snapshot = JSON.parse(read('reviews/.snapshot-r1/manifest.json'));
+    expect(snapshot.skipped).toContain(`tasks/${NAME}/scripts/source.js`);
+  });
+
+  test('should redact a known environment credential before writing a git review patch', () => {
+    const credential = 'fixture-only-provider-value';
+    expect(spawnSync('git', ['init', '-q', root]).status).toBe(0);
+    expect(
+      spawnSync('git', [
+        '-C',
+        root,
+        '-c',
+        'user.name=Test',
+        '-c',
+        'user.email=test@example.invalid',
+        '-c',
+        'commit.gpgSign=false',
+        'commit',
+        '--allow-empty',
+        '-qm',
+        'base',
+      ]).status
+    ).toBe(0);
+    newTask(['--verify', 'pnpm test']);
+    fs.writeFileSync(
+      path.join(root, 'example.js'),
+      'export const fixture = "' + credential + '";\n'
+    );
+
+    const { code } = run(['review', '--base', 'HEAD', '--force'], {
+      env: { OPENAI_API_KEY: credential },
+    });
+
+    expect(code).toBe(0);
+    const diff = read('reviews/DIFF_demo-261117-r1.patch');
+    expect(diff).toContain('export const fixture = "[REDACTED]"');
+    expect(diff).not.toContain(credential);
   });
 
   test.each(['--reviewer', '--triage'])(

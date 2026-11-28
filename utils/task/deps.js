@@ -22,6 +22,7 @@ import { runAgent } from '../loop/adapters.js';
  *   runGit: import('./review.js').RunGit,
  *   runGitStatus: import('./review.js').RunGitStatus,
  *   runAgent?: typeof runAgent,
+ *   reviewSecrets?: string[],
  * }} Deps
  */
 

@@ -14,6 +14,7 @@ import {
   SEVERITY_RUBRIC,
   STATIC_PROTECTED_EXCLUDES,
   PACK_MAX_TOTAL_BYTES,
+  PACK_MAX_FILE_BYTES,
   buildReviewPack,
   buildTriagePack,
   classifyDiffFile,
@@ -134,6 +135,49 @@ test('should inline safe task code and deduplicate triage windows', () => {
   } finally {
     fs.rmSync(repoDir, { recursive: true, force: true });
   }
+});
+
+test('should redact a known credential before capping plan and triage evidence', () => {
+  const secretStart = 'distinctive-credential-prefix-';
+  const secret = secretStart + 'x'.repeat(256);
+  const intro = 'Acceptance: ';
+  const hunk = '@@ -1 +1 @@\n+';
+  const input = {
+    state: codeState(),
+    round: 1,
+    repoDir: '/unused',
+    scope: { base: 'main', since: 'base', files: ['file.js'] },
+    planText: intro + 'a'.repeat(16 * 1024 - intro.length - 50) + secret,
+    diff:
+      'diff --git a/file.js b/file.js\n' +
+      hunk +
+      'b'.repeat(PACK_MAX_FILE_BYTES - hunk.length - 160) +
+      secret +
+      '\n',
+    scrub: (/** @type {string} */ text) =>
+      text.replaceAll(secret, '[REDACTED]'),
+  };
+  const review = buildReviewPack(input);
+  const triage = buildTriagePack({
+    ...input,
+    rows: ['| | file.js:1 | low | Claim | Scenario | | |'],
+  });
+  expect(review).not.toContain(secretStart);
+  expect(triage).not.toContain(secretStart);
+});
+
+test('should fall back to the full git patch when there is no incremental evidence', () => {
+  const pack = buildReviewPack({
+    state: codeState(),
+    round: 2,
+    repoDir: '/unused',
+    scope: { base: 'main', since: 'base', files: ['file.js'] },
+    planText: 'Goal: Review the full change.',
+    diff: 'diff --git a/file.js b/file.js\n@@ -1 +1 @@\n+usable evidence\n',
+    incrementalDiff: null,
+  });
+  expect(pack).toContain('## Diff against the review base');
+  expect(pack).toContain('+usable evidence');
 });
 
 /** @param {Partial<import('../state.js').TaskState>} [overrides] */

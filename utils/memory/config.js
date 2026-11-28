@@ -15,8 +15,8 @@
  */
 import fs from 'fs';
 import path from 'path';
+import { AGENTS } from '../loop/adapters.js';
 import { SESSION_ID_RE, readIfExists, writeFileAtomic } from '../task/store.js';
-import { CALL_AGENTS } from './agent-call.js';
 import { MemoryError } from './store.js';
 
 export const CONFIG_FILE = 'config.json';
@@ -24,6 +24,8 @@ export const BUDGET_RANGE = { min: 1000, max: 10000 };
 /** Session switches kept; older ones belong to sessions long gone. */
 export const MAX_OFF_SESSIONS = 50;
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$/;
+/** The agents a memory job can call. The packaged launcher also reads these settings. */
+export const CALL_AGENTS = /** @type {const} */ ([...AGENTS, 'dscc']);
 /** Agents with per-agent automatic consolidation switches. */
 export const CONSOLIDATE_AGENTS = CALL_AGENTS;
 /** Default automatic extraction policy, opt-in for Antigravity. */
@@ -50,7 +52,7 @@ export const DEFAULT_AUTO_CONSOLIDATE = Object.freeze({
  * @property {boolean} off
  * @property {string[]} offSessions
  * @property {string | null} extractModel
- * @property {import('./agent-call.js').CallAgent | null} extractAgent
+ * @property {ConsolidateAgent | null} extractAgent
  * @property {number | null} budget
  * @property {boolean} personalizationEnabled
  * @property {AutoConsolidateConfig} autoConsolidate

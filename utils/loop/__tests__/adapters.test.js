@@ -17,6 +17,30 @@ import {
 } from '../adapters.js';
 
 describe('buildCommand', () => {
+  test.each([
+    '',
+    '  ',
+    'model alias',
+    'model\n',
+    '-flag',
+    'mod"el',
+    'model%TEMP%',
+  ])('should reject an unsafe or empty model identifier %j', (model) => {
+    expect(() =>
+      buildCommand({ agent: 'codex', mode: 'oneshot', model })
+    ).toThrow('Invalid --model');
+  });
+
+  test('should accept qualified model identifiers and dscc context suffixes', () => {
+    expect(
+      buildCommand({
+        agent: 'claude',
+        mode: 'oneshot',
+        model: 'provider/deepseek-flash[1m]',
+      }).args.slice(-2)
+    ).toEqual(['--model', 'provider/deepseek-flash[1m]']);
+  });
+
   test('should put Codex model and effort before stdin in oneshot mode', () => {
     const { args } = buildCommand({
       agent: 'codex',

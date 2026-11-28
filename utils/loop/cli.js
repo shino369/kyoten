@@ -369,6 +369,7 @@ export function main({ argv = process.argv.slice(2), deps = {} } = {}) {
             deps: {
               rootDir: worktree.dir,
               env: d.env,
+              reviewSecrets: selection.reviewer.secrets,
               now: d.date,
               log: (message) => out.push(message),
               runCommands: d.runCommands,

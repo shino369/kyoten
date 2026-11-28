@@ -211,6 +211,7 @@ export function dshDirProblem(dir, platform = process.platform) {
 
 export const MODES = /** @type {const} */ (['write', 'read', 'oneshot']);
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+const MODEL_ID = /^[a-z0-9][a-z0-9._:/@[\]+-]*$/i;
 
 /** @typedef {typeof MODES[number]} Mode */
 
@@ -450,10 +451,15 @@ export function buildCommand({
     args.push('--max-budget-usd', String(maxBudgetUsd));
   }
   const selection = [];
-  if (model) {
+  if (model !== null && model !== undefined) {
     if (name === 'dsh') {
       throw new Error(
         'DSH selects its model in its profile.\nFix: drop the model flag or select another agent'
+      );
+    }
+    if (!MODEL_ID.test(model)) {
+      throw new Error(
+        'Invalid --model: expected a nonempty model identifier.\nFix: supply a valid model name or omit the model flag to use the provider default'
       );
     }
     selection.push('--model', model);

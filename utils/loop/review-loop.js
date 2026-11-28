@@ -239,7 +239,12 @@ export function runReviewLoop({
     const review = selection ?? {
       mode,
       reviewer: fallback,
-      triage: fallback,
+      triage: {
+        agent: fallback.agent,
+        model: fallback.model,
+        effort: fallback.effort,
+        prepare: () => fallback,
+      },
       tip: null,
       timeoutMs: iterationTimeoutMs,
     };
@@ -253,10 +258,9 @@ export function runReviewLoop({
       opened,
       runAgent: deps.runAgent,
       runLogDir: logDir,
-      selection: {
-        ...review,
-        timeoutMs: Math.max(1, Math.min(remaining(), iterationTimeoutMs)),
-      },
+      perAttemptMs: iterationTimeoutMs,
+      clock: deps.clock,
+      selection: { ...review, timeoutMs: remaining() },
     });
     if (failure) {
       return finish(
