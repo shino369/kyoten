@@ -74,6 +74,7 @@ export const PACK_MAX_FILE_BYTES = 24 * 1024;
 export const PACK_MAX_TOTAL_BYTES = 80 * 1024;
 export const TRIAGE_CONTEXT_RADIUS = 30;
 export const TRIAGE_MAX_TOTAL_BYTES = 48 * 1024;
+export const TRIAGE_MAX_FINDINGS_BYTES = 32 * 1024;
 export const FINDINGS_HEADER = [
   'id',
   'file:line',
@@ -631,9 +632,10 @@ function deletedFileDiff(file, buffer) {
  * @returns {string}
  */
 function capFileDiff(text, file, maxBytes) {
-  if (text.length <= maxBytes) return text;
-  const cut = text.lastIndexOf('\n', maxBytes);
-  const kept = text.slice(0, cut === -1 ? maxBytes : cut);
+  if (Buffer.byteLength(text) <= maxBytes) return text;
+  const clipped = clipBytes(text, maxBytes);
+  const cut = clipped.lastIndexOf('\n');
+  const kept = cut === -1 ? clipped : clipped.slice(0, cut);
   const omitted = text
     .slice(kept.length)
     .split('\n')
@@ -798,7 +800,7 @@ export function isSecretFile(file) {
     return true;
   }
   if (
-    (/^\.env(?:\..+)?$/i.test(base) || /\.env$/i.test(base)) &&
+    (lower.startsWith('.env') || lower.endsWith('.env')) &&
     !ENV_TEMPLATE_RE.test(base)
   ) {
     return true;
@@ -1151,10 +1153,9 @@ export function generateReviewDiff({
   let total = 0;
   for (const file of sortReviewFiles(scope.files)) {
     if (isSecretFile(file)) {
-      chunks.push(
-        `diff --git a/${file} b/${file}\n... [omitted: protected secret path]\n`
-      );
-      total += chunks.at(-1)?.length ?? 0;
+      const notice = `diff --git a/${file} b/${file}\n... [omitted: protected secret path]\n`;
+      chunks.push(notice);
+      total += Buffer.byteLength(notice);
       continue;
     }
     // The old side of a rename is shown with its destination's patch.
@@ -1200,12 +1201,13 @@ export function generateReviewDiff({
     }
     if (text === null) continue;
     text = capFileDiff(scrub(text), file, maxFileBytes);
-    if (chunks.length > 0 && total + text.length > maxTotalBytes) {
+    const size = Buffer.byteLength(text);
+    if (chunks.length > 0 && total + size > maxTotalBytes) {
       omitted.push(file);
       continue;
     }
     chunks.push(text);
-    total += text.length;
+    total += size;
   }
   if (chunks.length === 0 && unavailable.length === 0) return null;
   if (omitted.length === 0 && unavailable.length === 0) return chunks.join('');
@@ -1536,16 +1538,15 @@ export function generateIncrementalDiff({
         exists = false;
       }
       if (!exists && !skippedInSnapshot.has(file)) continue;
-      chunks.push(
-        [
-          `diff --git a/${file} b/${file}`,
-          exists
-            ? '... [omitted: protected secret path]'
-            : 'deleted file (protected secret path)',
-          '',
-        ].join('\n')
-      );
-      total += chunks.at(-1)?.length ?? 0;
+      const notice = [
+        `diff --git a/${file} b/${file}`,
+        exists
+          ? '... [omitted: protected secret path]'
+          : 'deleted file (protected secret path)',
+        '',
+      ].join('\n');
+      chunks.push(notice);
+      total += Buffer.byteLength(notice);
       continue;
     }
     const snapshotPath = snapshotCopy(layout, file);
@@ -1616,12 +1617,13 @@ export function generateIncrementalDiff({
     }
     if (text === null) continue;
     text = capFileDiff(scrub(text), file, maxFileBytes);
-    if (chunks.length > 0 && total + text.length > maxTotalBytes) {
+    const size = Buffer.byteLength(text);
+    if (chunks.length > 0 && total + size > maxTotalBytes) {
       omitted.push(file);
       continue;
     }
     chunks.push(text);
-    total += text.length;
+    total += size;
   }
   if (chunks.length === 0) return null;
   if (omitted.length === 0) return chunks.join('');
@@ -1878,6 +1880,19 @@ export function splitRow(line) {
     .map((cell) => cell.trim().replace(/\\\|/g, '|'));
 }
 
+/** @param {string} location */
+export function parseFindingLocation(location) {
+  const match = /^(.+?)(?::(\d+))?(?::\d+)?$/.exec(
+    location.replace(/`/g, '').trim()
+  );
+  if (!match) return null;
+  const file = match[1].trim();
+  const line = match[2] === undefined ? null : Number(match[2]);
+  if (!file || (line !== null && (!Number.isSafeInteger(line) || line < 1)))
+    return null;
+  return { file, line };
+}
+
 /**
  * Parse the findings table of a round.
  *
@@ -1932,8 +1947,11 @@ export function parseFindings(markdown, { round, takenIds }) {
     if (verdict && !reason) problems.push('the verdict needs a reason');
     if (!claim) problems.push('claim is empty');
     if (!scenario) problems.push('failure scenario is empty');
-    const loc = location.replace(/`/g, '').match(/^(.+?)(?::(\d+))?(?::\d+)?$/);
-    if (!loc) problems.push('file:line is empty');
+    const loc = parseFindingLocation(location);
+    if (!loc)
+      problems.push(
+        'file:line must contain a path and a positive line number if given'
+      );
     let id = rawId.replace(/`/g, '');
     if (!id) {
       while (ids.has(`r${round}-${next}`)) next++;
@@ -1948,12 +1966,10 @@ export function parseFindings(markdown, { round, takenIds }) {
       continue;
     }
     ids.add(id);
-    const match = /** @type {RegExpMatchArray} */ (loc);
     findings.push({
       id,
       round,
-      file: match[1].trim(),
-      line: match[2] ? Number(match[2]) : null,
+      .../** @type {{ file: string, line: number | null }} */ (loc),
       severity: /** @type {Finding['severity']} */ (severity.toLowerCase()),
       claim,
       scenario,
@@ -2152,7 +2168,10 @@ function packDiff(input) {
 
 /** @param {string} patch */
 const snapshotOmitted = (patch) =>
-  patch.includes('\n... [omitted from previous round snapshot (');
+  patch.includes('\n... [omitted from previous round snapshot (') ||
+  patch.includes(
+    '\ndeleted file (was omitted from previous round snapshot as '
+  );
 
 /** @param {ReviewPackInput} input */
 function hasIncrementalEvidence(input) {
@@ -2200,6 +2219,7 @@ export function buildReviewPack(input) {
       SEVERITY_RUBRIC,
       PACK_INSTRUCTIONS,
       'Leave id, verdict and reason blank. Include a concrete fix suggestion in each must-fix claim.',
+      `Keep the combined findings rows below ${TRIAGE_MAX_FINDINGS_BYTES / 1024} KiB for triage.`,
       `## Review round ${round}\nGoal: ${state.goal}\nE2E: ${state.e2e ?? 'no'}`,
       clipBytes(extractPlanSummary(scrub(planText)), 16 * 1024),
       '## Earlier refuted or fixed findings',
@@ -2295,7 +2315,7 @@ export function buildTriagePack(input) {
     SEVERITY_RUBRIC,
     PACK_INSTRUCTIONS,
     'Return every original row in order. Fill only verdict and reason; you may lower severity. When unsure, mark REFUTED.',
-    `Goal: ${state.goal}`,
+    `Goal: ${clipBytes(scrub(state.goal), 2 * 1024)}`,
     clipBytes(extractPlanSummary(scrub(planText)), 9 * 1024),
     '## Reviewer findings',
     rows.join('\n'),

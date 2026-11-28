@@ -367,6 +367,14 @@ describe('main', () => {
         stdout: 'BEGIN FINDINGS\nEND FINDINGS',
         durationMs: 1,
       }));
+      runAgent.mockReturnValueOnce({
+        code: 0,
+        signal: null,
+        output: '',
+        stdout:
+          'No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.',
+        durationMs: 1,
+      });
 
       const { code, out } = run([NAME, '--agent', 'codex', '--review'], {
         rootDir: linked,
@@ -380,7 +388,7 @@ describe('main', () => {
         `✓ ${NAME}: quality loop complete — nothing changed since the last review.`
       );
       expect(out).toContain('(findings: reviews/, summary: NOTES.md)');
-      expect(runAgent).toHaveBeenCalledTimes(1);
+      expect(runAgent).toHaveBeenCalledTimes(2);
     });
 
     test('should exit 1 when the quality loop stops', () => {

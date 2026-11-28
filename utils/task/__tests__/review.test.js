@@ -180,37 +180,43 @@ test('should fall back to the full git patch when there is no incremental eviden
   expect(pack).toContain('+usable evidence');
 });
 
-test('should use full evidence for an omitted incremental file alongside usable hunks', () => {
-  const patch = (/** @type {string} */ file, /** @type {string} */ change) =>
-    `diff --git a/${file} b/${file}\n@@ -1 +1 @@\n+${change}\n`;
-  const input = {
-    state: codeState(),
-    round: 2,
-    repoDir: '/unused',
-    scope: {
-      base: 'main',
-      since: 'base',
-      files: ['previously-omitted.js', 'has-incremental.js'],
-    },
-    planText: 'Goal: Review the fixes.',
-    diff:
-      patch('previously-omitted.js', 'fix from available full diff') +
-      patch('has-incremental.js', 'superseded full evidence'),
-    incrementalDiff:
-      'diff --git a/previously-omitted.js b/previously-omitted.js\n' +
-      '... [omitted from previous round snapshot (binary, oversized, or secret); inspect the full DIFF patch]\n' +
-      patch('has-incremental.js', 'focused incremental evidence'),
-  };
-  const review = buildReviewPack(input);
-  const triage = buildTriagePack({
-    ...input,
-    rows: ['| | previously-omitted.js:1 | high | Claim | Scenario | | |'],
-  });
-  expect(review).toContain('fix from available full diff');
-  expect(triage).toContain('fix from available full diff');
-  expect(review).toContain('focused incremental evidence');
-  expect(review).not.toContain('superseded full evidence');
-});
+test.each([
+  '... [omitted from previous round snapshot (binary, oversized, or secret); inspect the full DIFF patch]',
+  'deleted file (was omitted from previous round snapshot as binary, oversized, or secret)',
+])(
+  'should use full evidence for an omitted incremental file alongside usable hunks (%s)',
+  (omission) => {
+    const patch = (/** @type {string} */ file, /** @type {string} */ change) =>
+      `diff --git a/${file} b/${file}\n@@ -1 +1 @@\n+${change}\n`;
+    const input = {
+      state: codeState(),
+      round: 2,
+      repoDir: '/unused',
+      scope: {
+        base: 'main',
+        since: 'base',
+        files: ['previously-omitted.js', 'has-incremental.js'],
+      },
+      planText: 'Goal: Review the fixes.',
+      diff:
+        patch('previously-omitted.js', 'fix from available full diff') +
+        patch('has-incremental.js', 'superseded full evidence'),
+      incrementalDiff:
+        'diff --git a/previously-omitted.js b/previously-omitted.js\n' +
+        `${omission}\n` +
+        patch('has-incremental.js', 'focused incremental evidence'),
+    };
+    const review = buildReviewPack(input);
+    const triage = buildTriagePack({
+      ...input,
+      rows: ['| | previously-omitted.js:1 | high | Claim | Scenario | | |'],
+    });
+    expect(review).toContain('fix from available full diff');
+    expect(triage).toContain('fix from available full diff');
+    expect(review).toContain('focused incremental evidence');
+    expect(review).not.toContain('superseded full evidence');
+  }
+);
 
 test('should inline a safe task file omitted from the previous snapshot', () => {
   const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-omitted-'));
@@ -1307,7 +1313,7 @@ describe('parseFindings', () => {
     expect(result.findings).toEqual([]);
     expect(result.errors).toEqual([
       'row 1: 2 cells, expected 7 (escape | inside a cell as \\|)',
-      'row 2 (r1-1): severity "huge" is not one of must-fix, high, medium, low; no verdict yet — run the triage first; claim is empty; failure scenario is empty; file:line is empty',
+      'row 2 (r1-1): severity "huge" is not one of must-fix, high, medium, low; no verdict yet — run the triage first; claim is empty; failure scenario is empty; file:line must contain a path and a positive line number if given',
       'row 3 (r1-2): verdict "MAYBE" is not CONFIRMED or REFUTED',
       'row 4 (r1-3): the verdict needs a reason',
       'row 5 (r9): id r9 is already used',
@@ -1673,20 +1679,23 @@ describe('generateReviewDiff', () => {
     expect(patch).toContain('huge.js (+1/-1)');
   });
 
-  test('should omit protected secret files from review diffs without reading them', () => {
-    fs.writeFileSync(path.join(root, '.env'), 'API_KEY=plain-secret-value\n');
-    const runGit = runGitFor({}, []);
+  test.each(['.env', '.env-local'])(
+    'should omit protected %s from review diffs without reading it',
+    (file) => {
+      fs.writeFileSync(path.join(root, file), 'fixture-protected-content\n');
+      const runGit = runGitFor({}, [], [file]);
 
-    const patch = generateReviewDiff({
-      repoDir: root,
-      scope: gitScope(['.env']),
-      runGit,
-    });
+      const patch = generateReviewDiff({
+        repoDir: root,
+        scope: gitScope([file]),
+        runGit,
+      });
 
-    expect(patch).toContain('diff --git a/.env b/.env');
-    expect(patch).toContain('protected secret path');
-    expect(patch).not.toContain('plain-secret-value');
-  });
+      expect(patch).toContain(`diff --git a/${file} b/${file}`);
+      expect(patch).toContain('protected secret path');
+      expect(patch).not.toContain('fixture-protected-content');
+    }
+  );
 
   test('should never pass protected paths to git content, stat, or rename queries', () => {
     fs.mkdirSync(path.join(root, 'src'), { recursive: true });

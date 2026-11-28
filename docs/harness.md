@@ -643,6 +643,8 @@ cache hit rate based on cached plus uncached prompt tokens.
   triage. `--no-record` leaves recording to the caller. `--mode read` allows the agents to load
   the brief and its evidence on demand. For native reviews, use `pnpm task review` and give
   only the brief path to the reviewer and triage subagents, then run `pnpm task review record`.
+- Codex `oneshot` review checks that `codex mcp list` reports zero configured servers before
+  sending the pack. Managed configuration can load MCP servers even with user config ignored.
 - `pnpm loop <task> --agent <a> --review` uses the same review and triage prompts after verify
   passes and fixes confirmed must-fix/high findings. Select `--reviewer dscc` to opt into DeepSeek
   through Claude Code, or use `--no-oneshot-review` to allow read-only inspection. The loop logs

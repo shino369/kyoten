@@ -7,9 +7,11 @@ import {
   CALLER_HARNESS_ENV,
   assertAgyAllowed,
   buildCommand,
+  codexMcpEmpty,
 } from '../loop/adapters.js';
 import {
   envSecrets,
+  mergeSecrets,
   prepareAgentExecution,
   profileEnv,
   scrubSecrets,
@@ -21,10 +23,12 @@ import {
   buildReviewPack,
   buildTriagePack,
   FINDINGS_HEADER,
+  parseFindingLocation,
   readReviewText,
   reviewFiles,
   scopeRoot,
   splitRow,
+  TRIAGE_MAX_FINDINGS_BYTES,
 } from './review.js';
 import { sessionHarnesses } from './store.js';
 import { commandFor } from '../tools/registry.js';
@@ -39,7 +43,13 @@ const SEPARATOR_ROW = `| ${FINDINGS_HEADER.map(() => '---').join(' | ')} |`;
 const isHeader = (line) =>
   splitRow(line).join('|').toLowerCase() === FINDINGS_HEADER.join('|');
 /** @param {string} line */
-const isSeparator = (line) => /^\|[\s|:-]+$/.test(line);
+const isSeparator = (line) => {
+  const cells = splitRow(line);
+  return (
+    cells.length === FINDINGS_HEADER.length &&
+    cells.every((cell) => /^:?-{3,}:?$/.test(cell))
+  );
+};
 /** @param {string} line */
 const isBlank = (line) => splitRow(line).every((cell) => cell === '');
 
@@ -66,9 +76,14 @@ export function extractRows(output, mode = 'read') {
   }
   const block = lines.slice(begin + 1, end).filter(Boolean);
   if (block.some((line) => !line.startsWith('|'))) return null;
-  return block.filter(
-    (line) => !isHeader(line) && !isSeparator(line) && !isBlank(line)
-  );
+  if (isHeader(block[0] ?? '')) {
+    if (!isSeparator(block[1] ?? '')) return null;
+    block.splice(0, 2);
+  }
+  return block.filter((line) => {
+    const cells = splitRow(line);
+    return cells.length !== FINDINGS_HEADER.length || cells.some(Boolean);
+  });
 }
 
 /**
@@ -144,6 +159,10 @@ export function reviewerProblems(rows) {
     }
     if (!location || !claim || !scenario) {
       problems.push(`${at}: file:line, claim, or failure scenario is empty`);
+    } else if (!parseFindingLocation(location)) {
+      problems.push(
+        `${at}: file:line must contain a path and a positive line number if given`
+      );
     }
     if (verdict || reason) {
       problems.push(`${at}: verdict and reason must stay empty for the triage`);
@@ -249,13 +268,6 @@ export function triagePrompt({ name, round, brief, rows }) {
 }
 
 export const REVIEW_AGENTS = [...AGENTS, 'dscc'];
-
-/** @param {string[]} inherited @param {string[]} selected */
-function mergeSecrets(inherited, selected) {
-  return [...new Set([...inherited, ...selected])].sort(
-    (a, b) => b.length - a.length
-  );
-}
 
 /**
  * @typedef {{ reviewer?: string, reviewerModel?: string, reviewerEffort?: string,
@@ -464,16 +476,24 @@ export function reviewTelemetry(entry) {
  * Workspace files are only available to read mode. Isolate oneshot sessions in
  * a disposable directory so local agent instructions don't fill the context.
  * @param {{ rootDir: string, mode: ReviewExecutionPlan['mode'],
- *   execution: ReviewExecution, prompt: string, timeoutMs: number,
+ *   execution: ReviewExecution, prompt: string, timeoutMs: number, clock: () => number,
  *   runAgent: typeof import('../loop/adapters.js').runAgent }} options
  */
-function askReview({ rootDir, mode, execution, prompt, timeoutMs, runAgent }) {
+function askReview({
+  rootDir,
+  mode,
+  execution,
+  prompt,
+  timeoutMs,
+  runAgent,
+  clock,
+}) {
   const cwd =
     mode === 'oneshot'
       ? fs.mkdtempSync(path.join(os.tmpdir(), 'kyoten-review-'))
       : rootDir;
   try {
-    return runAgent({
+    const options = {
       command: execution.command,
       cwd,
       prompt,
@@ -483,7 +503,22 @@ function askReview({ rootDir, mode, execution, prompt, timeoutMs, runAgent }) {
         [INNER_LOOP_ENV]: 'off',
         TASK_AGENT: execution.agent,
       },
-    });
+    };
+    if (mode === 'oneshot' && execution.command.agent === 'codex') {
+      const start = clock();
+      if (!codexMcpEmpty(options, runAgent)) {
+        throw new Error(
+          'Cannot verify zero MCP servers for Codex oneshot review. Fix: remove the configured MCP servers or select read mode.'
+        );
+      }
+      options.timeoutMs -= clock() - start;
+      if (options.timeoutMs <= 0) {
+        throw new Error(
+          'Codex MCP check used the review time budget. Fix: retry with a longer timeout.'
+        );
+      }
+    }
+    return runAgent(options);
   } finally {
     if (mode === 'oneshot') fs.rmSync(cwd, { recursive: true, force: true });
   }
@@ -563,6 +598,7 @@ export function runReviewAgents({
           prompt,
           timeoutMs: Math.min(remaining, perAttemptMs),
           runAgent,
+          clock,
         });
       } catch (error) {
         problem = scrub(error instanceof Error ? error.message : String(error));
@@ -572,15 +608,19 @@ export function runReviewAgents({
       attempts.push({ ...entry, result });
       if (runLogDir) {
         fs.mkdirSync(runLogDir, { recursive: true, mode: 0o700 });
+        // Antigravity stdout includes raw JSON events with escaped fields.
+        // Keep its telemetry here and use the findings file for the answer.
+        const output =
+          execution.command.agent === 'agy'
+            ? ''
+            : `\n\n## Output\n\n${result.output}`;
         writePrivate(
           path.join(runLogDir, `r${opened.round}-${stage}.md`),
           scrub(
             `# ${stage}\n\n${attempts
               .filter((call) => call.stage === stage)
               .map(reviewTelemetry)
-              .join(
-                '\n'
-              )}\n\n## Prompt\n\n${prompt}\n\n## Output\n\n${result.output}\n`
+              .join('\n')}\n\n## Prompt\n\n${prompt}${output}\n`
           )
         );
       }
@@ -605,13 +645,16 @@ export function runReviewAgents({
 
   const save = () =>
     writePrivate(findingsFile, scrub(replaceRows(original, rows)));
+  const oversizedFindings = (/** @type {string[]} */ findings) =>
+    input !== null &&
+    Buffer.byteLength(findings.join('\n')) > TRIAGE_MAX_FINDINGS_BYTES;
+  const budgetProblem = `Findings exceed the ${TRIAGE_MAX_FINDINGS_BYTES / 1024} KiB oneshot triage limit. Fix: shorten the findings or use --mode read`;
   try {
     if (rows.length === 0) {
-      const response = ask(
-        'reviewer',
-        reviewer,
-        reviewPrompt,
-        reviewerProblems
+      const response = ask('reviewer', reviewer, reviewPrompt, (findings) =>
+        oversizedFindings(findings)
+          ? [budgetProblem]
+          : reviewerProblems(findings)
       );
       if ('problem' in response)
         return {
@@ -644,6 +687,9 @@ export function runReviewAgents({
       if (safeRows.some((row, i) => row !== rows[i])) {
         rows = safeRows;
         save();
+      }
+      if (oversizedFindings(rows)) {
+        return { rows, failure: { stage: 'triage', message: budgetProblem } };
       }
       const prompt = input
         ? buildTriagePack({ ...input, rows })

@@ -790,6 +790,36 @@ describe('runReviewLoop', () => {
     );
   });
 
+  test('should keep the structured Antigravity reply out of review loop logs', () => {
+    seedTask();
+    const credential = 'fixture-private-first\nfixture-private-second';
+    const env = { KYOTEN_AGENT: 'agy', FIXTURE_TOKEN: credential };
+    const selection = resolveReviewExecution({}, { rootDir: root, env });
+    const stdout = [BEGIN, END].join('\n');
+    const output = JSON.stringify({
+      event: 'result',
+      result: { response: stdout, diagnostic: credential },
+    });
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      output,
+      stdout,
+      durationMs: 1,
+    }));
+
+    const result = review(makeDeps(runAgent, { env }), { selection });
+
+    expect(result.ok).toBe(true);
+    const log = fs.readFileSync(
+      path.join(result.logDir, 'r1-reviewer.md'),
+      'utf8'
+    );
+    expect(log).toContain('reviewer attempt 1: agy; exit 0');
+    expect(log).not.toContain('fixture-private-first');
+    expect(log).not.toContain('fixture-private-second');
+  });
+
   test('should keep findings open when the needed triage profile cannot load', () => {
     seedTask();
     const env = { DSCC_PROFILE: path.join(root, 'missing-dscc-profile') };
