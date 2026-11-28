@@ -12,6 +12,7 @@ import {
   formatRecord,
   main,
   parseArgs,
+  profileEnv,
   recordPath,
 } from '../cli.js';
 
@@ -455,6 +456,115 @@ describe('main', () => {
     expect(read('review.md')).toContain('# Agent call — codex (read)');
   });
 
+  test('should overwrite an existing record privately', () => {
+    const target = path.join(root, 'review.md');
+    fs.writeFileSync(target, 'old\n');
+    fs.chmodSync(target, 0o644);
+
+    run(['ask', '--agent', 'codex', '--out', 'review.md', 'hi']);
+
+    const text = read('review.md');
+    expect(text).toContain('# Agent call — codex (read)');
+    expect(text).not.toBe('old\n');
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(target).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  test('should preserve ordinary query emails while scrubbing child credentials', () => {
+    const query =
+      'https://calendar.example.invalid?invite=reader@example.invalid';
+    const fragment = 'https://example.invalid#contact=user@example.invalid';
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      stdout: `${query} ${fragment} child-env-secret\n`,
+      output: `${query} ${fragment} child-env-secret\n`,
+      durationMs: 1,
+    }));
+
+    const { out } = run(['ask', '--agent', 'claude', '--json', 'hi'], {
+      env: { HOME: '/home/t', OPENAI_API_KEY: 'child-env-secret' },
+      runAgent,
+    });
+
+    const parsed = JSON.parse(out);
+    const recordText = read(parsed.record);
+    for (const text of [parsed.answer, parsed.output, recordText]) {
+      expect(text).toContain(query);
+      expect(text).toContain(fragment);
+      expect(text).not.toContain('child-env-secret');
+    }
+  });
+
+  test('should not treat author identity or ordinary query parameters as credentials', () => {
+    const url =
+      'https://calendar.example.invalid?invite=reader@example.invalid&author=reader@example.invalid&keyboard=us';
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      stdout: `${url} reader@example.invalid Reader\n`,
+      output: `${url} reader@example.invalid Reader\n`,
+      durationMs: 1,
+    }));
+
+    const { out } = run(['ask', '--agent', 'codex', '--json', 'hi'], {
+      env: {
+        HOME: '/home/t',
+        GIT_AUTHOR_EMAIL: 'reader@example.invalid',
+        GIT_AUTHOR_NAME: 'Reader',
+      },
+      runAgent,
+    });
+
+    const parsed = JSON.parse(out);
+    const recordText = read(parsed.record);
+    for (const text of [parsed.answer, parsed.output, recordText]) {
+      expect(text).toContain(url);
+      expect(text).toContain('reader@example.invalid');
+      expect(text).toContain('Reader');
+    }
+  });
+
+  test('should scrub every accepted credential value from the answer and the record', () => {
+    const file = path.join(root, 'dscc.env');
+    fs.writeFileSync(
+      file,
+      [
+        'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic',
+        'ANTHROPIC_AUTH_TOKEN=short-dscc',
+        'ANTHROPIC_API_KEY=api-key-literal',
+        'ANTHROPIC_CUSTOM_HEADERS="X-Api-Key: hdr-secret-42"',
+        '',
+      ].join('\n')
+    );
+    const leaked = [
+      'short-dscc',
+      'api-key-literal',
+      'hdr-secret-42',
+      'inherited-openai-key',
+    ];
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      stdout: `${leaked.join(' ')}\n`,
+      output: `${leaked.join(' ')}\n`,
+      durationMs: 1,
+    }));
+
+    const { out } = run(['ask', '--agent', 'dscc', '--json', 'hi'], {
+      env: { DSCC_PROFILE: file, OPENAI_API_KEY: 'inherited-openai-key' },
+      runAgent,
+    });
+
+    const parsed = JSON.parse(out);
+    const recordText = read(parsed.record);
+    for (const text of [parsed.answer, parsed.output, recordText]) {
+      for (const value of leaked) expect(text).not.toContain(value);
+      expect(text).toContain('[REDACTED]');
+    }
+  });
+
   test('should pass the agent exit code through, and exit 1 when it was stopped', () => {
     const failed = vi.fn(() => ({
       code: 3,
@@ -487,5 +597,292 @@ describe('main', () => {
 
     const text = run(['ask', '--agent', 'codex', 'hi'], { runAgent: stopped });
     expect(text.err).toContain('(codex, read: stopped by SIGTERM; record:');
+  });
+});
+
+describe('profileEnv', () => {
+  test('should drop inherited provider names (case-insensitive prefixes on Windows) and apply the profile', () => {
+    expect(
+      profileEnv(
+        {
+          PATH: '/bin',
+          ANTHROPIC_API_KEY: 'inherited',
+          anthropic_base_url: 'https://a',
+          CLAUDE_CODE_USE_BEDROCK: '1',
+        },
+        {
+          drop: ['ANTHROPIC_*', 'CLAUDE_CODE_USE_BEDROCK'],
+          set: { ANTHROPIC_BASE_URL: 'https://b' },
+        },
+        'win32'
+      )
+    ).toEqual({ PATH: '/bin', ANTHROPIC_BASE_URL: 'https://b' });
+  });
+
+  test('should match names case-sensitively off Windows', () => {
+    expect(
+      profileEnv(
+        { anthropic_api_key: 'lower', ANTHROPIC_API_KEY: 'upper' },
+        { drop: ['ANTHROPIC_*'], set: {} },
+        'linux'
+      )
+    ).toEqual({ anthropic_api_key: 'lower' });
+  });
+});
+
+describe('dscc', () => {
+  const profile = (/** @type {string} */ text) => {
+    const file = path.join(root, 'dscc.env');
+    fs.writeFileSync(file, text);
+    return file;
+  };
+  const PROFILED =
+    'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic\nANTHROPIC_AUTH_TOKEN=sk-test-secret\n';
+
+  test('should run the claude adapter with the dscc profile environment', () => {
+    const file = profile(PROFILED);
+
+    const { code, out, err, runAgent } = run(
+      ['ask', '--agent', 'dscc', '--json', 'review it'],
+      {
+        env: {
+          HOME: '/home/t',
+          DSCC_PROFILE: file,
+          ANTHROPIC_API_KEY: 'inherited',
+          CLAUDE_CODE_USE_BEDROCK: '1',
+          KYOTEN_AGENT: 'agy',
+        },
+      }
+    );
+
+    expect(code).toBe(0);
+    const call = runAgent.mock.calls[0][0];
+    expect(call.command).toEqual({
+      agent: 'claude',
+      bin: 'claude',
+      args: [
+        '-p',
+        '--permission-mode',
+        'plan',
+        '--output-format',
+        'text',
+        '--no-session-persistence',
+      ],
+    });
+    expect(call.env).toMatchObject({
+      ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic',
+      ANTHROPIC_AUTH_TOKEN: 'sk-test-secret',
+      KYOTEN_AGENT: 'dscc',
+      TASK_AGENT: 'dscc',
+      TASK_INNER_LOOP: 'off',
+    });
+    expect(call.env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(call.env.CLAUDE_CODE_USE_BEDROCK).toBeUndefined();
+    const parsed = JSON.parse(out);
+    expect(parsed).toMatchObject({ agent: 'dscc', mode: 'read' });
+    expect(parsed.record).toMatch(/agent-dscc-/);
+    expect(read(parsed.record)).toContain('# Agent call — dscc (read)');
+    expect(err).toBe('');
+  });
+
+  test('should use acceptEdits for --write and warn in the main checkout', () => {
+    const file = profile(PROFILED);
+
+    const { err, runAgent } = run(['ask', '--agent', 'dscc', '--write', 'hi'], {
+      env: { DSCC_PROFILE: file },
+    });
+
+    expect(runAgent.mock.calls[0][0].command.args).toContain('acceptEdits');
+    expect(err).toContain(
+      '! --write in the main checkout: dscc may edit your working tree'
+    );
+  });
+
+  test('should fail cleanly without touching secrets when the profile is missing or invalid', () => {
+    expect(() =>
+      run(['ask', '--agent', 'dscc', 'hi'], {
+        env: { DSCC_PROFILE: path.join(root, 'nope.env') },
+      })
+    ).toThrow(/no dscc profile at .*nope\.env[^]*Fix: kyoten dscc --set-key/);
+
+    const file = profile(
+      'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic\n'
+    );
+    expect(() =>
+      run(['ask', '--agent', 'dscc', 'hi'], { env: { DSCC_PROFILE: file } })
+    ).toThrow(/ANTHROPIC_AUTH_TOKEN is not set[^]*Fix: kyoten dscc --set-key/);
+  });
+
+  test('should forward profile warnings without printing values', () => {
+    const file = profile(
+      'ANTHROPIC_BASE_URL=https://api.example.com/anthropic\nANTHROPIC_AUTH_TOKEN=sk-test-secret\n'
+    );
+
+    const { err } = run(['ask', '--agent', 'dscc', 'hi'], {
+      env: { DSCC_PROFILE: file },
+    });
+
+    expect(err).toContain(
+      '! dscc profile ANTHROPIC_BASE_URL points at api.example.com'
+    );
+    expect(err).not.toContain('sk-test-secret');
+  });
+
+  test('should print the dscc label in the stderr summary', () => {
+    const file = profile(PROFILED);
+
+    const { err } = run(['ask', '--agent', 'dscc', 'hi'], {
+      env: { DSCC_PROFILE: file },
+    });
+
+    expect(err).toContain('(dscc, read: exit 0; record:');
+  });
+
+  test('should scrub dscc credentials and secret patterns from call records and output', () => {
+    const file = profile(
+      'ANTHROPIC_BASE_URL=https://user:url-secret-pw@api.deepseek.com/anthropic\nANTHROPIC_AUTH_TOKEN=sk-short-dscc\n'
+    );
+    const runAgent = vi.fn(() => ({
+      code: 1,
+      signal: null,
+      stdout: `auth failed for sk-short-dscc and ghp_${'a'.repeat(36)}\n`,
+      output: `stderr: https://user:url-secret-pw@api.deepseek.com token=sk-short-dscc ghp_${'a'.repeat(36)}\n`,
+      durationMs: 100,
+    }));
+
+    const { out } = run(['ask', '--agent', 'dscc', '--json', 'check it'], {
+      env: { DSCC_PROFILE: file },
+      runAgent,
+    });
+
+    const parsed = JSON.parse(out);
+    const recordText = read(parsed.record);
+    for (const leaked of ['sk-short-dscc', 'url-secret-pw', 'ghp_']) {
+      expect(recordText).not.toContain(leaked);
+      expect(parsed.answer).not.toContain(leaked);
+      expect(parsed.output).not.toContain(leaked);
+    }
+    expect(recordText).toContain('[REDACTED]');
+    expect(parsed.answer).toContain('[REDACTED]');
+  });
+
+  test('should scrub custom header values, quoted tokens, and inherited env keys', () => {
+    const file = profile(
+      [
+        'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic',
+        'ANTHROPIC_AUTH_TOKEN="quoted-dscc-tok"',
+        'ANTHROPIC_CUSTOM_HEADERS="X-Api-Key: hdr-secret-42"',
+        '',
+      ].join('\n')
+    );
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      stdout: 'echo quoted-dscc-tok hdr-secret-42 inherited-env-secret\n',
+      output: 'full quoted-dscc-tok hdr-secret-42 inherited-env-secret\n',
+      durationMs: 50,
+    }));
+
+    const { out } = run(['ask', '--agent', 'dscc', '--json', 'check it'], {
+      env: {
+        DSCC_PROFILE: file,
+        OPENAI_API_KEY: 'inherited-env-secret',
+      },
+      runAgent,
+    });
+
+    const parsed = JSON.parse(out);
+    const recordText = read(parsed.record);
+    for (const leaked of [
+      'quoted-dscc-tok',
+      'hdr-secret-42',
+      'inherited-env-secret',
+    ]) {
+      expect(recordText).not.toContain(leaked);
+      expect(parsed.answer).not.toContain(leaked);
+      expect(parsed.output).not.toContain(leaked);
+    }
+  });
+
+  test('should scrub a short profile token and inherited _PWD/PASSWD values', () => {
+    const file = profile(
+      'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic\nANTHROPIC_AUTH_TOKEN=sk-1234\n'
+    );
+    const text =
+      'key sk-1234 db mysql-pass-1 smtp smtp-pass-22 cwd /home/t/project\n';
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      stdout: text,
+      output: text,
+      durationMs: 1,
+    }));
+
+    const { out } = run(['ask', '--agent', 'dscc', '--json', 'hi'], {
+      env: {
+        DSCC_PROFILE: file,
+        PWD: '/home/t/project',
+        MYSQL_PWD: 'mysql-pass-1',
+        SMTP_PASSWD: 'smtp-pass-22',
+      },
+      runAgent,
+    });
+
+    const parsed = JSON.parse(out);
+    for (const value of [parsed.answer, parsed.output, read(parsed.record)]) {
+      for (const leaked of ['sk-1234', 'mysql-pass-1', 'smtp-pass-22']) {
+        expect(value).not.toContain(leaked);
+      }
+      expect(value).toContain('/home/t/project');
+    }
+  });
+
+  test('should keep non-credential profile values and the working directory in the answer', () => {
+    const file = profile(
+      `${PROFILED}CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192\nANTHROPIC_MODEL=deepseek-chat\n`
+    );
+    const text =
+      'Buffer 8192 bytes in /home/t/project/src/app.js via deepseek-chat; sk-test-secret\n';
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      stdout: text,
+      output: text,
+      durationMs: 1,
+    }));
+
+    const { out } = run(['ask', '--agent', 'dscc', '--json', 'hi'], {
+      env: { DSCC_PROFILE: file, PWD: '/home/t/project' },
+      runAgent,
+    });
+
+    const parsed = JSON.parse(out);
+    for (const value of [parsed.answer, parsed.output, read(parsed.record)]) {
+      expect(value).toContain('Buffer 8192 bytes');
+      expect(value).toContain('/home/t/project/src/app.js');
+      expect(value).toContain('deepseek-chat');
+      expect(value).not.toContain('sk-test-secret');
+    }
+  });
+
+  test('should not scrub inherited values the child never received', () => {
+    const file = profile(PROFILED);
+    const runAgent = vi.fn(() => ({
+      code: 0,
+      signal: null,
+      stdout: 'dropped-parent-value stays\n',
+      output: 'dropped-parent-value stays\n',
+      durationMs: 1,
+    }));
+
+    const { out } = run(['ask', '--agent', 'dscc', '--json', 'hi'], {
+      env: { DSCC_PROFILE: file, ANTHROPIC_API_KEY: 'dropped-parent-value' },
+      runAgent,
+    });
+
+    const parsed = JSON.parse(out);
+    expect(parsed.answer).toContain('dropped-parent-value');
+    expect(parsed.output).toContain('dropped-parent-value');
+    expect(read(parsed.record)).toContain('dropped-parent-value');
   });
 });

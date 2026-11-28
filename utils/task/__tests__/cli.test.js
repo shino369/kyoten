@@ -1,3 +1,4 @@
+import { spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -22,7 +23,7 @@ import {
   updateState,
   writeSession,
 } from '../store.js';
-import { FOLDER_BASE } from '../review.js';
+import { FOLDER_BASE, defaultRunGit, defaultRunGitStatus } from '../review.js';
 import { DEFAULT_CONFIG, writeConfig } from '../../memory/config.js';
 import { loadNotes, memoryDir } from '../../memory/store.js';
 
@@ -1179,6 +1180,455 @@ describe('review', () => {
     expect(run(['review']).out).toContain('Review round still open 1/2');
   });
 
+  test('should rewrite an existing brief privately', () => {
+    greenCodeTask();
+    run(['review']);
+    const brief = path.join(taskDir(), 'reviews', `BRIEF_${NAME}-r1.md`);
+    fs.chmodSync(brief, 0o644);
+    fs.writeFileSync(brief, 'stale\n');
+
+    run(['review']);
+
+    expect(fs.readFileSync(brief, 'utf-8')).toContain('# Review brief');
+    expect(fs.readFileSync(brief, 'utf-8')).not.toBe('stale\n');
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(brief).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  test('should write a pre-computed diff patch and link it in the brief and output', () => {
+    newTask(['--verify', 'pnpm test']);
+    finishSteps();
+    run(['verify']);
+    fs.mkdirSync(path.join(root, 'utils'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'utils', 'x.js'), 'const a = 1;\n');
+    /** @type {import('../review.js').RunGit} */
+    const runGit = vi.fn((args) => {
+      if (args[0] === 'symbolic-ref') return 'origin/main';
+      if (args[0] === 'merge-base') return 'abc123';
+      if (args.includes('--name-status')) return 'M\0utils/x.js\0';
+      if (args.includes('--name-only')) return 'utils/x.js\0';
+      if (args.includes('--numstat')) {
+        return '1\t1\tutils/x.js\0';
+      }
+      if (args.includes('diff')) {
+        return [
+          'diff --git a/utils/x.js b/utils/x.js',
+          '--- a/utils/x.js',
+          '+++ b/utils/x.js',
+          '@@ -1 +1 @@',
+          '-a',
+          '+b',
+        ].join('\n');
+      }
+      return '';
+    });
+
+    const parsed = JSON.parse(run(['review', '--json'], { runGit }).out);
+
+    expect(parsed.diff).toBe(`tasks/${NAME}/reviews/DIFF_${NAME}-r1.patch`);
+    expect(parsed.incrementalDiff).toBeNull();
+    expect(read(`reviews/DIFF_${NAME}-r1.patch`)).toContain(
+      'diff --git a/utils/x.js b/utils/x.js'
+    );
+    const brief = read(`reviews/BRIEF_${NAME}-r1.md`);
+    expect(brief).toContain(
+      `Diff: tasks/${NAME}/reviews/DIFF_${NAME}-r1.patch`
+    );
+    expect(brief).toContain('- utils/x.js (+1/-1)\n');
+    expect(brief).toContain('## Reading budget');
+    const diffFile = path.join(taskDir(), 'reviews', `DIFF_${NAME}-r1.patch`);
+    fs.chmodSync(diffFile, 0o644);
+    const reopened = JSON.parse(run(['review', '--json'], { runGit }).out);
+    expect(reopened).toMatchObject({
+      reopened: true,
+      diff: `tasks/${NAME}/reviews/DIFF_${NAME}-r1.patch`,
+    });
+    expect(fs.readFileSync(diffFile, 'utf-8')).toContain(
+      'diff --git a/utils/x.js b/utils/x.js'
+    );
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(diffFile).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  test('should print the diff paths and the cross-model hint', () => {
+    newTask(['--verify', 'pnpm test']);
+    finishSteps();
+    run(['verify']);
+    fs.mkdirSync(path.join(root, 'utils'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'utils', 'x.js'), 'const a = 1;\n');
+    /** @type {import('../review.js').RunGit} */
+    const runGit = (args) => {
+      if (args[0] === 'symbolic-ref') return 'origin/main';
+      if (args[0] === 'merge-base') return 'abc123';
+      if (args.includes('--name-status')) return 'M\0utils/x.js\0';
+      if (args.includes('--name-only')) return 'utils/x.js\0';
+      if (args.includes('--numstat')) {
+        return '1\t1\tutils/x.js\0';
+      }
+      if (args.includes('diff')) return 'diff --git a/utils/x.js b/utils/x.js';
+      return '';
+    };
+
+    const { out } = run(['review'], { runGit });
+
+    expect(out).toContain(`Diff: tasks/${NAME}/reviews/DIFF_${NAME}-r1.patch`);
+    expect(out).toContain(
+      `Cross-model (saves primary quota, read-only — paste its rows into tasks/${NAME}/reviews/REVIEW_${NAME}-r1.md): pnpm agent ask --agent dscc - < tasks/${NAME}/reviews/BRIEF_${NAME}-r1.md`
+    );
+  });
+
+  test('should not write a diff patch for a task-folder scope', () => {
+    greenCodeTask();
+
+    const parsed = JSON.parse(run(['review', '--json']).out);
+
+    expect(parsed.diff).toBeNull();
+    expect(
+      fs.existsSync(path.join(taskDir(), 'reviews', `DIFF_${NAME}-r1.patch`))
+    ).toBe(false);
+    expect(read(`reviews/BRIEF_${NAME}-r1.md`)).not.toContain('Diff:');
+  });
+
+  test('should write a round-2 incremental diff from the round-1 snapshot', () => {
+    newTask(['--verify', 'pnpm test']);
+    finishSteps();
+    run(['verify']);
+    const file = path.join(root, 'utils', 'x.js');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'a\n');
+    /** @param {string} patch */
+    const gitFor = (patch) =>
+      /** @type {import('../review.js').RunGit} */ (
+        vi.fn((args) => {
+          if (args[0] === 'symbolic-ref') return 'origin/main';
+          if (args[0] === 'merge-base') return 'abc123';
+          if (args.includes('--name-status')) return 'M\0utils/x.js\0';
+          if (args.includes('--name-only')) return 'utils/x.js\0';
+          if (args.includes('--numstat')) {
+            return '1\t0\tutils/x.js\0';
+          }
+          if (args.includes('diff')) return patch;
+          return '';
+        })
+      );
+    const round1 = gitFor(
+      'diff --git a/utils/x.js b/utils/x.js\n@@ -1 +1 @@\n-a\n+b'
+    );
+    run(['review'], { runGit: round1 });
+    addRows(1, [
+      '| | utils/x.js | low | Style | reading it | CONFIRMED | agreed |',
+    ]);
+    run(['review', 'record']);
+    fs.writeFileSync(file, 'b\n');
+    /** @type {(args: string[], cwd: string) => { status: number | null, stdout: string }} */
+    const runGitStatus = vi.fn(() => ({
+      status: 1,
+      stdout: [
+        `diff --git a/${path.join(root, 'x')} b/${path.join(root, 'y')}`,
+        `--- a/${path.join(root, 'x')}`,
+        `+++ b/${path.join(root, 'y')}`,
+        '@@ -1 +1 @@',
+        '-a',
+        '+b',
+        '',
+      ].join('\n'),
+    }));
+
+    const parsed = JSON.parse(
+      run(['review', '--json'], { runGit: round1, runGitStatus }).out
+    );
+
+    expect(parsed.round).toBe(2);
+    expect(parsed.incrementalDiff).toBe(
+      `tasks/${NAME}/reviews/DIFF_${NAME}-r1-to-r2.patch`
+    );
+    const incremental = read(`reviews/DIFF_${NAME}-r1-to-r2.patch`);
+    expect(incremental).toContain('diff --git a/utils/x.js b/utils/x.js');
+    expect(incremental).toContain('--- a/utils/x.js');
+    expect(incremental).toContain('+b');
+  });
+
+  test('should not close a task when a review round opens before done takes the lock', () => {
+    newTask(['--verify', 'pnpm test']);
+    finishSteps();
+    run(['verify']);
+    const file = path.join(root, 'utils', 'x.js');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'a\n');
+    /** @type {import('../review.js').RunGit} */
+    const runGit = (args) => {
+      if (args[0] === 'symbolic-ref') return 'origin/main';
+      if (args[0] === 'merge-base') return 'abc123';
+      if (args.includes('--name-status')) return 'M\0utils/x.js\0';
+      if (args.includes('--name-only')) return 'utils/x.js\0';
+      if (args.includes('--numstat')) return '1\t0\tutils/x.js\0';
+      if (args.includes('diff')) return 'diff --git a/utils/x.js b/utils/x.js';
+      return '';
+    };
+    run(['review'], { runGit });
+    addRows(1, [
+      '| | utils/x.js | low | Style | reading it | CONFIRMED | agreed |',
+    ]);
+    run(['review', 'record']);
+    fs.writeFileSync(file, 'b\n');
+
+    expect(() =>
+      run(['done'], {
+        now: () => {
+          run(['review'], { runGit });
+          return NOW;
+        },
+      })
+    ).toThrow(/round 2.*open/i);
+    expect(state().status).toBe('active');
+  });
+
+  test.each([
+    {
+      label: 'has no manifest',
+      target: path.join('.snapshot-r1', 'manifest.json'),
+    },
+    { label: 'is gone', target: '.snapshot-r1' },
+  ])(
+    'should open round 2 with a note when the round-1 snapshot $label',
+    ({ target }) => {
+      newTask(['--verify', 'pnpm test']);
+      finishSteps();
+      run(['verify']);
+      const file = path.join(root, 'utils', 'x.js');
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, 'a\n');
+      /** @type {import('../review.js').RunGit} */
+      const runGit = (args) => {
+        if (args[0] === 'symbolic-ref') return 'origin/main';
+        if (args[0] === 'merge-base') return 'abc123';
+        if (args.includes('--name-status')) return 'M\0utils/x.js\0';
+        if (args.includes('--name-only')) return 'utils/x.js\0';
+        if (args.includes('--numstat')) return '1\t0\tutils/x.js\0';
+        if (args.includes('diff'))
+          return 'diff --git a/utils/x.js b/utils/x.js';
+        return '';
+      };
+      run(['review'], { runGit });
+      addRows(1, [
+        '| | utils/x.js | low | Style | reading it | CONFIRMED | agreed |',
+      ]);
+      run(['review', 'record']);
+      fs.rmSync(path.join(taskDir(), 'reviews', target), { recursive: true });
+      fs.writeFileSync(file, 'b\n');
+
+      const parsed = JSON.parse(run(['review', '--json'], { runGit }).out);
+
+      expect(parsed.round).toBe(2);
+      expect(parsed.incrementalDiff).toBeNull();
+      expect(read(`reviews/BRIEF_${NAME}-r2.md`)).toContain(
+        'Changes since round 1: unavailable (the round 1 snapshot is missing or incomplete; review the full Diff)'
+      );
+    }
+  );
+
+  test('should keep the round-1 snapshot when reopening the same round', () => {
+    newTask(['--verify', 'pnpm test']);
+    finishSteps();
+    run(['verify']);
+    const file = path.join(root, 'utils', 'x.js');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'a\n');
+    /** @type {import('../review.js').RunGit} */
+    const runGit = (args) => {
+      if (args[0] === 'symbolic-ref') return 'origin/main';
+      if (args[0] === 'merge-base') return 'abc123';
+      if (args.includes('--name-status')) return 'M\0utils/x.js\0';
+      if (args.includes('--name-only')) return 'utils/x.js\0';
+      if (args.includes('--numstat')) {
+        return '1\t0\tutils/x.js\0';
+      }
+      if (args.includes('diff')) return 'diff --git a/utils/x.js b/utils/x.js';
+      return '';
+    };
+    run(['review'], { runGit });
+    fs.writeFileSync(file, 'b\n');
+
+    const parsed = JSON.parse(run(['review', '--json'], { runGit }).out);
+
+    expect(parsed.reopened).toBe(true);
+    expect(
+      fs.readFileSync(
+        path.join(
+          taskDir(),
+          'reviews',
+          '.snapshot-r1',
+          'files',
+          'utils',
+          'x.js'
+        ),
+        'utf-8'
+      )
+    ).toBe('a\n');
+  });
+
+  test('should report deletion of a snapshot-skipped untracked file on round 2 via CLI', () => {
+    newTask(['--verify', 'pnpm test']);
+    finishSteps();
+    run(['verify']);
+    const bigFile = path.join(root, 'huge-untracked.json');
+    fs.writeFileSync(bigFile, 'x'.repeat(260 * 1024));
+    const smallFile = path.join(root, 'utils', 'x.js');
+    fs.mkdirSync(path.dirname(smallFile), { recursive: true });
+    fs.writeFileSync(smallFile, 'a\n');
+    let hasBig = true;
+    /** @type {import('../review.js').RunGit} */
+    const runGit = (args) => {
+      if (args[0] === 'symbolic-ref') return 'origin/main';
+      if (args[0] === 'merge-base') return 'abc123';
+      if (args[0] === 'ls-files') {
+        return hasBig ? 'huge-untracked.json\0' : '';
+      }
+      if (args.includes('--name-status')) return 'M\0utils/x.js\0';
+      if (args.includes('--name-only')) return 'utils/x.js\0';
+      if (args.includes('--numstat')) return '1\t0\tutils/x.js\0';
+      if (args.includes('diff')) return 'diff --git a/utils/x.js b/utils/x.js';
+      return '';
+    };
+    run(['review'], { runGit });
+    addRows(1, [
+      '| | utils/x.js | low | Style | reading it | CONFIRMED | agreed |',
+    ]);
+    run(['review', 'record']);
+
+    fs.rmSync(bigFile);
+    hasBig = false;
+    const parsed = JSON.parse(run(['review', '--json'], { runGit }).out);
+
+    expect(parsed.round).toBe(2);
+    expect(parsed.incrementalDiff).toBe(
+      `tasks/${NAME}/reviews/DIFF_${NAME}-r1-to-r2.patch`
+    );
+    const incremental = read(`reviews/DIFF_${NAME}-r1-to-r2.patch`);
+    expect(incremental).toContain(
+      'diff --git a/huge-untracked.json b/huge-untracked.json'
+    );
+    expect(incremental).toContain('deleted file (was omitted from previous');
+  });
+
+  test('should open round 2 when deleting the only oversized untracked file empties the git scope', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'review-r2-only-big-'));
+    const gitExec = (/** @type {string[]} */ args) => {
+      const res = spawnSync('git', args, { cwd: repo, encoding: 'utf-8' });
+      if (res.status !== 0) {
+        throw new Error(`git ${args.join(' ')} failed: ${res.stderr}`);
+      }
+      return res.stdout.trim();
+    };
+    try {
+      gitExec(['init']);
+      gitExec(['config', 'user.email', 'test@example.com']);
+      gitExec(['config', 'user.name', 'Test']);
+      fs.writeFileSync(path.join(repo, 'base.js'), 'base\n');
+      gitExec(['add', 'base.js']);
+      gitExec(['commit', '-m', 'init']);
+      const base = gitExec(['rev-parse', 'HEAD']);
+
+      newTask(['--verify', 'pnpm test', '--repo', repo]);
+      finishSteps();
+      run(['verify']);
+
+      const bigFile = path.join(repo, 'only-huge.json');
+      fs.writeFileSync(bigFile, 'x'.repeat(260 * 1024));
+      run(['review', '--base', base], {
+        runGit: defaultRunGit,
+        runGitStatus: defaultRunGitStatus,
+      });
+      addRows(1, [
+        '| | only-huge.json | low | Size | huge file | CONFIRMED | agreed |',
+      ]);
+      run(['review', 'record']);
+
+      fs.rmSync(bigFile);
+      const parsed = JSON.parse(
+        run(['review', '--json'], {
+          runGit: defaultRunGit,
+          runGitStatus: defaultRunGitStatus,
+        }).out
+      );
+
+      expect(parsed.round).toBe(2);
+      expect(parsed.scope.files).toEqual([]);
+      expect(parsed.diff).toBeNull();
+      expect(parsed.incrementalDiff).toBe(
+        `tasks/${NAME}/reviews/DIFF_${NAME}-r1-to-r2.patch`
+      );
+      const incremental = read(`reviews/DIFF_${NAME}-r1-to-r2.patch`);
+      expect(incremental).toContain(
+        'diff --git a/only-huge.json b/only-huge.json'
+      );
+      expect(incremental).toContain('deleted file (was omitted from previous');
+      const brief = read(`reviews/BRIEF_${NAME}-r2.md`);
+      expect(brief).toContain('Changes since round 1:');
+      expect(brief).toContain('## Reading budget');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test('should report restoration of a tracked file deleted in round 1 on round 2 in a real git repo', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'review-r2-restore-'));
+    const gitExec = (/** @type {string[]} */ args) => {
+      const res = spawnSync('git', args, { cwd: repo, encoding: 'utf-8' });
+      if (res.status !== 0) {
+        throw new Error(`git ${args.join(' ')} failed: ${res.stderr}`);
+      }
+      return res.stdout.trim();
+    };
+    try {
+      gitExec(['init']);
+      gitExec(['config', 'user.email', 'test@example.com']);
+      gitExec(['config', 'user.name', 'Test']);
+      fs.writeFileSync(path.join(repo, 'keep.js'), 'v1\n');
+      fs.writeFileSync(path.join(repo, 'gone.js'), 'original line\n');
+      gitExec(['add', 'keep.js', 'gone.js']);
+      gitExec(['commit', '-m', 'init']);
+      const base = gitExec(['rev-parse', 'HEAD']);
+
+      newTask(['--verify', 'pnpm test', '--repo', repo]);
+      finishSteps();
+      run(['verify']);
+
+      fs.writeFileSync(path.join(repo, 'keep.js'), 'v2\n');
+      fs.rmSync(path.join(repo, 'gone.js'));
+      run(['review', '--base', base], {
+        runGit: defaultRunGit,
+        runGitStatus: defaultRunGitStatus,
+      });
+      addRows(1, [
+        '| | gone.js | high | Deleted file | missing module | CONFIRMED | needed |',
+      ]);
+      run(['review', 'record']);
+
+      gitExec(['checkout', '--', 'gone.js']);
+      run(['step', 's3', 'done']);
+      const parsed = JSON.parse(
+        run(['review', '--json'], {
+          runGit: defaultRunGit,
+          runGitStatus: defaultRunGitStatus,
+        }).out
+      );
+
+      expect(parsed.round).toBe(2);
+      expect(parsed.scope.files).toEqual(['keep.js']);
+      expect(parsed.incrementalDiff).toBe(
+        `tasks/${NAME}/reviews/DIFF_${NAME}-r1-to-r2.patch`
+      );
+      const incremental = read(`reviews/DIFF_${NAME}-r1-to-r2.patch`);
+      expect(incremental).toContain('diff --git a/gone.js b/gone.js');
+      expect(incremental).toContain('+original line');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   test('should review git changes since main when the task has no code', () => {
     newTask(['--verify', 'pnpm test']);
     finishSteps();
@@ -1303,7 +1753,7 @@ describe('review', () => {
       files: ['utils/x.js'],
     });
     expect(runGit).toHaveBeenCalledWith(
-      ['diff', '--name-only', 'start123'],
+      ['diff', '--name-only', '--no-renames', '-z', 'start123'],
       root
     );
     expect(state().quality?.base).toBe('start123');
@@ -1319,7 +1769,7 @@ describe('review', () => {
     const parsed = JSON.parse(run(['review', '--json'], { runGit }).out);
     expect(parsed.scope).toMatchObject({ base: 'mid789', since: 'mid789' });
     expect(runGit).toHaveBeenCalledWith(
-      ['diff', '--name-only', 'mid789'],
+      ['diff', '--name-only', '--no-renames', '-z', 'mid789'],
       root
     );
   });
@@ -1372,7 +1822,7 @@ describe('review', () => {
         files: ['a.js', 'tasks/t.js'],
       });
       expect(runGit).toHaveBeenCalledWith(
-        ['diff', '--name-only', 'r-start'],
+        ['diff', '--name-only', '--no-renames', '-z', 'r-start'],
         repo
       );
       const brief = fs.readFileSync(

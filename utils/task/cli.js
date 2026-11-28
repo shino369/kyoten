@@ -46,6 +46,7 @@ import {
   STATE_FILE,
   appendNotes,
   currentTask,
+  ensurePrivateDir,
   listTaskNames,
   loadTask,
   readActive,
@@ -69,20 +70,29 @@ import {
   toFix,
 } from './quality.js';
 import {
+  diffStats,
   findingsTemplate,
-  fingerprint,
   formatReviewBrief,
+  generateIncrementalDiff,
+  generateReviewDiff,
+  listSnapshotScope,
   openRound,
   parseFindings,
+  previousSnapshotDir,
   recordFindings,
   reviewFiles,
+  reviewPreflight,
+  saveSnapshot,
   scopeRoot,
   roundBase,
+  snapshotDirFor,
+  snapshotUnusable,
   taskFolderNotes,
   taskReviewScope,
 } from './review.js';
 import { trashPaths } from './trash.js';
 import { summarize, tail } from './verify.js';
+import { writePrivate } from '../kyoten/dscc.js';
 import { relPosix } from '../paths.js';
 import {
   formatTaskMemory,
@@ -138,7 +148,9 @@ Work
                                 iteration cap is reached (default 5).
   review [--base <ref> | --folder] [--force]
                                 Code tasks: open the next review round (max 2) and write the
-                                brief + findings file for clean-context reviewers. Scope: the
+                                brief, findings file, and pre-computed diff patch for
+                                clean-context reviewers (round 2 also an incremental patch
+                                since round 1). Scope: the
                                 task's code (no git), else git changes since --base (default:
                                 the default branch as fetched, e.g. origin/main, else main;
                                 for work committed on it, the commit the task started from;
@@ -1187,7 +1199,15 @@ export const COMMANDS = {
       base: options.folder ? null : options.base,
       runGit: deps.runGit,
     });
-    if (scope.files.length === 0 && quality.phase !== 'review') {
+    const reviewsDir = path.join(task.dir, 'reviews');
+    const preflight = reviewPreflight({
+      rootDir: deps.rootDir,
+      taskDir: task.dir,
+      state: task.state,
+      scope,
+      runGitStatus: deps.runGitStatus,
+    });
+    if (!preflight.eligible) {
       if (scope.base === null) {
         throw new Error(
           `Nothing to review for ${name}: its task folder has no code (${taskRel}/).\nFix: pnpm task review --base <ref> to review git changes instead`
@@ -1201,10 +1221,7 @@ export const COMMANDS = {
         `Nothing to review for ${name}: no files changed since ${scope.base} (commit ${String(scope.since).slice(0, 7)}).${noStart} If the work is already committed there, review against the commit before it.\nFix: pnpm task review --base <the commit before the task's first commit>`
       );
     }
-    const print = fingerprint(
-      scopeRoot(deps.rootDir, task.state, scope),
-      scope.files
-    );
+    const print = /** @type {string} */ (preflight.fingerprint);
     const now = deps.now();
     const agent = detectAgent(options, deps.env);
     let round = 0;
@@ -1231,28 +1248,72 @@ export const COMMANDS = {
       { now, agent }
     );
     const files = reviewFiles(name, round);
-    fs.mkdirSync(path.join(task.dir, 'reviews'), { recursive: true });
-    fs.writeFileSync(
+    ensurePrivateDir(reviewsDir);
+    const scopeDir = scopeRoot(deps.rootDir, state, scope);
+    const stats = diffStats({ repoDir: scopeDir, scope, runGit: deps.runGit });
+    // The snapshot lets the next round show only what changed since this one;
+    // reopening an open round keeps it (the reviewed code must not move).
+    const snapshotDir = snapshotDirFor(reviewsDir, round);
+    if (!reopened && scope.files.length > 0) {
+      saveSnapshot({ repoDir: scopeDir, dir: snapshotDir, files: scope.files });
+    }
+    const patch = generateReviewDiff({
+      repoDir: scopeDir,
+      scope,
+      runGit: deps.runGit,
+    });
+    if (patch !== null) {
+      writePrivate(path.join(task.dir, files.diff), patch);
+    }
+    const previousSnapshot =
+      round > 1 ? previousSnapshotDir(reviewsDir, round - 1) : null;
+    let incremental = null;
+    if (round > 1 && files.incrementalDiff && previousSnapshot !== null) {
+      incremental =
+        preflight.incremental ??
+        generateIncrementalDiff({
+          repoDir: scopeDir,
+          snapshotDir: previousSnapshot,
+          files: [
+            ...new Set([
+              ...scope.files,
+              ...listSnapshotScope(previousSnapshot),
+            ]),
+          ].sort(),
+          runGitStatus: deps.runGitStatus,
+        });
+      if (incremental !== null) {
+        writePrivate(path.join(task.dir, files.incrementalDiff), incremental);
+      }
+    }
+    const diffPath = patch === null ? null : `${taskRel}/${files.diff}`;
+    const incrementalPath =
+      incremental === null || !files.incrementalDiff
+        ? null
+        : `${taskRel}/${files.incrementalDiff}`;
+    writePrivate(
       path.join(task.dir, files.brief),
       formatReviewBrief({
         state,
         round,
         scope,
         taskRel,
+        diffPath,
+        incrementalDiffPath: incrementalPath,
+        incrementalUnavailable: round > 1 && snapshotUnusable(previousSnapshot),
+        stats,
         folder: taskFolderNotes({
           rootDir: deps.rootDir,
           taskDir: task.dir,
           scope,
         }),
-      }),
-      'utf-8'
+      })
     );
     const findingsPath = path.join(task.dir, files.findings);
     if (!fs.existsSync(findingsPath)) {
-      fs.writeFileSync(
+      writePrivate(
         findingsPath,
-        findingsTemplate({ name, round, brief: `${taskRel}/${files.brief}` }),
-        'utf-8'
+        findingsTemplate({ name, round, brief: `${taskRel}/${files.brief}` })
       );
     }
     if (!reopened) {
@@ -1268,16 +1329,29 @@ export const COMMANDS = {
     output(
       deps,
       options,
-      { ok: true, task: name, round, reopened, scope, brief, findings },
+      {
+        ok: true,
+        task: name,
+        round,
+        reopened,
+        scope,
+        brief,
+        findings,
+        diff: diffPath,
+        incrementalDiff: incrementalPath,
+      },
       [
         `${reopened ? 'Review round still open' : 'Opened review round'} ${round}/${quality.maxRounds} for ${name} (${scope.files.length} file(s)).`,
         `Brief: ${brief}`,
         `Findings: ${findings}`,
+        ...(diffPath ? [`Diff: ${diffPath}`] : []),
+        ...(incrementalPath ? [`Incremental diff: ${incrementalPath}`] : []),
         'Run the review and the triage in clean contexts, not yourself (you wrote the code):',
         `  Claude Code: Agent tool, subagent_type "reviewer", prompt "Follow ${brief}"; then subagent_type "verifier", prompt "Triage ${findings} as step 2 of ${brief} says".`,
         `  Codex: spawn_agent with agent_type "reviewer", message "Follow ${brief}", then wait_agent before you end the turn; then the same with agent_type "verifier" and "Triage ${findings} as step 2 of ${brief} says".`,
         `  DSH: subagent with prompt "Follow .claude/agents/reviewer.md, then ${brief}"; wait for its notice before you end the turn; then one with "Follow .claude/agents/verifier.md (triage mode), then triage ${findings} as step 2 of ${brief} says".`,
         `  Other harnesses: pnpm agent ask --agent <another agent> - < ${brief}, paste its rows into the findings table, then ask another agent for the triage.`,
+        `Cross-model (saves primary quota, read-only — paste its rows into ${findings}): pnpm agent ask --agent dscc - < ${brief}`,
         'Then: pnpm task review record',
       ].join('\n')
     );
@@ -1375,26 +1449,35 @@ export const COMMANDS = {
         `${name} has no ${STATE_FILE}.\nFix: pnpm task init ${name}`
       );
     }
-    const verify = task.state.lastVerify;
-    if (task.state.verify.length > 0 && !verify?.ok && !options.force) {
-      throw new Error(
-        `The last verify did not pass (${verify ? `\`${verify.failed}\` failed` : 'not run'}).\nFix: pnpm task verify — or, if the user agrees, pnpm task done --force`
-      );
-    }
-    const blockers = doneBlockers(task.state);
-    if (blockers.length > 0 && !options.force) {
-      throw new Error(
-        [
-          `${name} is not finished:`,
-          ...blockers.map((b) => `- ${b}`),
-          'Fix: the lines above — or, if the user agrees, pnpm task done --force',
-        ].join('\n')
-      );
-    }
-    const forced =
-      blockers.length > 0
+    /**
+     * Refuse to close while verify fails or a blocker remains, unless forced;
+     * returns the forced-past note. Checked before the --learn work and again
+     * under the lock, so a round opened meanwhile still blocks.
+     *
+     * @param {import('./state.js').TaskState} current
+     */
+    const closeCheck = (current) => {
+      const verify = current.lastVerify;
+      if (current.verify.length > 0 && !verify?.ok && !options.force) {
+        throw new Error(
+          `The last verify did not pass (${verify ? `\`${verify.failed}\` failed` : 'not run'}).\nFix: pnpm task verify — or, if the user agrees, pnpm task done --force`
+        );
+      }
+      const blockers = doneBlockers(current);
+      if (blockers.length > 0 && !options.force) {
+        throw new Error(
+          [
+            `${name} is not finished:`,
+            ...blockers.map((b) => `- ${b}`),
+            'Fix: the lines above — or, if the user agrees, pnpm task done --force',
+          ].join('\n')
+        );
+      }
+      return blockers.length > 0
         ? ` Forced past: ${blockers.map((b) => b.split('. Fix:')[0]).join('; ')}.`
         : '';
+    };
+    let forced = closeCheck(task.state);
     // Refuse a bad --learn line before the task is closed.
     const learned = learnedNotes(options.learn, {
       env: deps.env,
@@ -1407,7 +1490,10 @@ export const COMMANDS = {
     updateState(
       deps.rootDir,
       name,
-      (state) => ({ ...state, status: 'done', next: null }),
+      (current) => {
+        forced = closeCheck(current);
+        return { ...current, status: 'done', next: null };
+      },
       { now, agent }
     );
     writeNote(deps, task, {

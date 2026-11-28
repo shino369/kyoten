@@ -61,7 +61,7 @@ outputs.
 | Task brief / log / help       | `pnpm task status` · `pnpm task note …` · `pnpm task help`                           |
 | Delete stale files (undoable) | `pnpm task rm <path>…` (to `tasks/.trash/`, kept 7 days)                             |
 | Tools on this machine         | `pnpm tools list` · `pnpm tools show <name>` · `pnpm tools scan`                     |
-| Ask another agent (read-only) | `pnpm agent ask --agent claude\|codex\|dsh "…"`                                      |
+| Ask another agent (read-only) | `pnpm agent ask --agent claude\|codex\|dsh\|dscc "…"`                                |
 | Fix until verify passes       | `pnpm loop <task> --agent claude\|codex\|dsh\|agy` (`--help`)                        |
 | Review round (code task)      | `pnpm task review` · `pnpm task review record` (§4.5)                                |
 | Run a plan with N workers     | `pnpm swarm <task> --agent claude\|codex\|dsh\|agy --workers 2`                      |
@@ -152,7 +152,10 @@ steps into `swarm/<task>`. Review and merge those branches yourself (`docs/harne
    `pnpm task review` to generate `reviews/BRIEF_<task>-r<N>.md` and `reviews/REVIEW_<task>-r<N>.md`.
    A **different, fresh** agent reviews from the brief only (role: `.claude/agents/reviewer.md`;
    subagent in Claude Code / Codex / Antigravity, else `pnpm agent ask --agent <other>`). Never
-   review your own code.
+   review your own code. To keep the primary model's quota free, delegate cross-model with
+   `pnpm agent ask --agent dscc - < <brief>` (DeepSeek via `dscc`, read-only — paste its Markdown
+   rows into the findings table) or `--agent dsh`; a lighter model (an Antigravity flash subagent)
+   is fine for the triage.
 5. **Triage.** Another fresh agent tries to refute each finding ("Triage mode" in
    `.claude/agents/verifier.md`) and marks CONFIRMED or REFUTED (unsure = REFUTED; triage may lower
    severity, never raise it).
@@ -261,7 +264,7 @@ Use `trilingual-translator` with `translation-expertise`. Write drafts and passe
 `tools/catalog.json` (committed).
 
 - **Look first:** `pnpm tools list` (`--all` adds install hints); details: `pnpm tools show <name>`.
-- **Call another agent:** `pnpm agent ask --agent claude|codex|dsh "…"` (or `-` for stdin).
+- **Call another agent:** `pnpm agent ask --agent claude|codex|dsh|dscc "…"` (or `-` for stdin).
   Read-only by default, memory hooks off, saved in the active task's `tmp/`. `--write` allows edits
   (use only in a worktree). `agy` is excluded here (`agy -> others` is allowed; `others -> agy` is
   blocked by Google Antigravity ToS).

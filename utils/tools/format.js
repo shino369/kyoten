@@ -43,7 +43,7 @@ export function toolsLine(registry) {
       );
     return names.length > 0 ? `${KIND_LABELS[kind]} ${names.join(', ')}` : '';
   }).filter(Boolean);
-  const line = `Tools: ${groups.join(' · ')} (pnpm tools list; call another agent: pnpm agent ask --agent claude|codex|dsh "…")`;
+  const line = `Tools: ${groups.join(' · ')} (pnpm tools list; call another agent: pnpm agent ask --agent claude|codex|dsh|dscc "…")`;
   return line.length > LINE_LIMIT ? `${line.slice(0, LINE_LIMIT - 1)}…` : line;
 }
 

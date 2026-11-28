@@ -23,16 +23,18 @@ Run `pnpm docs:cli` to refresh this reference from the workspace CLI help. Run `
 ## `pnpm agent`
 
 ```text
-Usage: pnpm agent ask --agent claude|codex|dsh [options] "<prompt>" | -
+Usage: pnpm agent ask --agent claude|codex|dsh|dscc [options] "<prompt>" | -
 
 Runs one headless turn of another coding agent in this repository and prints
 its answer: a second opinion, a review, or a delegated question. Which agents
 are installed here: pnpm tools list
 Note: agy is intentionally excluded (Google Antigravity ToS forbids calling agy
 from other agent harnesses; agy may call other agents, never the reverse).
+dscc runs the claude CLI against the DeepSeek profile (Fix if missing:
+kyoten dscc --set-key), so no Anthropic login is needed.
 
 Options
-  --agent <name>       claude | codex | dsh (required)
+  --agent <name>       claude | codex | dsh | dscc (required)
   --write              Let the agent edit files (default: read-only). Prefer a
                        git worktree; in the main checkout it edits your tree
   --timeout-min <n>    Stop the agent after n minutes (default 10)
@@ -416,7 +418,9 @@ Work
                                 iteration cap is reached (default 5).
   review [--base <ref> | --folder] [--force]
                                 Code tasks: open the next review round (max 2) and write the
-                                brief + findings file for clean-context reviewers. Scope: the
+                                brief, findings file, and pre-computed diff patch for
+                                clean-context reviewers (round 2 also an incremental patch
+                                since round 1). Scope: the
                                 task's code (no git), else git changes since --base (default:
                                 the default branch as fetched, e.g. origin/main, else main;
                                 for work committed on it, the commit the task started from;
@@ -476,7 +480,7 @@ Options
   --json      Machine-readable output
   --help, -h  Show this help (also pnpm tools help)
 
-Call another agent: pnpm agent ask --agent claude|codex|dsh "…". Never put
+Call another agent: pnpm agent ask --agent claude|codex|dsh|dscc "…". Never put
 secrets in the registry; --env records env var names only.
 ```
 

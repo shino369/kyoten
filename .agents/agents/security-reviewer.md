@@ -4,6 +4,8 @@ description: 'Reviews code for security vulnerabilities including authentication
 subagent: true
 mainAgent: false
 model: inherit
+tools:
+  - read_file
 commandExecutionPolicy: off
 ---
 

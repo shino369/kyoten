@@ -1,3 +1,4 @@
+import { spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -19,6 +20,14 @@ import {
   scopeFingerprint,
   workPrint,
 } from '../loop.js';
+import { freshQuality } from '../quality.js';
+import {
+  SNAPSHOT_MAX_FILE_BYTES,
+  defaultRunGit,
+  defaultRunGitStatus,
+  fingerprint,
+  saveSnapshot,
+} from '../review.js';
 import { createState } from '../state.js';
 import { TEMPLATES_DIR, loadTask, updateState, writeActive } from '../store.js';
 
@@ -229,6 +238,7 @@ describe('runInnerLoop', () => {
     git: () => GIT,
     runCheck: vi.fn(),
     runGit: vi.fn(),
+    runGitStatus: vi.fn(() => ({ status: 0, stdout: '' })),
     runCommands: vi.fn(() => [
       {
         command: 'pnpm test',
@@ -765,6 +775,7 @@ describe('resetInnerLoop', () => {
     git: () => GIT,
     runCheck: vi.fn(),
     runGit: vi.fn(),
+    runGitStatus: vi.fn(() => ({ status: 0, stdout: '' })),
     runCommands: vi.fn(() => [
       { command: 'pnpm test', ok: false, code: 1, durationMs: 1, output: 'x' },
     ]),
@@ -973,5 +984,148 @@ describe('workPrint', () => {
   test('should work for a task folder that is gone', () => {
     fs.rmSync(path.join(root, 'tasks', NAME), { recursive: true });
     expect(print()).toMatch(/^[0-9a-f]{16}$/);
+  });
+});
+
+describe('scopeFingerprint round-2 eligibility (real git)', () => {
+  /** @type {string} */
+  let repo;
+  /** @type {string} */
+  let workspace;
+  /** @type {string} */
+  let taskDir;
+
+  /** @param {string[]} args */
+  const gitExec = (args) => {
+    const res = spawnSync('git', args, { cwd: repo, encoding: 'utf-8' });
+    if (res.status !== 0) {
+      throw new Error(`git ${args.join(' ')} failed: ${res.stderr}`);
+    }
+    return res.stdout.trim();
+  };
+
+  /**
+   * A committed repository and an empty task folder beside it.
+   *
+   * @param {Record<string, string>} files
+   * @returns {string} the base commit
+   */
+  const initRepo = (files) => {
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'scope-fp-repo-'));
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'scope-fp-ws-'));
+    taskDir = path.join(workspace, 'tasks', NAME);
+    fs.mkdirSync(path.join(taskDir, 'reviews'), { recursive: true });
+    gitExec(['init', '-b', 'main']);
+    gitExec(['config', 'user.email', 'test@example.com']);
+    gitExec(['config', 'user.name', 'Test']);
+    for (const [name, content] of Object.entries(files)) {
+      fs.writeFileSync(path.join(repo, name), content);
+    }
+    gitExec(['add', '-A']);
+    gitExec(['commit', '-m', 'init']);
+    return gitExec(['rev-parse', 'HEAD']);
+  };
+
+  afterEach(() => {
+    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  /**
+   * @param {Partial<import('../deps.js').Deps>} [overrides]
+   * @returns {import('../deps.js').Deps}
+   */
+  const deps = (overrides = {}) => ({
+    rootDir: workspace,
+    templatesDir: TEMPLATES_DIR,
+    env: {},
+    now: () => NOW,
+    log: () => {},
+    git: () => GIT,
+    runCheck: vi.fn(),
+    runGit: defaultRunGit,
+    runGitStatus: defaultRunGitStatus,
+    runCommands: vi.fn(),
+    ...overrides,
+  });
+
+  /**
+   * @param {string} base
+   * @param {Partial<import('../quality.js').Quality>} [quality]
+   * @returns {import('../state.js').TaskState}
+   */
+  const stateFor = (base, quality = {}) => ({
+    ...createState({ name: NAME, goal: 'G', kind: 'code' }),
+    repo,
+    startCommit: base,
+    quality: {
+      ...freshQuality(),
+      phase: 'fix',
+      reviewRounds: 1,
+      reviewedDiff: 'round-1-print',
+      ...quality,
+    },
+  });
+
+  /** @param {import('../state.js').TaskState} state */
+  const fingerprintNow = (state) => scopeFingerprint(deps(), taskDir, state);
+
+  test('should fingerprint round 2 after deleting the only oversized untracked file', () => {
+    const base = initRepo({ 'base.js': 'base\n' });
+    fs.writeFileSync(
+      path.join(repo, 'only-huge.json'),
+      'x'.repeat(SNAPSHOT_MAX_FILE_BYTES + 1)
+    );
+    expect(
+      saveSnapshot({
+        repoDir: repo,
+        dir: path.join(taskDir, 'reviews', '.snapshot-r1'),
+        files: ['only-huge.json'],
+      })
+    ).toBe(0);
+    fs.rmSync(path.join(repo, 'only-huge.json'));
+
+    const print = fingerprintNow(stateFor(base));
+
+    expect(print).toMatch(/^[0-9a-f]{16}-[0-9a-f]{16}$/);
+    expect(print).not.toBe(fingerprint(repo, []));
+  });
+
+  test('should fingerprint round 2 after restoring the only deleted tracked file', () => {
+    const base = initRepo({
+      'base.js': 'base\n',
+      'gone.js': 'original line\n',
+    });
+    fs.rmSync(path.join(repo, 'gone.js'));
+    saveSnapshot({
+      repoDir: repo,
+      dir: path.join(taskDir, 'reviews', '.snapshot-r1'),
+      files: ['gone.js'],
+    });
+    fs.writeFileSync(path.join(repo, 'gone.js'), 'original line\n');
+
+    const print = fingerprintNow(stateFor(base));
+
+    expect(print).toMatch(/^[0-9a-f]{16}-[0-9a-f]{16}$/);
+  });
+
+  test('should stay null for a genuinely empty first round', () => {
+    const base = initRepo({ 'base.js': 'base\n' });
+    const state = {
+      ...createState({ name: NAME, goal: 'G', kind: 'code' }),
+      repo,
+      startCommit: base,
+    };
+
+    expect(fingerprintNow(state)).toBeNull();
+  });
+
+  test('should keep a fingerprint while a round is open even when the scope emptied', () => {
+    const base = initRepo({ 'base.js': 'base\n' });
+    const state = stateFor(base, { phase: 'review' });
+
+    const print = fingerprintNow(state);
+
+    expect(print).toMatch(/^[0-9a-f]{16}$/);
   });
 });

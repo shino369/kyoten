@@ -21,7 +21,7 @@ const READ_ONLY_TOOLS = new Set(['Read', 'Grep', 'Glob']);
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 
 /**
- * @typedef {{ name: string, description: string, tools: string[] | null, body: string }} Role
+ * @typedef {{ name: string, description: string, tools: string[] | null, skills?: string[], body: string }} Role
  *   tools: null when the role gets every tool
  */
 
@@ -44,10 +44,14 @@ export function parseRole(text, fileName) {
       fields[line.slice(0, colon).trim()] = line.slice(colon + 1).trim();
   }
   if (!fields.description) return null;
+  const skills = fields.skills
+    ? fields.skills.split(/\s*,\s*/).filter(Boolean)
+    : [];
   return {
     name: fields.name || path.basename(fileName, '.md'),
     description: fields.description,
-    tools: fields.tools ? fields.tools.split(/\s*,\s*/) : null,
+    tools: fields.tools ? fields.tools.split(/\s*,\s*/).filter(Boolean) : null,
+    ...(skills.length > 0 ? { skills } : {}),
     body: text.slice(match[0].length).replace(/^\r?\n/, ''),
   };
 }
@@ -55,6 +59,38 @@ export function parseRole(text, fileName) {
 /** @param {Role} role */
 const isReadOnly = (role) =>
   role.tools !== null && role.tools.every((tool) => READ_ONLY_TOOLS.has(tool));
+
+/**
+ * Claude Code tool names mapped to the names declared by the Antigravity CLI.
+ * Only verified CLI names are emitted: an IDE/App-only name (`view_file`,
+ * `grep_search`, …) can hang the subagent. Grep and Glob have no verified CLI
+ * equivalent; `run_command` covers them wherever Bash is present, and
+ * read-only roles read the pre-computed `DIFF_*.patch` instead.
+ */
+/** @type {Record<string, string>} */
+const AGY_TOOL_NAMES = {
+  Read: 'read_file',
+  Write: 'write_file',
+  Edit: 'edit_file',
+  Bash: 'run_command',
+};
+/** Every `agy` tool a role can receive, in output order. */
+const AGY_ALL_TOOLS = ['read_file', 'write_file', 'edit_file', 'run_command'];
+
+/**
+ * The Antigravity `tools:` for a role: the mapped names in a fixed order
+ * (all of them when the role has no `tools` line).
+ *
+ * @param {Role} role
+ * @returns {string[]}
+ */
+export function agyTools(role) {
+  if (role.tools === null) return [...AGY_ALL_TOOLS];
+  const mapped = new Set(
+    role.tools.map((tool) => AGY_TOOL_NAMES[tool]).filter(Boolean)
+  );
+  return AGY_ALL_TOOLS.filter((name) => mapped.has(name));
+}
 
 /** @param {string} text a TOML multi-line basic string's content */
 const multiline = (text) =>
@@ -86,15 +122,20 @@ const yamlString = (value) =>
 
 /**
  * Render an Antigravity custom subagent file (`.agents/agents/<role>.md`).
- * Omits `tools:` because Antigravity tool names vary across model families
- * and an unmapped name can hang the subagent; read-only roles disable shell
- * commands via `commandExecutionPolicy: off`.
+ * Targets Antigravity CLI (`agy`): `tools:` carries only the verified CLI
+ * names (App/IDE names such as `view_file` can hang the CLI subagent, and
+ * vice versa); `mainAgent: false` keeps subagent roles out of `/agents`'s
+ * primary-agent switcher while exposing them to `invoke_subagent`. A role
+ * whose tools all lack a CLI equivalent gets no `tools:` block, and
+ * read-only roles disable shell commands via `commandExecutionPolicy: off`.
  *
  * @param {Role} role
  * @param {string} source the markdown file, for the header comment
  * @returns {string}
  */
 export function renderAgyRole(role, source) {
+  const tools = agyTools(role);
+  const skills = role.skills ?? [];
   return [
     '---',
     `name: ${role.name}`,
@@ -102,6 +143,17 @@ export function renderAgyRole(role, source) {
     'subagent: true',
     'mainAgent: false',
     'model: inherit',
+    ...(tools.length > 0
+      ? ['tools:', ...tools.map((tool) => `  - ${tool}`)]
+      : []),
+    ...(skills.length > 0
+      ? [
+          'skills:',
+          ...skills.map((skill) =>
+            skill.includes('/') ? `  - ${skill}` : `  - skills/${skill}`
+          ),
+        ]
+      : []),
     ...(isReadOnly(role) ? ['commandExecutionPolicy: off'] : []),
     '---',
     '',

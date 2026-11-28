@@ -184,7 +184,14 @@ commands it loads.
    regenerates `.codex/rules/workspace.rules`; `guard.js` reads the same file for DSH, Antigravity,
    and Codex patches.
 3. **Role.** Edit `.claude/agents/<role>.md`, then `pnpm harness sync`. It regenerates
-   `.codex/agents/<role>.toml` and `.agents/agents/<role>.md` (inheriting the main model).
+   `.codex/agents/<role>.toml` and `.agents/agents/<role>.md` (inheriting the main model). The
+   Antigravity file targets `agy` CLI and maps the role's Claude tools to the verified CLI names
+   (`Read` → `read_file`, `Edit` → `edit_file`, `Write` → `write_file`, `Bash` → `run_command`;
+   `Grep` and `Glob` are covered by `run_command`), because an omitted `tools:` defaults to `[]`
+   there and an unmapped name can hang the subagent (note: Antigravity App/IDE uses different tool
+   names such as `view_file`/`replace_file_content`, so these generated files are for `agy` CLI).
+   `mainAgent: false` keeps roles out of `/agents`'s primary-agent switcher while exposing them to
+   `invoke_subagent`. Check a changed mapping in an interactive `agy` session before merging.
 
 `pnpm harness check` fails on a stale generated file, and when the `hooks` in
 `.claude/settings.json` differ from the manifest. It never rewrites `.claude/settings.json`.
@@ -340,20 +347,25 @@ result and copy or merge it back yourself.
 
 `pnpm tools scan` records what this machine has in `tools/local.json` (git-ignored), checked
 against `tools/catalog.json`. `pnpm agent ask --agent codex "…"` runs one read-only turn of another
-agent and saves the exchange in the task's `tmp/`. `pnpm loop`, `pnpm swarm`, and the review loop
-use the same adapters (`utils/loop/adapters.js`): fixed argument arrays, prompt on stdin, no shell.
+agent and saves the exchange in the task's `tmp/`. `--agent dscc` runs the `claude` CLI against the
+DeepSeek profile (from `kyoten dscc`), so a cross-model review needs no Anthropic login; a missing
+profile fails with `Fix: kyoten dscc --set-key`, and the profile's token stays in the child
+process environment, never in the command line or the saved record. `pnpm loop`, `pnpm swarm`, and
+the review loop use the same adapters (`utils/loop/adapters.js`): fixed argument arrays, prompt on
+stdin, no shell.
 Every headless child gets `MEMORY_EXTRACT=1`, so the workspace's memory hooks stay silent in it: no
 injected core block, persona, or recalled notes, and its session is never queued for extraction into
 memory. Claude Code and DSH still load `AGENTS.local.md` natively when they run in the workspace root
 (`pnpm agent ask`); `pnpm loop` and `pnpm swarm` worktrees have no such file, so reviews and fixes
 there start with a clean context.
 
-| Agent  | Write mode (fixers)                                                      | Read mode (reviewers, `agent ask`)                                        |
-| ------ | ------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
-| claude | `-p --permission-mode acceptEdits`                                       | `-p --permission-mode plan`                                               |
-| codex  | `exec --sandbox workspace-write`                                         | `exec --sandbox read-only`                                                |
-| dsh    | `--permission-mode workspace-write`                                      | `--permission-mode read-only`                                             |
-| agy    | `stream-json --mode accept-edits --settings …` (worktree command grants) | `stream-json --settings …` (inspection grants, `write_file(*)` deny rule) |
+| Agent  | Write mode (fixers)                                                          | Read mode (reviewers, `agent ask`)                                        |
+| ------ | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| claude | `-p --permission-mode acceptEdits`                                           | `-p --permission-mode plan`                                               |
+| codex  | `exec --sandbox workspace-write`                                             | `exec --sandbox read-only`                                                |
+| dsh    | `--permission-mode workspace-write`                                          | `--permission-mode read-only`                                             |
+| dscc   | the `claude` CLI on the DeepSeek profile: `-p --permission-mode acceptEdits` | the same CLI in plan mode: `-p --permission-mode plan`                    |
+| agy    | `stream-json --mode accept-edits --settings …` (worktree command grants)     | `stream-json --settings …` (inspection grants, `write_file(*)` deny rule) |
 
 The Antigravity read-mode settings omit automatic grants for checkout scripts, including `pnpm`
 commands. Write mode grants workspace verification commands. Its deny rules cover workspace setup
@@ -365,11 +377,11 @@ requires a trusted worktree.
 Antigravity Terms of Service prohibit invoking `agy` (headless `-p`/`stream-json` or `agy acp`)
 from third-party agent harnesses. kyoten enforces this in four layers: `.claude/settings.json`
 denies `Bash(agy:*)` (synced to `.codex/rules/workspace.rules` and enforced by `guard.js` in DSH),
-`pnpm agent ask` accepts only `claude|codex|dsh`, runtime checks in `utils/loop/adapters.js`,
+`pnpm agent ask` accepts only `claude|codex|dsh|dscc`, runtime checks in `utils/loop/adapters.js`,
 `pnpm loop`, `pnpm swarm`, and `kyoten agy` refuse launching `agy` from foreign agent harnesses
 (including `--reviewer agy` on non-`agy` loops), and background memory jobs defer `agy` runs when
 triggered from another harness. An interactive `agy` session (started via `kyoten agy` from a human
-terminal) may still call `claude`, `codex`, or `dsh`.
+terminal) may still call `claude`, `codex`, `dsh`, or `dscc`.
 
 ### 7. Memory
 
@@ -618,7 +630,12 @@ plan ─▶ build test-first ─▶ e2e (if required) ─▶ review round N ─�
   into the findings file, so a reviewer never edits anything. Then the fixer `<a>` runs until verify
   is green and every `fix:` step is marked done.
 - **Manual / other harnesses.** The same commands by hand, with
-  `pnpm agent ask --agent <other> "…"` as the clean-context reviewer.
+  `pnpm agent ask --agent <other> "…"` as the clean-context reviewer. The reviewer and the triage
+  need not run on the session's model: `pnpm agent ask --agent dscc - < <brief>` runs read-only on
+  DeepSeek through the `claude` CLI (paste its Markdown rows into the findings table before
+  `pnpm task review record`), `--agent dsh` runs DeepSeek Harness, and a lighter model
+  (an Antigravity flash subagent) is fine for the triage. This keeps the primary model's quota for
+  fixing; the findings table and the triage rules stay the same.
 
 **The `done` gate.** `pnpm task done` refuses any task with a step not done (drop out-of-scope
 steps with `pnpm task step <id> done -m "dropped: …"`), and a code task until:

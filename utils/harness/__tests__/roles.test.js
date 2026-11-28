@@ -4,6 +4,7 @@ import path from 'path';
 import { ROOT_DIR } from '#utils/workspace-config.js';
 import {
   agyRoleFiles,
+  agyTools,
   codexRoleFiles,
   parseRole,
   renderAgyRole,
@@ -94,6 +95,37 @@ describe('renderCodexRole', () => {
   });
 });
 
+describe('agyTools', () => {
+  const roleOf = (/** @type {string} */ tools) =>
+    /** @type {import('../roles.js').Role} */ (
+      parseRole(`---\nname: r\ndescription: D\n${tools}---\nB`, 'r.md')
+    );
+
+  test('should map Claude tools to the verified agy CLI names, dropping Grep and Glob', () => {
+    expect(agyTools(roleOf('tools: Read, Grep, Glob, Bash, Edit\n'))).toEqual([
+      'read_file',
+      'edit_file',
+      'run_command',
+    ]);
+  });
+
+  test('should give every agy tool to a role with no tools line', () => {
+    expect(agyTools(roleOf(''))).toEqual([
+      'read_file',
+      'write_file',
+      'edit_file',
+      'run_command',
+    ]);
+  });
+
+  test('should keep only read_file for a read-only role and nothing for unmapped tools', () => {
+    expect(agyTools(roleOf('tools: Read, Grep, Glob\n'))).toEqual([
+      'read_file',
+    ]);
+    expect(agyTools(roleOf('tools: Grep, Glob\n'))).toEqual([]);
+  });
+});
+
 describe('renderAgyRole and agyRoleFiles', () => {
   test('should render an Antigravity subagent with inherit model and off command policy for read-only roles', () => {
     const reviewer = /** @type {import('../roles.js').Role} */ (
@@ -106,6 +138,9 @@ describe('renderAgyRole and agyRoleFiles', () => {
     );
     expect(rendered).toContain(
       'subagent: true\nmainAgent: false\nmodel: inherit\n'
+    );
+    expect(rendered).toContain(
+      'tools:\n  - read_file\n  - edit_file\n  - run_command\n'
     );
     expect(rendered).not.toContain('commandExecutionPolicy');
     expect(rendered).toContain(
@@ -120,7 +155,46 @@ describe('renderAgyRole and agyRoleFiles', () => {
     );
     const renderedReadOnly = renderAgyRole(readOnly, 'x.md');
     expect(renderedReadOnly).toContain('description: "Don\'t miss secrets."\n');
+    expect(renderedReadOnly).toContain('tools:\n  - read_file\n');
     expect(renderedReadOnly).toContain('commandExecutionPolicy: off\n');
+  });
+
+  test('should give a role without a tools line every verified agy tool', () => {
+    const all = /** @type {import('../roles.js').Role} */ (
+      parseRole('---\nname: t\ndescription: D\n---\nB', 't.md')
+    );
+
+    expect(renderAgyRole(all, 't.md')).toContain(
+      'tools:\n  - read_file\n  - write_file\n  - edit_file\n  - run_command\n'
+    );
+  });
+
+  test('should omit the tools block when no Claude tool maps', () => {
+    const none = /** @type {import('../roles.js').Role} */ (
+      parseRole(
+        '---\nname: g\ndescription: D\ntools: Grep, Glob\n---\nB',
+        'g.md'
+      )
+    );
+
+    expect(renderAgyRole(none, 'g.md')).not.toContain('tools:');
+  });
+
+  test('should ignore trailing commas in tools and parse optional skills', () => {
+    const role = /** @type {import('../roles.js').Role} */ (
+      parseRole(
+        '---\nname: t\ndescription: D\ntools: Read, Grep, \nskills: translation-expertise, skills/custom\n---\nB',
+        't.md'
+      )
+    );
+    expect(role.tools).toEqual(['Read', 'Grep']);
+    expect(role.skills).toEqual(['translation-expertise', 'skills/custom']);
+    const rendered = renderAgyRole(role, 't.md');
+    expect(rendered).toContain('tools:\n  - read_file\n');
+    expect(rendered).toContain(
+      'skills:\n  - skills/translation-expertise\n  - skills/custom\n'
+    );
+    expect(rendered).toContain('commandExecutionPolicy: off\n');
   });
 
   test('should generate one Antigravity role per Claude agent file in the workspace', () => {

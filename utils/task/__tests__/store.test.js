@@ -5,11 +5,13 @@ import { vi } from 'vitest';
 import { appendSeparator } from '../markdown.js';
 import { createState, makeSteps } from '../state.js';
 import {
+  PRIVATE_SUBDIRS,
   TASK_SUBDIRS,
   TEMPLATES_DIR,
   appendNotes,
   clearSession,
   currentTask,
+  ensurePrivateDir,
   listTaskNames,
   loadTask,
   pruneSessions,
@@ -686,6 +688,23 @@ describe('scaffoldTask', () => {
     expect(plan).toContain('- [ ] s1. A');
     expect(plan).not.toContain('{{');
     expect(TEMPLATES_DIR).toMatch(/templates[\\/]task$/);
+    if (process.platform !== 'win32') {
+      for (const sub of PRIVATE_SUBDIRS) {
+        expect(fs.statSync(path.join(dir, sub)).mode & 0o777).toBe(0o700);
+      }
+    }
+  });
+
+  test('should make a private directory 0700 whatever the umask', () => {
+    const dir = path.join(root, 'private');
+
+    expect(ensurePrivateDir(dir)).toBe(dir);
+    expect(fs.statSync(dir).isDirectory()).toBe(true);
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+    }
+    expect(() => ensurePrivateDir(dir)).not.toThrow();
+    expect(() => ensurePrivateDir(dir, 'linux')).not.toThrow();
   });
 
   test('should refuse to overwrite an existing task', () => {
