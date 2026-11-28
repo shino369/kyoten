@@ -71,7 +71,7 @@ outputs. Layout, `utils/` modules, scripts, and doc scopes: `docs/repo-map.md`.
 | Add a dev dependency          | `pnpm add -D <pkg> --save-catalog-name=dev`                                          |
 | E2E tests (Playwright)        | `pnpm test:e2e`                                                                      |
 | Start an agent (kyoten)       | `pnpm kyoten [<agent>]` or `npx kyoten`. See [the launcher guide](docs/kyoten.md).   |
-| Pack npm release tarball      | `pnpm kyoten:pack` (full release steps: `kyoten-release` skill)                      |
+| Pack npm release tarball      | `pnpm kyoten:pack` (see [the launcher guide](docs/kyoten.md))                        |
 | CLI help reference            | `pnpm docs:cli` · `pnpm docs:cli --check` (`docs/cli.md`)                            |
 | Memory: status, save, search  | `pnpm memory` · `pnpm memory add "…" …` · `pnpm memory recall "…"` §13               |
 | Memory: move or back up       | `pnpm memory export` · `pnpm memory import <file> --dry-run`                         |
@@ -229,7 +229,6 @@ Skills live in `.agents/skills/<name>/SKILL.md` (third-party skills install via
 | `workspace-setup`                                | New clone/machine, missing skills, broken links or hooks   | this repo              |
 | `web-browsing`                                   | Any browser or web task                                    | this repo              |
 | `context-manager`                                | Long sessions losing focus                                 | this repo              |
-| `kyoten-release`                                 | Cut a kyoten GitHub + npm tarball release                  | this repo              |
 | `dependency-update` / `security-update`          | Routine package/Node/pnpm updates / CVEs & `pnpm audit`    | kyoten-skills          |
 | `translation-expertise`                          | EN ↔ JA ↔ zh-TW translation, house styles & term traps     | kyoten-skills          |
 | `transparent-background`                         | Remove flat image background, clean edges, recolour shapes | kyoten-skills (opt-in) |

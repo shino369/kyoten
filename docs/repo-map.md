@@ -51,7 +51,7 @@ Tests sit beside each package in `__tests__/*.test.js` (shared fixtures in `util
 | `.claude/hooks/`     | `session_start.js`, `pre_compact.js`, `task_loop.js`, `context_monitor.js`, `audit_logger.js`, `auto_format.js`, `guard.js`                  |
 | `.claude/agents/`    | Canonical role prompts (`planner`, `reviewer`, `verifier`, `security-reviewer`, `test-runner`, `trilingual-translator`); synced to Codex/agy |
 | `.claude/workflows/` | `implement-plan.js`, `review-changes.js`, `research.js` (smoke-tested in `.claude/workflows/__tests__/workflows.test.js`)                    |
-| `templates/`         | `templates/task/` (`plan`, `NOTES`, `REVIEW`, `STUDIES`) and `templates/memory/` (`AGENTS.local.md`, `CLAUDE.local.md`, `persona.md`, …)     |
+| `templates/`         | `templates/task/` (`plan`, `NOTES`, `REVIEW`, `STUDIES`) and `templates/memory/` (`AGENTS.local.md`, `personas/*.json`)                      |
 
 ## `package.json` scripts
 
@@ -79,5 +79,5 @@ Tests sit beside each package in `__tests__/*.test.js` (shared fixtures in `util
 | `.claude/rules/working-with-script.md`           | Node.js ESM script conventions (`runIfMain`, error handling)                                                                   |
 | `.claude/rules/testing.md`                       | Test writing standards, coverage rules, and test isolation                                                                     |
 | `.claude/hooks/README.md`                        | Hook scripts overview (`session_start`, `task_loop`, `guard`, `auto_format`, `audit_logger`, `context_monitor`, `pre_compact`) |
-| `.agents/skills/*/SKILL.md`                      | On-demand procedures (project-owned: `workspace-setup`, `web-browsing`, `context-manager`, `kyoten-release`)                   |
+| `.agents/skills/*/SKILL.md`                      | On-demand procedures (project-owned: `workspace-setup`, `web-browsing`, `context-manager`)                                     |
 | `.github/CONTRIBUTING.md`, `.github/SECURITY.md` | Contributor workflow and security disclosure policy                                                                            |

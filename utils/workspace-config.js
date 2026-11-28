@@ -28,7 +28,6 @@ export const DEFAULT_LINK_TARGETS = [path.join('.claude', 'skills')];
  */
 export const OWNED_SKILLS = [
   'context-manager',
-  'kyoten-release',
   'web-browsing',
   'workspace-setup',
 ];
