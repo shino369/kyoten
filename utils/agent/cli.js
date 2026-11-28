@@ -21,7 +21,7 @@ import {
   writePrivate,
 } from '../kyoten/dscc.js';
 import { runIfMain } from '../module-runner.js';
-import { REDACTED, isSecretKey, redactSecrets } from '../redact.js';
+import { isSecretKey, redactSecrets } from '../redact.js';
 import { INNER_LOOP_ENV } from '../task/loop.js';
 import { formatLocal } from '../task/markdown.js';
 import { currentTask, resolveTaskName, tasksRoot } from '../task/store.js';
@@ -401,11 +401,7 @@ function envSecrets(env) {
  * @returns {string}
  */
 export function scrubSecrets(text, secrets = []) {
-  let out = text;
-  for (const secret of secrets) {
-    if (secret) out = out.replaceAll(secret, REDACTED);
-  }
-  return redactSecrets(out);
+  return redactSecrets(text, secrets);
 }
 
 /**
@@ -639,7 +635,7 @@ function ask(options, d) {
       cwd: d.rootDir,
       at,
       prompt,
-      result,
+      result: rawResult,
       secrets,
     })
   );

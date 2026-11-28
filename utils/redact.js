@@ -122,14 +122,145 @@ function applyRule(rule, text) {
   return text.replace(rule.pattern, rule.replace);
 }
 
+/** @typedef {{ start: number, end: number, replacement: string }} RedactionEdit */
+
 /**
- * Replace known secret patterns in a string.
+ * Collect edits against original offsets. Keep unchanged context such as
+ * a header name outside the edit so literal matches can be merged with it.
  *
  * @param {string} text
+ * @param {SecretRule} rule
+ * @returns {IterableIterator<RedactionEdit>}
+ */
+function* patternEdits(text, rule) {
+  for (const match of text.matchAll(rule.pattern)) {
+    const [original, ...groups] = match;
+    const replacement = rule.replace(original, ...groups);
+    if (replacement === original) continue;
+
+    const marker = replacement.indexOf(REDACTED);
+    const prefix = marker < 0 ? '' : replacement.slice(0, marker);
+    const suffix =
+      marker < 0 ? '' : replacement.slice(marker + REDACTED.length);
+    if (
+      marker >= 0 &&
+      original.startsWith(prefix) &&
+      original.endsWith(suffix)
+    ) {
+      yield {
+        start: match.index + prefix.length,
+        end: match.index + original.length - suffix.length,
+        replacement: REDACTED,
+      };
+    } else {
+      yield {
+        start: match.index,
+        end: match.index + original.length,
+        replacement,
+      };
+    }
+  }
+}
+
+/**
+ * @param {string} text
+ * @param {RegExp} pattern a lookahead that captures the longest literal at each position
+ * @returns {IterableIterator<RedactionEdit>}
+ */
+function* literalEdits(text, pattern) {
+  for (const match of text.matchAll(pattern)) {
+    yield {
+      start: match.index,
+      end: match.index + match[1].length,
+      replacement: REDACTED,
+    };
+  }
+}
+
+/**
+ * Merge already ordered match streams while keeping one pending edit from
+ * each, even when one short credential matches throughout a large response.
+ *
+ * @param {IterableIterator<RedactionEdit>[]} streams
+ * @returns {IterableIterator<RedactionEdit>}
+ */
+function* editsByPosition(streams) {
+  const pending = streams.map((stream) => stream.next());
+  for (;;) {
+    let index = 0;
+    /** @type {RedactionEdit | undefined} */
+    let next;
+    for (const [i, candidate] of pending.entries()) {
+      if (!candidate.done && (!next || candidate.value.start < next.start)) {
+        next = candidate.value;
+        index = i;
+      }
+    }
+    if (!next) return;
+    yield next;
+    pending[index] = streams[index].next();
+  }
+}
+
+/**
+ * @param {string} text
+ * @param {Iterable<RedactionEdit>} edits edits in original-text order
  * @returns {string}
  */
-export function redactSecrets(text) {
-  return SECRET_RULES.reduce((result, rule) => applyRule(rule, result), text);
+function applyEdits(text, edits) {
+  /** @type {RedactionEdit | undefined} */
+  let previous;
+  let end = 0;
+  let output = '';
+  for (const edit of edits) {
+    if (previous && edit.start <= previous.end) {
+      previous.end = Math.max(previous.end, edit.end);
+      previous.replacement = REDACTED;
+      continue;
+    }
+    if (previous) {
+      output += text.slice(end, previous.start) + previous.replacement;
+      end = previous.end;
+    }
+    previous = edit;
+  }
+  return previous
+    ? output +
+        text.slice(end, previous.start) +
+        previous.replacement +
+        text.slice(previous.end)
+    : text;
+}
+
+/**
+ * Redact known patterns and optional literal credentials. Both match the
+ * original text so a literal cannot erase the syntax of another credential.
+ *
+ * @param {string} text
+ * @param {string[]} [secrets]
+ * @returns {string}
+ */
+export function redactSecrets(text, secrets = []) {
+  let output = text;
+  const literals = secrets
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length)
+    .map((secret) => secret.replace(/[.*+?^$(){}|[\]\\]/g, '\\$&'));
+  if (literals.length > 0) {
+    const pattern = new RegExp(`(?=(${literals.join('|')}))`, 'g');
+    if (pattern.test(text)) {
+      pattern.lastIndex = 0;
+      output = applyEdits(
+        text,
+        editsByPosition([
+          literalEdits(text, pattern),
+          ...SECRET_RULES.map((rule) => patternEdits(text, rule)),
+        ])
+      );
+    }
+  }
+  // Replacing a literal can expose a boundary that another rule needs.
+  return SECRET_RULES.reduce((result, rule) => applyRule(rule, result), output);
 }
 
 /**

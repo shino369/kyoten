@@ -729,6 +729,90 @@ describe('dscc', () => {
     }
   });
 
+  test.each([
+    { kind: 'single-character', apiKey: 'longer-fixture', echoed: 'abc123 E' },
+    { kind: 'overlapping', apiKey: '123def', echoed: 'abc123def E' },
+    {
+      kind: 'adjacent matches',
+      apiKey: 'longer-fixture',
+      echoed: 'abc123 EEEE',
+    },
+  ])(
+    'should use stable markers for $kind profile credentials',
+    ({ apiKey, echoed }) => {
+      const file = profile(
+        [
+          'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic?token=E',
+          'ANTHROPIC_AUTH_TOKEN=abc123',
+          `ANTHROPIC_API_KEY=${apiKey}`,
+        ].join('\n')
+      );
+      const output = `${echoed}\n`;
+      const deps = {
+        env: { DSCC_PROFILE: file },
+        runAgent: vi.fn(() => ({
+          code: 0,
+          signal: null,
+          stdout: output,
+          output,
+          durationMs: 1,
+        })),
+      };
+
+      const { out } = run(['ask', '--agent', 'dscc', '--json', 'review'], deps);
+      const parsed = JSON.parse(out);
+      const expected = '[REDACTED] [REDACTED]';
+      expect(parsed.answer).toBe(`${expected}\n`);
+      expect(parsed.output).toBe(parsed.answer);
+      expect(read(parsed.record)).toContain(`\n${expected}\n`);
+      expect(run(['ask', '--agent', 'dscc', 'review'], deps).out).toBe(
+        expected
+      );
+    }
+  );
+
+  test.each([
+    {
+      kind: 'overlapping',
+      token: 'prefix-abc123.',
+      apiKey: '123.Bear',
+      output: 'prefix-abc123.Bearer fixture-bearer-value\n',
+    },
+    {
+      kind: 'adjacent',
+      token: 'abc123',
+      apiKey: 'unrelated-fixture',
+      output: 'abc123Bearer fixture-bearer-value\n',
+    },
+  ])(
+    'should detect bearer credentials next to $kind profile values',
+    ({ token, apiKey, output }) => {
+      const file = profile(
+        [
+          'ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic',
+          `ANTHROPIC_AUTH_TOKEN=${token}`,
+          `ANTHROPIC_API_KEY=${apiKey}`,
+        ].join('\n')
+      );
+      const { out } = run(['ask', '--agent', 'dscc', '--json', 'review'], {
+        env: { DSCC_PROFILE: file },
+        runAgent: vi.fn(() => ({
+          code: 0,
+          signal: null,
+          stdout: output,
+          output,
+          durationMs: 1,
+        })),
+      });
+
+      const parsed = JSON.parse(out);
+      expect(parsed.answer).not.toContain('fixture-bearer-value');
+      expect(parsed.output).toBe(parsed.answer);
+      expect(read(parsed.record)).toContain(parsed.answer);
+      expect(read(parsed.record)).not.toContain('fixture-bearer-value');
+    }
+  );
+
   test('should run the claude adapter with the dscc profile environment', () => {
     const file = profile(PROFILED);
 
