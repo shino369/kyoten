@@ -86,6 +86,7 @@ import {
   scopeRoot,
   roundBase,
   snapshotDirFor,
+  snapshotUnusable,
   taskFolderNotes,
   taskReviewScope,
 } from './review.js';
@@ -1276,11 +1277,10 @@ export const COMMANDS = {
           files: [
             ...new Set([
               ...scope.files,
-              ...listSnapshotScope(previousSnapshot, reviewsDir),
+              ...listSnapshotScope(previousSnapshot),
             ]),
           ].sort(),
           runGitStatus: deps.runGitStatus,
-          trustedReviewsDir: reviewsDir,
         });
       if (incremental !== null) {
         writePrivate(path.join(task.dir, files.incrementalDiff), incremental);
@@ -1300,6 +1300,7 @@ export const COMMANDS = {
         taskRel,
         diffPath,
         incrementalDiffPath: incrementalPath,
+        incrementalUnavailable: round > 1 && snapshotUnusable(previousSnapshot),
         stats,
         folder: taskFolderNotes({
           rootDir: deps.rootDir,
@@ -1448,26 +1449,35 @@ export const COMMANDS = {
         `${name} has no ${STATE_FILE}.\nFix: pnpm task init ${name}`
       );
     }
-    const verify = task.state.lastVerify;
-    if (task.state.verify.length > 0 && !verify?.ok && !options.force) {
-      throw new Error(
-        `The last verify did not pass (${verify ? `\`${verify.failed}\` failed` : 'not run'}).\nFix: pnpm task verify — or, if the user agrees, pnpm task done --force`
-      );
-    }
-    const blockers = doneBlockers(task.state);
-    if (blockers.length > 0 && !options.force) {
-      throw new Error(
-        [
-          `${name} is not finished:`,
-          ...blockers.map((b) => `- ${b}`),
-          'Fix: the lines above — or, if the user agrees, pnpm task done --force',
-        ].join('\n')
-      );
-    }
-    const forced =
-      blockers.length > 0
+    /**
+     * Refuse to close while verify fails or a blocker remains, unless forced;
+     * returns the forced-past note. Checked before the --learn work and again
+     * under the lock, so a round opened meanwhile still blocks.
+     *
+     * @param {import('./state.js').TaskState} current
+     */
+    const closeCheck = (current) => {
+      const verify = current.lastVerify;
+      if (current.verify.length > 0 && !verify?.ok && !options.force) {
+        throw new Error(
+          `The last verify did not pass (${verify ? `\`${verify.failed}\` failed` : 'not run'}).\nFix: pnpm task verify — or, if the user agrees, pnpm task done --force`
+        );
+      }
+      const blockers = doneBlockers(current);
+      if (blockers.length > 0 && !options.force) {
+        throw new Error(
+          [
+            `${name} is not finished:`,
+            ...blockers.map((b) => `- ${b}`),
+            'Fix: the lines above — or, if the user agrees, pnpm task done --force',
+          ].join('\n')
+        );
+      }
+      return blockers.length > 0
         ? ` Forced past: ${blockers.map((b) => b.split('. Fix:')[0]).join('; ')}.`
         : '';
+    };
+    let forced = closeCheck(task.state);
     // Refuse a bad --learn line before the task is closed.
     const learned = learnedNotes(options.learn, {
       env: deps.env,
@@ -1480,7 +1490,10 @@ export const COMMANDS = {
     updateState(
       deps.rootDir,
       name,
-      (state) => ({ ...state, status: 'done', next: null }),
+      (current) => {
+        forced = closeCheck(current);
+        return { ...current, status: 'done', next: null };
+      },
       { now, agent }
     );
     writeNote(deps, task, {

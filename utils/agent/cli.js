@@ -21,7 +21,7 @@ import {
   writePrivate,
 } from '../kyoten/dscc.js';
 import { runIfMain } from '../module-runner.js';
-import { REDACTED, isSecretKey, redactSecrets } from '../redact.js';
+import { REDACTED, redactSecrets } from '../redact.js';
 import { INNER_LOOP_ENV } from '../task/loop.js';
 import { formatLocal } from '../task/markdown.js';
 import { currentTask, resolveTaskName, tasksRoot } from '../task/store.js';
@@ -212,141 +212,81 @@ export function answerOf(result) {
   return result.stdout.trim() ? result.stdout : result.output;
 }
 
-/** Profile fields the launcher accepts as credentials, whatever their value. */
-const PROFILE_CREDENTIAL_KEYS = new Set([
-  ...TOKEN_KEYS,
-  'ANTHROPIC_CUSTOM_HEADERS',
-]);
+/** Profile fields the dscc launcher accepts as credentials. */
+const PROFILE_CREDENTIAL_KEYS = new Set(TOKEN_KEYS);
+/** Profile and environment field holding extra request headers. */
+const HEADERS_KEY_RE = /(?:^|_)CUSTOM_HEADERS$/i;
 /**
- * Credential variable names in an inherited environment, token-bounded so
- * `GIT_AUTHOR_EMAIL` / `GIT_AUTHOR_NAME` (which merely contain `AUTH`) never
- * match.
+ * The shortest literal that is scrubbed: a shorter value (a port, a count, a
+ * flag) would shred ordinary output. A profile credential field is a known
+ * secret, so it uses a lower floor than a value matched only by its inherited
+ * variable name.
+ */
+const MIN_PROFILE_SECRET_LENGTH = 4;
+const MIN_ENV_SECRET_LENGTH = 8;
+/**
+ * Inherited variable names that hold credentials: TOKEN, SECRET, PASSWORD,
+ * PASSWD, API_KEY, ACCESS_KEY, PRIVATE_KEY, AUTH_KEY, AUTH_HEADER,
+ * AUTHORIZATION, or CREDENTIAL(S) as a whole `_`-separated word, or a `_PWD`
+ * suffix. `GITHUB_TOKEN` and `MYSQL_PWD` match; `CLAUDE_CODE_MAX_OUTPUT_TOKENS`,
+ * `GIT_AUTHOR_EMAIL`, and the shell's `PWD` / `OLDPWD` do not.
  */
 const ENV_SECRET_NAME_RE =
-  /(?:^|[_-])(?:TOKEN|SECRET|PASSWORD|PASSWD|PWD|API_?KEY|ACCESS_KEY|PRIVATE_KEY|AUTH_TOKEN|AUTH_KEY|AUTH_HEADER|CUSTOM_HEADERS|AUTHORIZATION|CREDENTIALS?)(?:$|[_-])/i;
-/**
- * Explicit full-name credential query parameters; anchored, so `invite`,
- * `author`, `keyboard`, or `public_key_id` never match.
- */
-const URL_SECRET_PARAM_RE =
-  /^(?:api[_-]?key|api[_-]?token|access[_-]?token|auth[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|token|secret|client[_-]?secret|password|passwd|pwd|key|auth|authorization|sig|signature|credentials?)$/i;
+  /(?:^|_)(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|ACCESS_KEY|PRIVATE_KEY|AUTH_(?:KEY|HEADER)|AUTHORIZATION|CREDENTIALS?)(?:$|_)|_PWD$/i;
 const HEADER_SCHEME_RE = /^(?:Bearer|Basic|Token)\s+(\S+)$/i;
 
 /**
- * Add a literal secret (and its unquoted form when wrapped in matching quotes)
- * to `values`.
+ * Add a literal secret, unquoted when wrapped in matching quotes, to `values`
+ * unless it is shorter than `minLength` or a reference (`$VAR`,
+ * `<placeholder>`).
  *
  * @param {Set<string>} values
  * @param {string} raw
- * @param {number} [minLength]
+ * @param {number} minLength
  */
-function addSecretValue(values, raw, minLength = 1) {
+function addSecretValue(values, raw, minLength) {
   const trimmed = raw.trim();
-  if (!trimmed) return;
-  const unquoted = /^(["']).*\1$/s.test(trimmed)
+  const value = /^(["']).*\1$/s.test(trimmed)
     ? trimmed.slice(1, -1).trim()
     : trimmed;
-  for (const candidate of [trimmed, unquoted]) {
-    if (
-      candidate.length >= minLength &&
-      !/^(?:\$|\[REDACTED|<[^>]*>$)/i.test(candidate)
-    ) {
-      values.add(candidate);
-    }
+  if (value.length >= minLength && !/^(?:\$|<[^>]*>$)/.test(value)) {
+    values.add(value);
   }
 }
 
 /**
- * Extract header values and scheme tokens from a custom-headers env value
- * (e.g. `ANTHROPIC_CUSTOM_HEADERS="X-Api-Key: secret\nAuthorization: Basic …"`).
- * A configured headers field is trusted whole, so short values count too.
+ * Add each header value of a custom-headers field (`Name: value` lines), and
+ * the token after a `Bearer`/`Basic`/`Token` scheme.
  *
  * @param {Set<string>} values
  * @param {string} raw
+ * @param {number} minLength
  */
-function addHeaderSecrets(values, raw) {
-  const unquoted = /^(["']).*\1$/s.test(raw.trim())
-    ? raw.trim().slice(1, -1)
-    : raw;
-  for (const line of unquoted.split(/\r?\n/)) {
+function addHeaderSecrets(values, raw, minLength) {
+  const trimmed = raw.trim();
+  const unquoted = /^(["']).*\1$/s.test(trimmed)
+    ? trimmed.slice(1, -1)
+    : trimmed;
+  for (const line of unquoted.split(/\r?\n|\\n/)) {
     const colon = line.indexOf(':');
     if (colon === -1) continue;
     const headerValue = line.slice(colon + 1).trim();
-    if (!headerValue) continue;
-    addSecretValue(values, headerValue);
+    addSecretValue(values, headerValue, minLength);
     const scheme = HEADER_SCHEME_RE.exec(headerValue)?.[1];
-    if (scheme) addSecretValue(values, scheme);
+    if (scheme) addSecretValue(values, scheme, minLength);
   }
 }
 
-/**
- * `decodeURIComponent` that returns the raw value when the encoding is
- * malformed, so a broken escape still gets scrubbed.
- *
- * @param {string} value
- * @returns {string}
- */
-function decodeOrRaw(value) {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
+/** @param {Set<string>} values */
+const longestFirst = (values) =>
+  [...values].sort((a, b) => b.length - a.length);
 
 /**
- * Extract credential components from a URL string: the userinfo (`username`,
- * `password`, and `username:password`, raw and decoded) and secret-named query
- * parameters (raw and decoded).
- *
- * @param {Set<string>} values
- * @param {string} raw
- */
-function addUrlSecrets(values, raw) {
-  /** @type {URL} */
-  let parsed;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    return; // Not a URL: no userinfo or query parameters to read.
-  }
-  const user = parsed.username;
-  const pass = parsed.password;
-  if (user || pass) {
-    if (user) addSecretValue(values, user);
-    if (pass) addSecretValue(values, pass);
-    if (user && pass) addSecretValue(values, `${user}:${pass}`);
-    const decodedUser = user ? decodeOrRaw(user) : '';
-    const decodedPass = pass ? decodeOrRaw(pass) : '';
-    if (decodedUser) addSecretValue(values, decodedUser);
-    if (decodedPass) addSecretValue(values, decodedPass);
-    if (decodedUser) {
-      addSecretValue(
-        values,
-        decodedPass ? `${decodedUser}:${decodedPass}` : decodedUser
-      );
-    }
-  }
-  // Raw (still percent-encoded) query values, which the decoded searchParams
-  // would miss.
-  for (const pair of parsed.search.replace(/^\?/, '').split('&')) {
-    if (!pair) continue;
-    const eq = pair.indexOf('=');
-    const name = decodeOrRaw(eq === -1 ? pair : pair.slice(0, eq));
-    const value = eq === -1 ? '' : pair.slice(eq + 1);
-    if (value && URL_SECRET_PARAM_RE.test(name))
-      addSecretValue(values, value, 4);
-  }
-  for (const [param, val] of parsed.searchParams.entries()) {
-    if (URL_SECRET_PARAM_RE.test(param)) addSecretValue(values, val, 4);
-  }
-}
-
-/**
- * Literal secret values from a dscc profile (`set`), longest first so
- * scrubbing replaces full tokens before any substring. A credential field the
- * launcher accepts is trusted whole (no minimum length); other profile values
- * only contribute URL userinfo and explicitly named query credentials.
+ * Literal credential values from a dscc profile (`set`): the token fields and
+ * the custom header values, longest first so a full token is replaced before
+ * any substring. Other profile values (endpoint, model names, limits) are
+ * configuration and stay visible; URL credentials in output are caught by the
+ * shared `redactSecrets` patterns.
  *
  * @param {Record<string, string>} set
  * @returns {string[]}
@@ -356,24 +296,19 @@ export function profileSecrets(set) {
   const values = new Set();
   for (const [key, value] of Object.entries(set)) {
     if (!value) continue;
-    if (
-      PROFILE_CREDENTIAL_KEYS.has(key) ||
-      isSecretKey(key) ||
-      ENV_SECRET_NAME_RE.test(key)
-    ) {
-      addSecretValue(values, value);
-      if (/HEADERS/i.test(key)) addHeaderSecrets(values, value);
+    if (PROFILE_CREDENTIAL_KEYS.has(key)) {
+      addSecretValue(values, value, MIN_PROFILE_SECRET_LENGTH);
     }
-    addUrlSecrets(values, value);
+    if (HEADERS_KEY_RE.test(key)) {
+      addHeaderSecrets(values, value, MIN_PROFILE_SECRET_LENGTH);
+    }
   }
-  return [...values].sort((a, b) => b.length - a.length);
+  return longestFirst(values);
 }
 
 /**
- * Literal secret values from a child process environment (e.g. inherited API
- * keys), requiring at least 8 characters so short flags like `1`/`true` never
- * corrupt normal output. Only explicitly named credential variables count:
- * `GIT_AUTHOR_EMAIL` is not one.
+ * Literal credential values the child process receives in its environment
+ * (inherited API keys and tokens), by variable name only.
  *
  * @param {NodeJS.ProcessEnv} env
  * @returns {string[]}
@@ -384,12 +319,13 @@ function envSecrets(env) {
   for (const [key, value] of Object.entries(env)) {
     if (!value) continue;
     if (ENV_SECRET_NAME_RE.test(key)) {
-      addSecretValue(values, value, 8);
-      if (/HEADERS/i.test(key)) addHeaderSecrets(values, value);
+      addSecretValue(values, value, MIN_ENV_SECRET_LENGTH);
     }
-    addUrlSecrets(values, value);
+    if (HEADERS_KEY_RE.test(key)) {
+      addHeaderSecrets(values, value, MIN_ENV_SECRET_LENGTH);
+    }
   }
-  return [...values].sort((a, b) => b.length - a.length);
+  return longestFirst(values);
 }
 
 /**
