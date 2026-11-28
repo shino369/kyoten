@@ -180,6 +180,23 @@ describe('renderAgyRole and agyRoleFiles', () => {
     expect(renderAgyRole(none, 'g.md')).not.toContain('tools:');
   });
 
+  test('should ignore trailing commas in tools and parse optional skills', () => {
+    const role = /** @type {import('../roles.js').Role} */ (
+      parseRole(
+        '---\nname: t\ndescription: D\ntools: Read, Grep, \nskills: translation-expertise, skills/custom\n---\nB',
+        't.md'
+      )
+    );
+    expect(role.tools).toEqual(['Read', 'Grep']);
+    expect(role.skills).toEqual(['translation-expertise', 'skills/custom']);
+    const rendered = renderAgyRole(role, 't.md');
+    expect(rendered).toContain('tools:\n  - read_file\n');
+    expect(rendered).toContain(
+      'skills:\n  - skills/translation-expertise\n  - skills/custom\n'
+    );
+    expect(rendered).toContain('commandExecutionPolicy: off\n');
+  });
+
   test('should generate one Antigravity role per Claude agent file in the workspace', () => {
     const files = agyRoleFiles(ROOT_DIR);
     const names = fs

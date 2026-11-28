@@ -21,7 +21,7 @@ const READ_ONLY_TOOLS = new Set(['Read', 'Grep', 'Glob']);
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 
 /**
- * @typedef {{ name: string, description: string, tools: string[] | null, body: string }} Role
+ * @typedef {{ name: string, description: string, tools: string[] | null, skills?: string[], body: string }} Role
  *   tools: null when the role gets every tool
  */
 
@@ -44,10 +44,14 @@ export function parseRole(text, fileName) {
       fields[line.slice(0, colon).trim()] = line.slice(colon + 1).trim();
   }
   if (!fields.description) return null;
+  const skills = fields.skills
+    ? fields.skills.split(/\s*,\s*/).filter(Boolean)
+    : [];
   return {
     name: fields.name || path.basename(fileName, '.md'),
     description: fields.description,
-    tools: fields.tools ? fields.tools.split(/\s*,\s*/) : null,
+    tools: fields.tools ? fields.tools.split(/\s*,\s*/).filter(Boolean) : null,
+    ...(skills.length > 0 ? { skills } : {}),
     body: text.slice(match[0].length).replace(/^\r?\n/, ''),
   };
 }
@@ -118,10 +122,12 @@ const yamlString = (value) =>
 
 /**
  * Render an Antigravity custom subagent file (`.agents/agents/<role>.md`).
- * `tools:` carries only the verified `agy` CLI names (an unmapped name can
- * hang the subagent); a role whose tools all lack a CLI equivalent gets no
- * `tools:` block, and read-only roles disable shell commands via
- * `commandExecutionPolicy: off`.
+ * Targets Antigravity CLI (`agy`): `tools:` carries only the verified CLI
+ * names (App/IDE names such as `view_file` can hang the CLI subagent, and
+ * vice versa); `mainAgent: false` keeps subagent roles out of `/agents`'s
+ * primary-agent switcher while exposing them to `invoke_subagent`. A role
+ * whose tools all lack a CLI equivalent gets no `tools:` block, and
+ * read-only roles disable shell commands via `commandExecutionPolicy: off`.
  *
  * @param {Role} role
  * @param {string} source the markdown file, for the header comment
@@ -129,6 +135,7 @@ const yamlString = (value) =>
  */
 export function renderAgyRole(role, source) {
   const tools = agyTools(role);
+  const skills = role.skills ?? [];
   return [
     '---',
     `name: ${role.name}`,
@@ -138,6 +145,14 @@ export function renderAgyRole(role, source) {
     'model: inherit',
     ...(tools.length > 0
       ? ['tools:', ...tools.map((tool) => `  - ${tool}`)]
+      : []),
+    ...(skills.length > 0
+      ? [
+          'skills:',
+          ...skills.map((skill) =>
+            skill.includes('/') ? `  - ${skill}` : `  - skills/${skill}`
+          ),
+        ]
       : []),
     ...(isReadOnly(role) ? ['commandExecutionPolicy: off'] : []),
     '---',
