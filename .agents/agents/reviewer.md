@@ -3,7 +3,7 @@ name: reviewer
 description: "Clean-context code reviewer for a task's review round. Works only from the round's BRIEF file (scope, plan, standards, severity rubric) - never from the author's reasoning - and writes findings with concrete failure scenarios into the round's findings table. Invoke when pnpm task review opens a round. Edits nothing but that table."
 subagent: true
 mainAgent: false
-model: flash
+model: inherit
 tools:
   - read_file
   - edit_file

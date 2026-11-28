@@ -86,18 +86,19 @@ function isWindowsBusy(error, platform) {
  *
  * @param {string} file
  * @param {string | Buffer} content
- * @param {{ platform?: NodeJS.Platform, retryMs?: number }} [options]
+ * @param {{ platform?: NodeJS.Platform, retryMs?: number, beforeReplace?: () => void }} [options]
  */
 export function writeFileAtomic(
   file,
   content,
-  { platform = process.platform, retryMs = 2000 } = {}
+  { platform = process.platform, retryMs = 2000, beforeReplace } = {}
 ) {
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   const deadline = Date.now() + retryMs;
   try {
     fs.writeFileSync(tmp, content, 'utf-8');
     for (;;) {
+      beforeReplace?.();
       try {
         fs.renameSync(tmp, file);
         return;

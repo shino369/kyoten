@@ -3,7 +3,7 @@ name: planner
 description: 'Turns a goal into a task plan of small, independently verifiable steps with explicit dependencies, recorded with pnpm task. Invoke before multi-step work, before pnpm swarm or the implement-plan workflow, or when a task has no steps yet. Plans only; never implements.'
 subagent: true
 mainAgent: false
-model: flash
+model: inherit
 tools:
   - read_file
   - run_command

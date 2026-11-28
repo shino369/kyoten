@@ -3,7 +3,7 @@ name: verifier
 description: "Independently checks that finished work meets the task's acceptance criteria - runs the task's verify (tests, coverage, lint, typecheck), reviews the diff against the plan, and looks for weakened tests. Returns PASS or FAIL with evidence. Invoke before saying a task or a swarm branch is done. Also triages a review round's findings (tries to refute each; REFUTED when unsure). Does not fix anything."
 subagent: true
 mainAgent: false
-model: flash
+model: inherit
 tools:
   - read_file
   - edit_file

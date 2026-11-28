@@ -3,12 +3,11 @@ import os from 'os';
 import path from 'path';
 import { ROOT_DIR } from '#utils/workspace-config.js';
 import {
-  agyRoleFiles,
   agyTools,
-  codexRoleFiles,
   parseRole,
   renderAgyRole,
   renderCodexRole,
+  roleFiles,
 } from '../roles.js';
 
 const REVIEWER = `---
@@ -129,7 +128,7 @@ describe('agyTools', () => {
   });
 });
 
-describe('renderAgyRole and agyRoleFiles', () => {
+describe('renderAgyRole and Antigravity role files', () => {
   test('should let the Antigravity reviewer edit without running commands', () => {
     const reviewer = /** @type {import('../roles.js').Role} */ (
       parseRole(REVIEWER, 'reviewer.md')
@@ -140,7 +139,7 @@ describe('renderAgyRole and agyRoleFiles', () => {
       'description: \'Clean-context reviewer. Works from the "BRIEF" file.\'\n'
     );
     expect(rendered).toContain(
-      'subagent: true\nmainAgent: false\nmodel: flash\n'
+      'subagent: true\nmainAgent: false\nmodel: inherit\n'
     );
     expect(rendered).toContain('tools:\n  - read_file\n  - edit_file\n');
     expect(rendered).not.toContain('run_command');
@@ -202,7 +201,9 @@ describe('renderAgyRole and agyRoleFiles', () => {
   });
 
   test('should generate one Antigravity role per Claude agent file in the workspace', () => {
-    const files = agyRoleFiles(ROOT_DIR);
+    const files = roleFiles(ROOT_DIR).filter(({ file }) =>
+      file.startsWith('.agents/agents/')
+    );
     const names = fs
       .readdirSync(path.join(ROOT_DIR, '.claude/agents'))
       .filter((f) => f.endsWith('.md'))
@@ -240,34 +241,44 @@ describe('cross-harness role model tiers', () => {
   });
 
   test.each([
-    ['planner', 'sonnet', 'medium'],
-    ['reviewer', 'sonnet', 'medium'],
-    ['security-reviewer', 'sonnet', 'medium'],
-    ['test-runner', 'haiku', 'low'],
-    ['trilingual-translator', 'sonnet', 'medium'],
-    ['verifier', 'sonnet', 'medium'],
-  ])('should ship the configured tier for %s', (name, model, effort) => {
+    'planner',
+    'reviewer',
+    'security-reviewer',
+    'trilingual-translator',
+    'verifier',
+  ])('should render the configured model for %s at both levels', (name) => {
     const source = `.claude/agents/${name}.md`;
-    const role = parseRole(
-      fs.readFileSync(path.join(ROOT_DIR, source), 'utf-8'),
-      source
-    );
+    const standard = roleFiles(ROOT_DIR, 'default');
+    const high = roleFiles(ROOT_DIR, 'high');
+    const agy = `.agents/agents/${name}.md`;
+    const codex = `.codex/agents/${name}.toml`;
 
-    expect(role?.model).toBe(model);
-    expect(
-      agyRoleFiles(ROOT_DIR).find(
-        ({ file }) => file === `.agents/agents/${name}.md`
-      )?.content
-    ).toContain('model: flash\n');
-    expect(
-      codexRoleFiles(ROOT_DIR).find(
-        ({ file }) => file === `.codex/agents/${name}.toml`
-      )?.content
-    ).toContain(`model_reasoning_effort = "${effort}"\n`);
+    expect(standard.find(({ file }) => file === source)?.content).toContain(
+      'model: sonnet\n'
+    );
+    expect(standard.find(({ file }) => file === codex)?.content).toContain(
+      'model_reasoning_effort = "medium"\n'
+    );
+    expect(standard.find(({ file }) => file === agy)?.content).toContain(
+      'model: inherit\n'
+    );
+    expect(high.find(({ file }) => file === source)?.content).toContain(
+      'model: inherit\n'
+    );
+    const highCodex = high.find(({ file }) => file === codex)?.content;
+    expect(highCodex).toContain('developer_instructions');
+    expect(highCodex).not.toMatch(/^model(?:_reasoning_effort)?\s*=/m);
+    expect(high.find(({ file }) => file === agy)?.content).toContain(
+      'model: inherit\n'
+    );
   });
 });
 
-describe('codexRoleFiles', () => {
+describe('Codex role files', () => {
+  /** @param {string} root */
+  const codexRoleFiles = (root) =>
+    roleFiles(root).filter(({ file }) => file.startsWith('.codex/agents/'));
+
   test('should generate one Codex role per Claude agent file in the workspace', () => {
     const files = codexRoleFiles(ROOT_DIR);
     const names = fs

@@ -1,6 +1,6 @@
 /**
  * The workspace's roles (`.claude/agents/<role>.md`, Claude Code subagents)
- * rendered for other harnesses:
+ * rendered for the selected level and for other harnesses:
  * - Codex: `.codex/agents/<role>.toml` (`spawn_agent` with `agent_type`)
  * - Antigravity CLI: `.agents/agents/<role>.md` (`invoke_subagent` with `TypeName`)
  *
@@ -18,6 +18,15 @@ import path from 'path';
 const AGENTS_DIR = '.claude/agents';
 const READ_ONLY_TOOLS = new Set(['Read', 'Grep', 'Glob']);
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
+const LEVEL_ROLES = new Set([
+  'planner',
+  'reviewer',
+  'verifier',
+  'security-reviewer',
+  'trilingual-translator',
+]);
+
+/** @typedef {'default' | 'high'} HarnessLevel */
 
 /**
  * @typedef {{ name: string, description: string, tools: string[] | null, model?: string, skills?: string[], body: string }} Role
@@ -58,6 +67,9 @@ export function parseRole(text, fileName) {
 
 /** @param {Role} role */
 export function agyModel(role) {
+  // Antigravity accepts tiers in custom Markdown roles. Inherit keeps these
+  // roles on the session's model (e.g. Gemini 4 Hydrogen).
+  if (LEVEL_ROLES.has(role.name)) return 'inherit';
   switch (role.model) {
     case 'haiku':
     case 'sonnet':
@@ -195,9 +207,9 @@ export function renderAgyRole(role, source) {
 
 /**
  * @param {string} rootDir
- * @returns {{ name: string, role: Role }[]}
+ * @param {HarnessLevel} [level]
  */
-function readRoles(rootDir) {
+export function roleFiles(rootDir, level = 'default') {
   const dir = path.join(rootDir, AGENTS_DIR);
   if (!fs.existsSync(dir)) return [];
   return fs
@@ -205,36 +217,89 @@ function readRoles(rootDir) {
     .filter((name) => name.endsWith('.md'))
     .sort()
     .flatMap((name) => {
-      const role = parseRole(
-        fs.readFileSync(path.join(dir, name), 'utf-8'),
-        name
-      );
-      return role ? [{ name, role }] : [];
+      const content = fs.readFileSync(path.join(dir, name), 'utf-8');
+      let role = parseRole(content, name);
+      if (!role) return [];
+      const source = `${AGENTS_DIR}/${name}`;
+      const files = [];
+      if (LEVEL_ROLES.has(role.name)) {
+        const model = level === 'high' ? 'inherit' : 'sonnet';
+        files.push(claudeRoleEdit(source, content, model));
+        role = { ...role, model };
+      }
+      return [
+        ...files,
+        {
+          file: `.codex/agents/${path.basename(name, '.md')}.toml`,
+          content: renderCodexRole(role, source),
+        },
+        {
+          file: `.agents/agents/${name}`,
+          content: renderAgyRole(role, source),
+        },
+      ];
     });
 }
 
 /**
- * The Codex role files for every role in `.claude/agents/`.
- *
- * @param {string} rootDir
- * @returns {{ file: string, content: string }[]}
+ * Locate the model line within the frontmatter. Use an empty range for a
+ * role with no model so that the edit can also be reversed.
+ * @param {string} content
+ * @param {string} file
  */
-export function codexRoleFiles(rootDir) {
-  return readRoles(rootDir).map(({ name, role }) => ({
-    file: `.codex/agents/${path.basename(name, '.md')}.toml`,
-    content: renderCodexRole(role, `${AGENTS_DIR}/${name}`),
-  }));
+function claudeModelField(content, file) {
+  const frontmatter = FRONTMATTER_RE.exec(content);
+  if (!frontmatter) return null;
+  const fields = frontmatter[1];
+  const indent = /^ *(?=[^ \t\r\n#])/m.exec(fields)?.[0] ?? '';
+  const model = new RegExp(
+    `^${indent}(?:model|"model"|'model')[ \\t]*:([^\\r\\n]*)`,
+    'm'
+  ).exec(fields);
+  const newline = content.startsWith('---\r\n') ? '\r\n' : '\n';
+  const from = 3 + newline.length + (model?.index ?? 0);
+  const to = model ? content.indexOf('\n', from) + 1 : from;
+  if (model) {
+    const next = fields
+      .slice(model.index + model[0].length)
+      .split(/\r?\n/)
+      .find((line) => /^[ \t]*[^# \t]/.test(line));
+    if (/^[>|]/.test(model[1].trimStart()) || next?.startsWith(`${indent} `)) {
+      throw new Error(
+        `${file} requires a single-line model.\nFix: use a model field such as model: sonnet`
+      );
+    }
+  }
+  return { from, to, indent, newline, text: content.slice(from, to) };
 }
 
-/**
- * The Antigravity subagent files for every role in `.claude/agents/`.
- *
- * @param {string} rootDir
- * @returns {{ file: string, content: string }[]}
- */
-export function agyRoleFiles(rootDir) {
-  return readRoles(rootDir).map(({ name, role }) => ({
-    file: `.agents/agents/${name}`,
-    content: renderAgyRole(role, `${AGENTS_DIR}/${name}`),
-  }));
+/** @param {string} file @param {string} content @param {string} model */
+function claudeRoleEdit(file, content, model) {
+  const field = claudeModelField(content, file);
+  if (!field) throw new Error(`Missing role frontmatter in ${file}`);
+  const modelLine = `model: ${model}`;
+  return {
+    file,
+    content:
+      content.slice(0, field.from) +
+      field.indent +
+      modelLine +
+      field.newline +
+      content.slice(field.to),
+    sourceContent: content,
+    /** @param {string} current */
+    restoreModel(current) {
+      const currentField = claudeModelField(current, file);
+      if (currentField?.text.trim() !== modelLine) return undefined;
+      const previousLine = field.text.trim();
+      const restored = previousLine
+        ? currentField.indent + previousLine + currentField.newline
+        : '';
+      return (
+        current.slice(0, currentField.from) +
+        restored +
+        current.slice(currentField.to)
+      );
+    },
+  };
 }

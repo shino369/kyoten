@@ -3,7 +3,7 @@ name: security-reviewer
 description: 'Reviews code for security vulnerabilities including authentication gaps, injection risks, data exposure, and insecure dependencies. Invoke when checking for security issues, reviewing PRs, or validating implementation safety.'
 subagent: true
 mainAgent: false
-model: flash
+model: inherit
 tools:
   - read_file
 commandExecutionPolicy: off

@@ -56,6 +56,7 @@ Exit code: the agent's exit code (1 when it was stopped by the timeout).
 Usage:
   pnpm harness sync    write the Codex/DSH/Antigravity files generated from utils/harness/hooks.js
   pnpm harness check   fail when a generated file or .claude/settings.json hooks differ from it
+  pnpm harness level [default|high]  show or set this checkout's native subagent level
   pnpm harness help    show this help (the default)
 ```
 

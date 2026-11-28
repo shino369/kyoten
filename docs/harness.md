@@ -189,8 +189,9 @@ commands it loads.
    regenerates `.codex/rules/workspace.rules`; `guard.js` reads the same file for DSH, Antigravity,
    and Codex patches.
 3. **Role.** Edit `.claude/agents/<role>.md`, then `pnpm harness sync`. It regenerates
-   `.codex/agents/<role>.toml` and `.agents/agents/<role>.md`. Haiku, Sonnet, and Opus map to
-   Codex reasoning efforts low, medium, and high, and to Antigravity tiers flash, flash, and pro.
+   `.codex/agents/<role>.toml` and `.agents/agents/<role>.md` and applies the selected level to the
+   five roles below. For other roles, Haiku, Sonnet, and Opus map to Codex reasoning efforts low,
+   medium, and high, and to Antigravity tiers flash, flash, and pro.
    The Antigravity file targets `agy` CLI and maps the role's Claude tools to the verified CLI names
    (`Read` → `read_file`, `Edit` → `edit_file`, `Write` → `write_file`, `Bash` → `run_command`;
    `Grep` and `Glob` are covered by `run_command`), because an omitted `tools:` defaults to `[]`
@@ -199,9 +200,36 @@ commands it loads.
    `mainAgent: false` keeps roles out of `/agents`'s primary-agent switcher while exposing them to
    `invoke_subagent`. Check a changed mapping in an interactive `agy` session before merging.
 
-`pnpm harness check` fails on a stale generated file, and when the `hooks` in
+`pnpm harness check` fails on a stale role or generated file, and when the `hooks` in
 `.claude/settings.json` differ from the manifest. It never rewrites `.claude/settings.json`.
 `pnpm workspace:check` runs it, so drift is caught.
+
+### Native subagent level
+
+The level applies to `planner`, `reviewer`, `verifier`, `security-reviewer`, and
+`trilingual-translator` when launched as native subagents.
+
+| Level     | Claude Code              | Codex                       | Antigravity CLI |
+| --------- | ------------------------ | --------------------------- | --------------- |
+| `default` | Sonnet                   | Parent model, medium effort | Parent model    |
+| `high`    | Parent model (`inherit`) | Parent model and effort     | Parent model    |
+
+Use `pnpm harness level` to read the selected level, `pnpm harness level high` to opt into
+inheritance, and `pnpm harness level default` to restore the shipped defaults. Start a new harness
+session after switching. The setting lives in the checkout's Git-ignored `.kyoten/harness/level`
+file. `high` modifies the tracked Claude and Codex role definitions locally. Switch back to
+`default` before a workspace update or a commit that stages role files. `pnpm harness sync`
+reapplies the saved level after pulling changes or editing a role prompt. Use a single-line
+`model` field in the managed Claude roles.
+
+Antigravity's Markdown `model` field accepts tiers. The five roles use `inherit` at both levels
+so you can select Gemini 4 Hydrogen with `/model` in the parent session, or launch it with
+`agy --model gemini-4-hydrogen-medium`. Antigravity supplies Hydrogen by default on some plans.
+[Subagent model tiers](https://antigravity.google/docs/subagents#frontmatter-configuration-yaml) ·
+[Model availability](https://antigravity.google/docs/models)
+
+The `test-runner` uses Haiku, low effort, and the Flash tier. Headless `pnpm task review run`
+and `pnpm loop --review` use their own reviewer and triage model settings.
 
 ### What stays Claude-only
 
