@@ -1189,11 +1189,12 @@ describe('review', () => {
     const runGit = vi.fn((args) => {
       if (args[0] === 'symbolic-ref') return 'origin/main';
       if (args[0] === 'merge-base') return 'abc123';
-      if (args[0] === 'diff' && args[1] === '--name-only') return 'utils/x.js';
-      if (args[0] === 'diff' && args[1] === '--numstat') {
-        return '1\t1\tutils/x.js';
+      if (args.includes('--name-status')) return 'M\0utils/x.js\0';
+      if (args.includes('--name-only')) return 'utils/x.js\0';
+      if (args.includes('--numstat')) {
+        return '1\t1\tutils/x.js\0';
       }
-      if (args[0] === 'diff') {
+      if (args.includes('diff')) {
         return [
           'diff --git a/utils/x.js b/utils/x.js',
           '--- a/utils/x.js',
@@ -1236,11 +1237,12 @@ describe('review', () => {
     const runGit = (args) => {
       if (args[0] === 'symbolic-ref') return 'origin/main';
       if (args[0] === 'merge-base') return 'abc123';
-      if (args[0] === 'diff' && args[1] === '--name-only') return 'utils/x.js';
-      if (args[0] === 'diff' && args[1] === '--numstat') {
-        return '1\t1\tutils/x.js';
+      if (args.includes('--name-status')) return 'M\0utils/x.js\0';
+      if (args.includes('--name-only')) return 'utils/x.js\0';
+      if (args.includes('--numstat')) {
+        return '1\t1\tutils/x.js\0';
       }
-      if (args[0] === 'diff') return 'diff --git a/utils/x.js b/utils/x.js';
+      if (args.includes('diff')) return 'diff --git a/utils/x.js b/utils/x.js';
       return '';
     };
 
@@ -1277,12 +1279,12 @@ describe('review', () => {
         vi.fn((args) => {
           if (args[0] === 'symbolic-ref') return 'origin/main';
           if (args[0] === 'merge-base') return 'abc123';
-          if (args[0] === 'diff' && args[1] === '--name-only')
-            return 'utils/x.js';
-          if (args[0] === 'diff' && args[1] === '--numstat') {
-            return '1\t0\tutils/x.js';
+          if (args.includes('--name-status')) return 'M\0utils/x.js\0';
+          if (args.includes('--name-only')) return 'utils/x.js\0';
+          if (args.includes('--numstat')) {
+            return '1\t0\tutils/x.js\0';
           }
-          if (args[0] === 'diff') return patch;
+          if (args.includes('diff')) return patch;
           return '';
         })
       );
@@ -1334,11 +1336,12 @@ describe('review', () => {
     const runGit = (args) => {
       if (args[0] === 'symbolic-ref') return 'origin/main';
       if (args[0] === 'merge-base') return 'abc123';
-      if (args[0] === 'diff' && args[1] === '--name-only') return 'utils/x.js';
-      if (args[0] === 'diff' && args[1] === '--numstat') {
-        return '1\t0\tutils/x.js';
+      if (args.includes('--name-status')) return 'M\0utils/x.js\0';
+      if (args.includes('--name-only')) return 'utils/x.js\0';
+      if (args.includes('--numstat')) {
+        return '1\t0\tutils/x.js\0';
       }
-      if (args[0] === 'diff') return 'diff --git a/utils/x.js b/utils/x.js';
+      if (args.includes('diff')) return 'diff --git a/utils/x.js b/utils/x.js';
       return '';
     };
     run(['review'], { runGit });
@@ -1353,6 +1356,50 @@ describe('review', () => {
         'utf-8'
       )
     ).toBe('a\n');
+  });
+
+  test('should report deletion of a snapshot-skipped untracked file on round 2 via CLI', () => {
+    newTask(['--verify', 'pnpm test']);
+    finishSteps();
+    run(['verify']);
+    const bigFile = path.join(root, 'huge-untracked.json');
+    fs.writeFileSync(bigFile, 'x'.repeat(260 * 1024));
+    const smallFile = path.join(root, 'utils', 'x.js');
+    fs.mkdirSync(path.dirname(smallFile), { recursive: true });
+    fs.writeFileSync(smallFile, 'a\n');
+    let hasBig = true;
+    /** @type {import('../review.js').RunGit} */
+    const runGit = (args) => {
+      if (args[0] === 'symbolic-ref') return 'origin/main';
+      if (args[0] === 'merge-base') return 'abc123';
+      if (args[0] === 'ls-files') {
+        return hasBig ? 'huge-untracked.json\0' : '';
+      }
+      if (args.includes('--name-status')) return 'M\0utils/x.js\0';
+      if (args.includes('--name-only')) return 'utils/x.js\0';
+      if (args.includes('--numstat')) return '1\t0\tutils/x.js\0';
+      if (args.includes('diff')) return 'diff --git a/utils/x.js b/utils/x.js';
+      return '';
+    };
+    run(['review'], { runGit });
+    addRows(1, [
+      '| | utils/x.js | low | Style | reading it | CONFIRMED | agreed |',
+    ]);
+    run(['review', 'record']);
+
+    fs.rmSync(bigFile);
+    hasBig = false;
+    const parsed = JSON.parse(run(['review', '--json'], { runGit }).out);
+
+    expect(parsed.round).toBe(2);
+    expect(parsed.incrementalDiff).toBe(
+      `tasks/${NAME}/reviews/DIFF_${NAME}-r1-to-r2.patch`
+    );
+    const incremental = read(`reviews/DIFF_${NAME}-r1-to-r2.patch`);
+    expect(incremental).toContain(
+      'diff --git a/huge-untracked.json b/huge-untracked.json'
+    );
+    expect(incremental).toContain('deleted file (was omitted from previous');
   });
 
   test('should review git changes since main when the task has no code', () => {
@@ -1479,7 +1526,7 @@ describe('review', () => {
       files: ['utils/x.js'],
     });
     expect(runGit).toHaveBeenCalledWith(
-      ['diff', '--name-only', 'start123'],
+      ['diff', '--name-only', '-z', 'start123'],
       root
     );
     expect(state().quality?.base).toBe('start123');
@@ -1495,7 +1542,7 @@ describe('review', () => {
     const parsed = JSON.parse(run(['review', '--json'], { runGit }).out);
     expect(parsed.scope).toMatchObject({ base: 'mid789', since: 'mid789' });
     expect(runGit).toHaveBeenCalledWith(
-      ['diff', '--name-only', 'mid789'],
+      ['diff', '--name-only', '-z', 'mid789'],
       root
     );
   });
@@ -1548,7 +1595,7 @@ describe('review', () => {
         files: ['a.js', 'tasks/t.js'],
       });
       expect(runGit).toHaveBeenCalledWith(
-        ['diff', '--name-only', 'r-start'],
+        ['diff', '--name-only', '-z', 'r-start'],
         repo
       );
       const brief = fs.readFileSync(

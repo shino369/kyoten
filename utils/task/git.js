@@ -27,7 +27,9 @@ export function git(spawn, cwd, args) {
       timeout: 5000,
       maxBuffer: 16 * 1024 * 1024,
     });
-    return result.status === 0 ? String(result.stdout ?? '').trim() : null;
+    if (result.status !== 0) return null;
+    const out = String(result.stdout ?? '');
+    return args.includes('-z') ? out : out.trim();
   } catch {
     return null;
   }

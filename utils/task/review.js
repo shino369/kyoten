@@ -26,7 +26,7 @@ import { SEVERITIES, VERDICTS, freshQuality, toFix } from './quality.js';
 import { addStep } from './state.js';
 import { taskRepoDir } from './store.js';
 import { relPosix } from '../paths.js';
-import { redactSecrets } from '../redact.js';
+import { containsSecret, redactSecrets } from '../redact.js';
 
 /** Fallback base when the repository has no `origin/HEAD`. */
 export const DEFAULT_BASE = 'main';
@@ -265,11 +265,11 @@ export function reviewScope({
       runGit(['branch', '--show-current'], repoDir) ===
         base.replace(/^origin\//, ''));
   const since = fromStart ? startCommit : mergeBase;
-  const lines = (/** @type {string | null} */ text) =>
-    (text ?? '').split('\n').filter(Boolean);
   const files = new Set([
-    ...lines(runGit(['diff', '--name-only', since], repoDir)),
-    ...lines(runGit(['ls-files', '--others', '--exclude-standard'], repoDir)),
+    ...splitGitPaths(runGit(['diff', '--name-only', '-z', since], repoDir)),
+    ...splitGitPaths(
+      runGit(['ls-files', '--others', '--exclude-standard', '-z'], repoDir)
+    ),
   ]);
   // tasks/ is this workspace's git-ignored task folder; another repository's
   // tasks/ is code like any other.
@@ -506,6 +506,151 @@ function capFileDiff(text, file, maxBytes) {
 }
 
 /**
+ * Split raw NUL-delimited (`-z`) git path output, falling back to newlines for
+ * simple line-based mocks.
+ *
+ * @param {string | null} text
+ * @returns {string[]}
+ */
+function splitGitPaths(text) {
+  if (!text) return [];
+  return (text.includes('\0') ? text.split('\0') : text.split('\n')).filter(
+    Boolean
+  );
+}
+
+/**
+ * Parse `git diff --name-status -M -z` (or newline fallback) into the set of
+ * tracked destination paths and a map `newPath -> oldPath` for renames/copies.
+ *
+ * @param {string | null} text
+ * @returns {{ tracked: Set<string>, renames: Map<string, string> }}
+ */
+function parseNameStatus(text) {
+  /** @type {Set<string>} */
+  const tracked = new Set();
+  /** @type {Map<string, string>} */
+  const renames = new Map();
+  if (!text) return { tracked, renames };
+  if (text.includes('\0')) {
+    const tokens = text.split('\0');
+    for (let i = 0; i < tokens.length; i++) {
+      const status = tokens[i];
+      if (!status) continue;
+      if (status[0] === 'R' || status[0] === 'C') {
+        const oldPath = tokens[++i];
+        const newPath = tokens[++i];
+        if (newPath) {
+          tracked.add(newPath);
+          if (oldPath) renames.set(newPath, oldPath);
+        }
+      } else {
+        const file = tokens[++i];
+        if (file) tracked.add(file);
+      }
+    }
+    return { tracked, renames };
+  }
+  for (const line of text.split('\n').filter(Boolean)) {
+    const parts = line.split('\t');
+    if (parts.length === 1) {
+      tracked.add(parts[0]);
+    } else if (
+      (parts[0][0] === 'R' || parts[0][0] === 'C') &&
+      parts.length >= 3
+    ) {
+      tracked.add(parts[2]);
+      renames.set(parts[2], parts[1]);
+    } else if (parts[1]) {
+      tracked.add(parts[1]);
+    }
+  }
+  return { tracked, renames };
+}
+
+/**
+ * Parse `git diff --numstat -z` (or newline fallback) into per-file line stats.
+ *
+ * @param {string | null} text
+ * @returns {Map<string, FileStat>}
+ */
+function parseNumstat(text) {
+  /** @type {Map<string, FileStat>} */
+  const stats = new Map();
+  if (!text) return stats;
+  /** @param {string} added @param {string} deleted @returns {FileStat} */
+  const toStat = (added, deleted) =>
+    added === '-' || deleted === '-'
+      ? { added: 0, deleted: 0, binary: true }
+      : { added: Number(added), deleted: Number(deleted) };
+  if (text.includes('\0')) {
+    const tokens = text.split('\0');
+    for (let i = 0; i < tokens.length; i++) {
+      const entry = tokens[i];
+      if (!entry) continue;
+      const [added, deleted, ...rest] = entry.split('\t');
+      let file = rest.join('\t');
+      if (file === '') {
+        // Rename/copy record: "<added>\t<deleted>\t\0<old>\0<new>\0"
+        i += 1;
+        file = tokens[++i] ?? '';
+      }
+      if (file) stats.set(file, toStat(added, deleted));
+    }
+    return stats;
+  }
+  for (const line of text.split('\n').filter(Boolean)) {
+    const [added, deleted, ...rest] = line.split('\t');
+    const file = rest.join('\t');
+    if (file) stats.set(file, toStat(added, deleted));
+  }
+  return stats;
+}
+
+const SECRET_CONFIG_EXT = new Set([
+  '.json',
+  '.jsonc',
+  '.json5',
+  '.yaml',
+  '.yml',
+  '.toml',
+  '.ini',
+  '.cfg',
+]);
+const SECRET_CONFIG_NAME_RE =
+  /(^|[._-])(credentials?|secrets?|service[-_]?account|api[-_]?keys?|private[-_]?key|tokens?|passwords?)([._-]|$)/i;
+const ENV_TEMPLATE_RE = /\.(?:example|sample|template)$/i;
+
+/**
+ * Whether `file` is a secret or credential path that review artifacts must
+ * never read or copy (AGENTS.md §1: `.env*`, `secrets/`, `*.pem`, `*.key`,
+ * `credentials.json`, and credential-named config files).
+ *
+ * @param {string} file repo-relative POSIX path
+ * @returns {boolean}
+ */
+export function isSecretFile(file) {
+  const parts = file.split('/');
+  const base = parts.at(-1) ?? '';
+  if (
+    parts.slice(0, -1).some((segment) => segment.toLowerCase() === 'secrets')
+  ) {
+    return true;
+  }
+  if (/^\.env(?:\..+)?$/i.test(base) && !ENV_TEMPLATE_RE.test(base)) {
+    return true;
+  }
+  if (
+    /\.(?:pem|key)$/i.test(base) ||
+    base.toLowerCase() === 'credentials.json'
+  ) {
+    return true;
+  }
+  const ext = path.posix.extname(base).toLowerCase();
+  return SECRET_CONFIG_EXT.has(ext) && SECRET_CONFIG_NAME_RE.test(base);
+}
+
+/**
  * `+X/-Y` (or `binary`, or `unknown`) for a file's stats.
  *
  * @param {FileStat | undefined} stat
@@ -522,8 +667,9 @@ const statLabel = (stat) =>
 
 /**
  * Added and deleted line counts for the files in scope, for the brief. A git
- * scope uses `git diff --numstat`; untracked files are counted from disk and
- * flagged `untracked`. A task-folder scope has no base and returns nothing.
+ * scope uses `git diff --numstat -z`; untracked files are counted from disk and
+ * flagged `untracked` (protected secret paths are never read). A task-folder
+ * scope has no base and returns nothing.
  *
  * @param {{ repoDir: string, scope: Scope, runGit?: RunGit }} options
  * @returns {Map<string, FileStat>}
@@ -532,26 +678,16 @@ export function diffStats({ repoDir, scope, runGit = defaultRunGit }) {
   /** @type {Map<string, FileStat>} */
   const stats = new Map();
   if (scope.base === null || scope.since === null) return stats;
-  const lines = (/** @type {string | null} */ text) =>
-    (text ?? '').split('\n').filter(Boolean);
   const inScope = new Set(scope.files);
-  for (const line of lines(
-    runGit(['diff', '--numstat', scope.since], repoDir)
+  for (const [file, stat] of parseNumstat(
+    runGit(['diff', '--numstat', '-z', scope.since], repoDir)
   )) {
-    const [added, deleted, ...rest] = line.split('\t');
-    const file = rest.join('\t');
-    if (!file || !inScope.has(file)) continue;
-    stats.set(
-      file,
-      added === '-' || deleted === '-'
-        ? { added: 0, deleted: 0, binary: true }
-        : { added: Number(added), deleted: Number(deleted) }
-    );
+    if (inScope.has(file)) stats.set(file, stat);
   }
-  for (const file of lines(
-    runGit(['ls-files', '--others', '--exclude-standard'], repoDir)
+  for (const file of splitGitPaths(
+    runGit(['ls-files', '--others', '--exclude-standard', '-z'], repoDir)
   )) {
-    if (!inScope.has(file) || stats.has(file)) continue;
+    if (!inScope.has(file) || stats.has(file) || isSecretFile(file)) continue;
     let buffer;
     try {
       buffer = fs.readFileSync(path.join(repoDir, file));
@@ -574,9 +710,10 @@ export function diffStats({ repoDir, scope, runGit = defaultRunGit }) {
 /**
  * The patch a reviewer reads first: a unified diff of the files in scope
  * (`-U8` for surrounding context), with new/untracked files rendered as
- * standard new-file diffs. Secrets are redacted; a huge file is truncated and
- * a total cap lists the remaining files with their stats. Null for a
- * task-folder scope (no base) or nothing to show.
+ * standard new-file diffs and renames diffed across both sides. Secrets are
+ * redacted and secret paths are omitted; a huge file is truncated and a total
+ * cap lists the remaining files with their stats. Null for a task-folder scope
+ * (no base) or nothing to show.
  *
  * @param {{ repoDir: string, scope: Scope, runGit?: RunGit, maxFileBytes?: number, maxTotalBytes?: number }} options
  * @returns {string | null}
@@ -591,10 +728,8 @@ export function generateReviewDiff({
   if (scope.base === null || scope.since === null || scope.files.length === 0) {
     return null;
   }
-  const tracked = new Set(
-    (runGit(['diff', '--name-only', scope.since], repoDir) ?? '')
-      .split('\n')
-      .filter(Boolean)
+  const { tracked, renames } = parseNameStatus(
+    runGit(['diff', '--name-status', '-M', '-z', scope.since], repoDir)
   );
   /** @type {string[]} */
   const chunks = [];
@@ -604,18 +739,29 @@ export function generateReviewDiff({
   const unavailable = [];
   let total = 0;
   for (const file of [...scope.files].sort()) {
+    const oldPath = renames.get(file);
+    if (isSecretFile(file) || (oldPath && isSecretFile(oldPath))) {
+      chunks.push(
+        `diff --git a/${oldPath ?? file} b/${file}\n... [omitted: protected secret path]\n`
+      );
+      total += chunks.at(-1)?.length ?? 0;
+      continue;
+    }
     /** @type {string | null} */
     let text = null;
     if (tracked.has(file)) {
       const diff = runGit(
         [
+          '-c',
+          'core.quotePath=false',
           'diff',
+          '-M',
           `--unified=${DIFF_CONTEXT_LINES}`,
           '--no-ext-diff',
           '--no-color',
           scope.since,
           '--',
-          file,
+          ...(oldPath ? [oldPath, file] : [file]),
         ],
         repoDir
       );
@@ -663,15 +809,16 @@ export function generateReviewDiff({
   return `${prefix}${notes.join('\n')}\n`;
 }
 
-/** Manifest inside a snapshot folder listing files skipped (binary / oversized). */
+/** Manifest inside a snapshot folder listing files skipped (binary / oversized / secret). */
 const SNAPSHOT_SKIPPED_FILE = '.snapshot-skipped.json';
 
 /**
  * Save the working-tree versions of `files` under `dir` (relative paths
- * mirrored) so a later round can diff against them. Binary and oversized
- * files are recorded in `.snapshot-skipped.json` instead of mirrored, so a
- * later round does not mistake them for newly added files. Returns the number
- * of files saved.
+ * mirrored) so a later round can diff against them. Binary, oversized, secret
+ * paths, and files containing secret patterns are recorded in
+ * `.snapshot-skipped.json` instead of mirrored, so no credentials are copied
+ * into review artifacts and a later round does not mistake them for newly
+ * added files. Returns the number of files saved.
  *
  * @param {{ repoDir: string, dir: string, files: string[] }} options
  * @returns {number}
@@ -682,13 +829,21 @@ export function saveSnapshot({ repoDir, dir, files }) {
   /** @type {string[]} */
   const skipped = [];
   for (const file of files) {
+    if (isSecretFile(file)) {
+      if (fs.existsSync(path.join(repoDir, file))) skipped.push(file);
+      continue;
+    }
     let buffer;
     try {
       buffer = fs.readFileSync(path.join(repoDir, file));
     } catch {
       continue;
     }
-    if (buffer.length > SNAPSHOT_MAX_FILE_BYTES || isBinary(buffer)) {
+    if (
+      buffer.length > SNAPSHOT_MAX_FILE_BYTES ||
+      isBinary(buffer) ||
+      containsSecret(buffer.toString('utf-8'))
+    ) {
       skipped.push(file);
       continue;
     }
@@ -709,22 +864,21 @@ export function saveSnapshot({ repoDir, dir, files }) {
 }
 
 /**
- * Files recorded as skipped (binary or oversized) in a saved snapshot.
+ * Files recorded as skipped (binary, oversized, or secret) in a saved snapshot,
+ * as sorted POSIX paths.
  *
  * @param {string} dir
- * @returns {Set<string>}
+ * @returns {string[]}
  */
-function readSnapshotSkipped(dir) {
+export function listSnapshotSkipped(dir) {
   try {
     const raw = fs.readFileSync(path.join(dir, SNAPSHOT_SKIPPED_FILE), 'utf-8');
     const parsed = JSON.parse(raw);
-    return new Set(
-      Array.isArray(parsed)
-        ? parsed.filter((item) => typeof item === 'string')
-        : []
-    );
+    return Array.isArray(parsed)
+      ? parsed.filter((item) => typeof item === 'string').sort()
+      : [];
   } catch {
-    return new Set();
+    return [];
   }
 }
 
@@ -771,8 +925,9 @@ function rewriteNoIndexHeaders(patch, file) {
 /**
  * What changed since the previous round: the saved snapshot against the
  * current working tree, as a unified diff with repo-relative paths. `files`
- * should be the union of the current scope and the snapshot's files, so a
- * file that appeared or disappeared still shows. Null when nothing changed.
+ * should be the union of the current scope, the snapshot's files, and its
+ * skipped files, so a file that appeared or disappeared still shows. Null when
+ * nothing changed.
  *
  * @param {{ repoDir: string, snapshotDir: string, files: string[], runGitStatus?: RunGitStatus, maxFileBytes?: number, maxTotalBytes?: number }} options
  * @returns {string | null}
@@ -785,7 +940,7 @@ export function generateIncrementalDiff({
   maxFileBytes = MAX_DIFF_FILE_BYTES,
   maxTotalBytes = MAX_DIFF_TOTAL_BYTES,
 }) {
-  const skippedInSnapshot = readSnapshotSkipped(snapshotDir);
+  const skippedInSnapshot = new Set(listSnapshotSkipped(snapshotDir));
   /** @type {string[]} */
   const chunks = [];
   /** @type {string[]} */
@@ -794,6 +949,19 @@ export function generateIncrementalDiff({
   for (const file of [...files].sort()) {
     const snapshotFile = path.join(snapshotDir, file);
     const currentFile = path.join(repoDir, file);
+    if (isSecretFile(file)) {
+      chunks.push(
+        [
+          `diff --git a/${file} b/${file}`,
+          fs.existsSync(currentFile)
+            ? '... [omitted: protected secret path]'
+            : 'deleted file (protected secret path)',
+          '',
+        ].join('\n')
+      );
+      total += chunks.at(-1)?.length ?? 0;
+      continue;
+    }
     /** @type {Buffer | null} */
     let snapshot = null;
     try {
@@ -807,8 +975,8 @@ export function generateIncrementalDiff({
       text = [
         `diff --git a/${file} b/${file}`,
         fs.existsSync(currentFile)
-          ? `... [omitted from previous round snapshot (binary or >${SNAPSHOT_MAX_FILE_BYTES} bytes); inspect the full DIFF patch or targeted line ranges]`
-          : `deleted file (was omitted from previous round snapshot as binary or >${SNAPSHOT_MAX_FILE_BYTES} bytes)`,
+          ? `... [omitted from previous round snapshot (binary, >${SNAPSHOT_MAX_FILE_BYTES} bytes, or secret); inspect the full DIFF patch or targeted line ranges]`
+          : `deleted file (was omitted from previous round snapshot as binary, >${SNAPSHOT_MAX_FILE_BYTES} bytes, or secret)`,
         '',
       ].join('\n');
     } else if (snapshot === null) {
@@ -822,6 +990,8 @@ export function generateIncrementalDiff({
     } else {
       const result = runGitStatus(
         [
+          '-c',
+          'core.quotePath=false',
           'diff',
           '--no-index',
           `--unified=${DIFF_CONTEXT_LINES}`,

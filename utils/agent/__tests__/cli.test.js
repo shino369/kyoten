@@ -628,4 +628,32 @@ describe('dscc', () => {
 
     expect(err).toContain('(dscc, read: exit 0; record:');
   });
+
+  test('should scrub dscc credentials and secret patterns from call records and output', () => {
+    const file = profile(
+      'ANTHROPIC_BASE_URL=https://user:url-secret-pw@api.deepseek.com/anthropic\nANTHROPIC_AUTH_TOKEN=sk-short-dscc\n'
+    );
+    const runAgent = vi.fn(() => ({
+      code: 1,
+      signal: null,
+      stdout: `auth failed for sk-short-dscc and ghp_${'a'.repeat(36)}\n`,
+      output: `stderr: url-secret-pw token=sk-short-dscc ghp_${'a'.repeat(36)}\n`,
+      durationMs: 100,
+    }));
+
+    const { out } = run(['ask', '--agent', 'dscc', '--json', 'check it'], {
+      env: { DSCC_PROFILE: file },
+      runAgent,
+    });
+
+    const parsed = JSON.parse(out);
+    const recordText = read(parsed.record);
+    for (const leaked of ['sk-short-dscc', 'url-secret-pw', 'ghp_']) {
+      expect(recordText).not.toContain(leaked);
+      expect(parsed.answer).not.toContain(leaked);
+      expect(parsed.output).not.toContain(leaked);
+    }
+    expect(recordText).toContain('[REDACTED]');
+    expect(parsed.answer).toContain('[REDACTED]');
+  });
 });

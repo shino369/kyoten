@@ -19,7 +19,9 @@ import {
   formatReviewBrief,
   generateIncrementalDiff,
   generateReviewDiff,
+  isSecretFile,
   listSnapshotFiles,
+  listSnapshotSkipped,
   openRound,
   parseFindings,
   recordFindings,
@@ -573,7 +575,7 @@ describe('reviewScope', () => {
     });
     expect(runGit).toHaveBeenCalledWith(['merge-base', 'HEAD', 'main'], root);
     expect(runGit).toHaveBeenCalledWith(
-      ['diff', '--name-only', 'abc123'],
+      ['diff', '--name-only', '-z', 'abc123'],
       root
     );
   });
@@ -1073,20 +1075,24 @@ describe('diffStats', () => {
     expect(stats.get('utils/a.js')).toEqual({ added: 10, deleted: 2 });
     expect(stats.get('utils/b.js')).toEqual({ added: 3, deleted: 0 });
     expect(stats.has('outside.js')).toBe(false);
-    expect(runGit).toHaveBeenCalledWith(['diff', '--numstat', 'abc123'], root);
+    expect(runGit).toHaveBeenCalledWith(
+      ['diff', '--numstat', '-z', 'abc123'],
+      root
+    );
   });
 
-  test('should count untracked files as new lines and flag binaries', () => {
+  test('should count untracked files as new lines and flag binaries while skipping secret paths', () => {
     fs.mkdirSync(path.join(root, 'lib'), { recursive: true });
     fs.writeFileSync(path.join(root, 'lib/new.js'), 'a\nb\r\nc');
     fs.writeFileSync(path.join(root, 'lib/blob.bin'), Buffer.from([0, 1, 2]));
+    fs.writeFileSync(path.join(root, '.env'), 'SECRET=1\n');
     /** @type {import('../review.js').RunGit} */
     const runGit = (args) =>
-      args[0] === 'diff' ? '' : 'lib/new.js\nlib/blob.bin\nlib/gone.js';
+      args[0] === 'diff' ? '' : 'lib/new.js\0lib/blob.bin\0lib/gone.js\0.env\0';
 
     const stats = diffStats({
       repoDir: root,
-      scope: gitScope(['lib/new.js', 'lib/blob.bin', 'lib/gone.js']),
+      scope: gitScope(['lib/new.js', 'lib/blob.bin', 'lib/gone.js', '.env']),
       runGit,
     });
 
@@ -1102,6 +1108,7 @@ describe('diffStats', () => {
       untracked: true,
     });
     expect(stats.has('lib/gone.js')).toBe(false);
+    expect(stats.has('.env')).toBe(false);
   });
 
   test('should not query git for a task-folder scope', () => {
@@ -1140,13 +1147,16 @@ describe('generateReviewDiff', () => {
    */
   const runGitFor = (diffs, tracked) =>
     vi.fn((args) => {
-      if (args[0] === 'diff' && args[1] === '--name-only') {
-        return tracked.join('\n');
+      if (args.includes('--name-status')) {
+        return tracked.map((file) => `M\0${file}\0`).join('');
       }
-      if (args[0] === 'diff' && args[1] === '--numstat') {
-        return tracked.map((file) => `1\t1\t${file}`).join('\n');
+      if (args.includes('--name-only')) {
+        return tracked.join('\0');
       }
-      if (args[0] === 'diff') return diffs[args.at(-1) ?? ''] ?? null;
+      if (args.includes('--numstat')) {
+        return tracked.map((file) => `1\t1\t${file}\0`).join('');
+      }
+      if (args.includes('diff')) return diffs[args.at(-1) ?? ''] ?? null;
       return '';
     });
 
@@ -1179,7 +1189,10 @@ describe('generateReviewDiff', () => {
     expect(patch).toContain('@@ -0,0 +1,2 @@\n+one\n+two');
     expect(runGit).toHaveBeenCalledWith(
       [
+        '-c',
+        'core.quotePath=false',
         'diff',
+        '-M',
         '--unified=8',
         '--no-ext-diff',
         '--no-color',
@@ -1285,26 +1298,118 @@ describe('generateReviewDiff', () => {
     expect(patch).toContain('git diff unavailable for 1 file(s)');
     expect(patch).toContain('huge.js (+1/-1)');
   });
+
+  test('should omit protected secret files from review diffs without reading them', () => {
+    fs.writeFileSync(path.join(root, '.env'), 'API_KEY=plain-secret-value\n');
+    const runGit = runGitFor({}, []);
+
+    const patch = generateReviewDiff({
+      repoDir: root,
+      scope: gitScope(['.env']),
+      runGit,
+    });
+
+    expect(patch).toContain('diff --git a/.env b/.env');
+    expect(patch).toContain('protected secret path');
+    expect(patch).not.toContain('plain-secret-value');
+  });
+
+  test('should handle non-ASCII paths and staged renames against a real git repository', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'review-git-'));
+    const gitExec = (/** @type {string[]} */ args) => {
+      const res = spawnSync('git', args, { cwd: repo, encoding: 'utf-8' });
+      if (res.status !== 0) {
+        throw new Error(`git ${args.join(' ')} failed: ${res.stderr}`);
+      }
+      return res.stdout.trim();
+    };
+    try {
+      gitExec(['init']);
+      gitExec(['config', 'user.email', 'test@example.com']);
+      gitExec(['config', 'user.name', 'Test']);
+      fs.writeFileSync(path.join(repo, 'old.js'), 'a\nb\nc\nd\n');
+      gitExec(['add', 'old.js']);
+      gitExec(['commit', '-m', 'init']);
+      const base = gitExec(['rev-parse', 'HEAD']);
+      gitExec(['mv', 'old.js', 'new.js']);
+      fs.writeFileSync(path.join(repo, 'new.js'), 'a\nB\nc\nd\n');
+      fs.writeFileSync(path.join(repo, '設定.txt'), '一行目\n二行目\n');
+
+      const scope = reviewScope({
+        rootDir: repo,
+        taskDir: path.join(repo, 'tasks', NAME),
+        base,
+        repoDir: repo,
+      });
+      expect(scope.files).toEqual(['new.js', '設定.txt']);
+
+      const stats = diffStats({ repoDir: repo, scope });
+      expect(stats.get('new.js')).toEqual({ added: 1, deleted: 1 });
+      expect(stats.get('設定.txt')).toEqual({
+        added: 2,
+        deleted: 0,
+        untracked: true,
+      });
+
+      const patch = generateReviewDiff({ repoDir: repo, scope });
+      expect(patch).toContain('rename from old.js');
+      expect(patch).toContain('rename to new.js');
+      expect(patch).toContain('-b\n+B');
+      expect(patch).not.toContain(
+        'new file mode 100644\n--- /dev/null\n+++ b/new.js'
+      );
+      expect(patch).toContain('diff --git a/設定.txt b/設定.txt');
+      expect(patch).toContain('+一行目\n+二行目');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('saveSnapshot and listSnapshotFiles', () => {
-  test('should mirror text files and skip binaries and oversized files', () => {
+  test('should mirror text files and skip binaries, oversized, and secret files', () => {
     fs.writeFileSync(path.join(root, 'a.js'), 'one\n');
     fs.writeFileSync(
       path.join(root, 'big.js'),
       'x'.repeat(SNAPSHOT_MAX_FILE_BYTES + 1)
     );
     fs.writeFileSync(path.join(root, 'blob.bin'), Buffer.from([0]));
+    fs.writeFileSync(path.join(root, '.env'), 'FOO=bar\n');
+    fs.writeFileSync(
+      path.join(root, 'has-token.js'),
+      `const t = 'ghp_${'a'.repeat(36)}';\n`
+    );
     const dir = path.join(root, '.snapshot-r1');
 
+    expect(isSecretFile('.env')).toBe(true);
+    expect(isSecretFile('.env.example')).toBe(false);
+    expect(isSecretFile('secrets/key.txt')).toBe(true);
+    expect(isSecretFile('certs/app.pem')).toBe(true);
+    expect(isSecretFile('config/credentials.json')).toBe(true);
+    expect(isSecretFile('src/token.js')).toBe(false);
     expect(
       saveSnapshot({
         repoDir: root,
         dir,
-        files: ['a.js', 'big.js', 'blob.bin', 'missing.js'],
+        files: [
+          'a.js',
+          'big.js',
+          'blob.bin',
+          '.env',
+          'has-token.js',
+          'missing.js',
+        ],
       })
     ).toBe(1);
     expect(listSnapshotFiles(dir)).toEqual(['a.js']);
+    expect(listSnapshotSkipped(dir)).toEqual([
+      '.env',
+      'big.js',
+      'blob.bin',
+      'has-token.js',
+    ]);
+    expect(fs.existsSync(path.join(dir, '.env'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'has-token.js'))).toBe(false);
     expect(fs.readFileSync(path.join(dir, 'a.js'), 'utf-8')).toBe('one\n');
   });
 
@@ -1364,6 +1469,8 @@ describe('generateIncrementalDiff', () => {
     expect(patch).toContain('-two\n+TWO');
     expect(runGitStatus).toHaveBeenCalledWith(
       [
+        '-c',
+        'core.quotePath=false',
         'diff',
         '--no-index',
         '--unified=8',

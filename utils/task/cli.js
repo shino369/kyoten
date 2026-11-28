@@ -76,6 +76,7 @@ import {
   generateIncrementalDiff,
   generateReviewDiff,
   listSnapshotFiles,
+  listSnapshotSkipped,
   openRound,
   parseFindings,
   recordFindings,
@@ -1263,7 +1264,11 @@ export const COMMANDS = {
         repoDir: scopeDir,
         snapshotDir: previousSnapshot,
         files: [
-          ...new Set([...scope.files, ...listSnapshotFiles(previousSnapshot)]),
+          ...new Set([
+            ...scope.files,
+            ...listSnapshotFiles(previousSnapshot),
+            ...listSnapshotSkipped(previousSnapshot),
+          ]),
         ].sort(),
         runGitStatus: deps.runGitStatus,
       });

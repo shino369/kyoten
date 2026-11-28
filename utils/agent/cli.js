@@ -14,8 +14,9 @@ import os from 'os';
 import path from 'path';
 import { buildCommand, runAgent } from '../loop/adapters.js';
 import { isLinkedWorktree } from '../loop/worktree.js';
-import { dsccEnv, profilePath } from '../kyoten/dscc.js';
+import { TOKEN_KEYS, dsccEnv, profilePath } from '../kyoten/dscc.js';
 import { runIfMain } from '../module-runner.js';
+import { REDACTED, isSecretKey, redactSecrets } from '../redact.js';
 import { INNER_LOOP_ENV } from '../task/loop.js';
 import { formatLocal } from '../task/markdown.js';
 import { currentTask, resolveTaskName, tasksRoot } from '../task/store.js';
@@ -206,8 +207,57 @@ export function answerOf(result) {
   return result.stdout.trim() ? result.stdout : result.output;
 }
 
+const PROFILE_SECRET_NAME_RE = /AUTH|HEADERS/i;
+const URL_CREDENTIAL_RE = /^[a-z][a-z0-9+.-]*:\/\/([^/@]+)@/i;
+
 /**
- * @param {{ command: import('../loop/adapters.js').AgentCommand, agent?: string, mode: string, cwd: string, at: Date, prompt: string, result: import('../loop/adapters.js').AgentResult }} input
+ * Literal secret values from a dscc profile (`set`), longest first so
+ * scrubbing replaces full tokens before any substring.
+ *
+ * @param {Record<string, string>} set
+ * @returns {string[]}
+ */
+export function profileSecrets(set) {
+  /** @type {Set<string>} */
+  const values = new Set();
+  for (const [key, value] of Object.entries(set)) {
+    if (!value) continue;
+    if (
+      TOKEN_KEYS.includes(key) ||
+      isSecretKey(key) ||
+      PROFILE_SECRET_NAME_RE.test(key)
+    ) {
+      values.add(value);
+    }
+    const cred = URL_CREDENTIAL_RE.exec(value)?.[1];
+    if (cred) {
+      values.add(cred);
+      const colon = cred.indexOf(':');
+      if (colon !== -1 && cred.slice(colon + 1)) {
+        values.add(cred.slice(colon + 1));
+      }
+    }
+  }
+  return [...values].sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Scrub literal secret values and pattern-matched credentials from text.
+ *
+ * @param {string} text
+ * @param {string[]} [secrets]
+ * @returns {string}
+ */
+export function scrubSecrets(text, secrets = []) {
+  let out = text;
+  for (const secret of secrets) {
+    if (secret) out = out.replaceAll(secret, REDACTED);
+  }
+  return redactSecrets(out);
+}
+
+/**
+ * @param {{ command: import('../loop/adapters.js').AgentCommand, agent?: string, mode: string, cwd: string, at: Date, prompt: string, result: import('../loop/adapters.js').AgentResult, secrets?: string[] }} input
  * @returns {string}
  */
 export function formatRecord({
@@ -218,8 +268,15 @@ export function formatRecord({
   at,
   prompt,
   result,
+  secrets = [],
 }) {
-  const answer = answerOf(result);
+  const safeCommand = scrubSecrets(
+    [command.bin, ...command.args].join(' '),
+    secrets
+  );
+  const safePrompt = scrubSecrets(prompt, secrets);
+  const safeAnswer = scrubSecrets(answerOf(result), secrets);
+  const safeOutput = scrubSecrets(result.output, secrets);
   const exit = result.signal
     ? `stopped by ${result.signal}`
     : `exit ${result.code}`;
@@ -227,27 +284,27 @@ export function formatRecord({
     `# Agent call — ${agent} (${mode})`,
     '',
     `- When: ${formatLocal(at, { withTime: true })}`,
-    `- Command: \`${[command.bin, ...command.args].join(' ')}\` (prompt on stdin)`,
+    `- Command: \`${safeCommand}\` (prompt on stdin)`,
     `- Cwd: ${cwd}`,
     `- Result: ${exit} in ${Math.round(result.durationMs / 1000)}s`,
     '',
     '## Prompt',
     '',
-    fence(prompt),
-    prompt,
-    fence(prompt),
+    fence(safePrompt),
+    safePrompt,
+    fence(safePrompt),
     '',
     '## Answer (stdout)',
     '',
-    fence(answer),
-    answer,
-    fence(answer),
+    fence(safeAnswer),
+    safeAnswer,
+    fence(safeAnswer),
     '',
     '## Full output (stdout + stderr)',
     '',
-    fence(result.output),
-    result.output,
-    fence(result.output),
+    fence(safeOutput),
+    safeOutput,
+    fence(safeOutput),
     '',
   ].join('\n');
 }
@@ -368,12 +425,15 @@ function ask(options, d) {
   });
   /** @type {NodeJS.ProcessEnv} */
   let env = { ...d.env, [INNER_LOOP_ENV]: 'off', TASK_AGENT: label };
+  /** @type {string[]} */
+  let secrets = [];
   if (label === 'dscc') {
     const profile = dsccEnv(
       profilePath({ env: d.env, homedir: d.homedir(), platform: d.platform })
     );
+    secrets = profileSecrets(profile.set);
     for (const warning of profile.warnings) {
-      d.warn(`! dscc profile ${warning}`);
+      d.warn(scrubSecrets(`! dscc profile ${warning}`, secrets));
     }
     env = profileEnv(env, profile, d.platform);
     env.KYOTEN_AGENT = 'dscc';
@@ -402,13 +462,18 @@ function ask(options, d) {
     task: options.task,
     now: at,
   });
-  const result = d.runAgent({
+  const rawResult = d.runAgent({
     command,
     cwd: d.rootDir,
     prompt,
     timeoutMs: options.timeoutMin * 60 * 1000,
     env,
   });
+  const result = {
+    ...rawResult,
+    stdout: scrubSecrets(rawResult.stdout, secrets),
+    output: scrubSecrets(rawResult.output, secrets),
+  };
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(
     file,
@@ -420,6 +485,7 @@ function ask(options, d) {
       at,
       prompt,
       result,
+      secrets,
     }),
     'utf-8'
   );
