@@ -9,6 +9,7 @@ import { createState } from '../../task/state.js';
 import { saveState, tasksRoot, writeActive } from '../../task/store.js';
 import { CONFIG_FILE, DEFAULT_CONFIG, writeConfig } from '../config.js';
 import { CONSOLIDATED_FILE } from '../consolidate.js';
+import { runWorker } from '../extract.js';
 import { CALLER_HARNESS_ENV } from '../../loop/adapters.js';
 import {
   ERROR_CHARS,
@@ -27,6 +28,7 @@ import {
   EXTRACT_ENV,
   IDLE_MS,
   appendJournal,
+  readOffsets,
   readOpen,
   readQueue,
   registerOpen,
@@ -870,6 +872,44 @@ describe('extraction hooks', () => {
     );
     expect(kick).toHaveBeenCalledTimes(1);
   });
+
+  test.each([
+    ['globally', { off: true }],
+    ['for the session', { offSessions: ['agy-paused'] }],
+  ])(
+    'should discard a paused Antigravity session when saving is off %s',
+    (_scope, config) => {
+      writeConfig(dir, { ...DEFAULT_CONFIG, ...config });
+      const env = { KYOTEN_AGENT: 'agy' };
+      const runAgent = vi.fn();
+      const discard = vi.fn(() =>
+        runWorker({
+          rootDir: root,
+          env,
+          runAgent,
+          now: () => NOW,
+          tmpdir: os.tmpdir,
+        })
+      );
+
+      handleHook(
+        {
+          hookEventName: 'SessionEnd',
+          conversationId: 'agy-paused',
+          transcriptPath: transcript,
+          cwd: root,
+        },
+        { harness: 'agy', rootDir: root, now: NOW, env, kick: discard }
+      );
+
+      expect(discard).toHaveBeenCalledOnce();
+      expect(readQueue(dir)).toEqual([]);
+      expect(readOffsets(dir)['agy-paused'].offset).toBe(
+        fs.statSync(transcript).size
+      );
+      expect(runAgent).not.toHaveBeenCalled();
+    }
+  );
 
   test('should record the KYOTEN_AGENT side on open and queued entries', () => {
     lifecycle('SessionStart', {}, { env: { KYOTEN_AGENT: 'dscc' } });

@@ -262,9 +262,38 @@ export const CODEX_ISOLATION_ARGS = [
   'web_search=disabled',
   ...CODEX_DISABLED_FEATURES.flatMap((feature) => ['--disable', feature]),
 ];
+const CODEX_EMPTY_MCP_LIST =
+  'No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.';
 export const CLAUDE_ISOLATION_SETTINGS = JSON.stringify({
   disableAllHooks: true,
 });
+
+/**
+ * Codex can load MCP servers from configuration outside the user layer.
+ * Probe without passing the job prompt, and accept only a verified empty list.
+ * @param {Parameters<typeof runAgent>[0]} options
+ * @param {typeof runAgent} dispatch
+ */
+export function codexMcpEmpty(options, dispatch) {
+  const { command } = options;
+  const exec = command.args.findIndex(
+    (arg, index) => arg === 'exec' && command.args[index + 1] === '--ephemeral'
+  );
+  const probe = dispatch({
+    ...options,
+    command: {
+      ...command,
+      args: [
+        ...command.args.slice(0, exec),
+        ...CODEX_ISOLATION_ARGS,
+        'mcp',
+        'list',
+      ],
+    },
+    prompt: '',
+  });
+  return probe.code === 0 && probe.stdout.trim() === CODEX_EMPTY_MCP_LIST;
+}
 
 /** @type {Record<AgentName, { bin: string, args: Record<Mode, string[]>, install: string }>} */
 const ADAPTERS = {

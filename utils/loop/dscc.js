@@ -74,6 +74,10 @@ function addHeaderSecrets(values, raw, minLength) {
 const longestFirst = (values) =>
   [...values].sort((a, b) => b.length - a.length);
 
+/** @param {string[]} inherited @param {string[]} selected */
+export const mergeSecrets = (inherited, selected) =>
+  longestFirst(new Set([...inherited, ...selected]));
+
 /**
  * Literal credential values from a dscc profile (`set`): the token fields and
  * the custom header values, longest first so a full token is replaced before
@@ -216,8 +220,6 @@ export function prepareAgentExecution({
       KYOTEN_AGENT: 'dscc',
     };
   }
-  const secrets = longestFirst(
-    new Set([...credentials, ...envSecrets(effectiveEnv)])
-  );
+  const secrets = mergeSecrets(credentials, envSecrets(effectiveEnv));
   return { command: prepared, env: effectiveEnv, secrets };
 }

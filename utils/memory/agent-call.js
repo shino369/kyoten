@@ -9,12 +9,17 @@ import fs from 'fs';
 import path from 'path';
 import { stripVTControlCharacters } from 'util';
 import {
-  CODEX_ISOLATION_ARGS,
   buildCommand,
+  codexMcpEmpty,
   foreignHarnessForAgy,
 } from '../loop/adapters.js';
 import { writePrivate } from '../kyoten/dscc.js';
-import { prepareAgentExecution, scrubSecrets } from '../loop/dscc.js';
+import {
+  envSecrets,
+  mergeSecrets,
+  prepareAgentExecution,
+  scrubSecrets,
+} from '../loop/dscc.js';
 import { INNER_LOOP_ENV } from '../task/loop.js';
 import { commandFor } from '../tools/registry.js';
 import { CALL_AGENTS } from './config.js';
@@ -25,8 +30,6 @@ export const AGENT_CALL_TIMEOUT_MS = 5 * 60 * 1000;
 const ERROR_TAIL = 300;
 /** The settings file callAgent writes into the job's folder for claude and agy. */
 export const SETTINGS_FILE = 'memory-job-settings.json';
-const CODEX_EMPTY_MCP_LIST =
-  'No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.';
 /**
  * @typedef {typeof CALL_AGENTS[number]} CallAgent
  * @typedef {import('../loop/adapters.js').AgentCommand & { provider?: 'dscc' }} MemoryCommand
@@ -128,29 +131,21 @@ export function callAgent(
     command,
     env: deps.env,
   });
+  const secrets = mergeSecrets(envSecrets(deps.env), execution.secrets);
   const cwd = fs.mkdtempSync(path.join(deps.tmpdir(), `memory-${job}-`));
   const env = { ...execution.env, [EXTRACT_ENV]: '1', [INNER_LOOP_ENV]: 'off' };
   let result;
   try {
-    if (command.agent === 'codex') {
-      // An empty CLI MCP table merges with configuration rather than clearing
-      // it. Probe the configured servers with an empty stdin before the job.
-      const prefix = command.args.slice(0, command.args.lastIndexOf('exec'));
-      const probe = deps.runAgent({
-        command: {
-          ...command,
-          args: [...prefix, ...CODEX_ISOLATION_ARGS, 'mcp', 'list'],
-        },
-        cwd,
-        env,
-        prompt: '',
-        timeoutMs,
-      });
-      if (probe.code !== 0 || probe.stdout.trim() !== CODEX_EMPTY_MCP_LIST) {
-        throw new Error(
-          `Cannot verify Codex persona isolation. The MCP check must report zero configured servers.\n${switchFix(job, 'codex')}`
-        );
-      }
+    if (
+      command.agent === 'codex' &&
+      !codexMcpEmpty(
+        { command, cwd, env, prompt: '', timeoutMs },
+        deps.runAgent
+      )
+    ) {
+      throw new Error(
+        `Cannot verify Codex persona isolation. The MCP check must report zero configured servers.\n${switchFix(job, 'codex')}`
+      );
     }
     if (cancel?.()) {
       return {
@@ -165,7 +160,7 @@ export function callAgent(
     result = deps.runAgent({
       command: settingsAsFile(command, cwd),
       cwd,
-      prompt,
+      prompt: scrubSecrets(prompt, secrets),
       timeoutMs,
       env,
     });
@@ -186,13 +181,13 @@ export function callAgent(
       ? `was stopped by ${result.signal}`
       : `exited with code ${result.code}`;
     throw new Error(
-      `the ${job} agent ${how}: ${scrubSecrets(stripVTControlCharacters(result.output), execution.secrets).trim().slice(-ERROR_TAIL)}`
+      `the ${job} agent ${how}: ${scrubSecrets(stripVTControlCharacters(result.output), secrets).trim().slice(-ERROR_TAIL)}`
     );
   }
   // Successful structured answers still go through their original validators.
   // Reject an echoed literal credential even when its format is unknown.
   const answer = result.stdout.trim() ? result.stdout : result.output;
-  if (execution.secrets.some((secret) => answer.includes(secret))) {
+  if (secrets.some((secret) => answer.includes(secret))) {
     throw new Error(
       `the ${job} agent returned a credential; its answer was discarded`
     );

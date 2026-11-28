@@ -542,11 +542,12 @@ export function handleHook(
     const work =
       shouldConsolidate ||
       readQueue(dir).some((queued) => {
+        // A paused session still needs its queued range discarded locally.
+        if (savingOff(config, queued.session)) return true;
         const agent = config.extractAgent ?? queued.harness;
         return (
           config.autoExtract[memoryPolicyKey(agent, workerEnv)] &&
-          (savingOff(config, queued.session) ||
-            !deferredRun(agent, queued.kyotenAgent, workerEnv, {}))
+          !deferredRun(agent, queued.kyotenAgent, workerEnv, {})
         );
       });
     if (work && !workerRunning(dir)) {

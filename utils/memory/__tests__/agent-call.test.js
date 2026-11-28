@@ -218,6 +218,38 @@ describe('callAgent', () => {
     ).toBe('answer');
   });
 
+  test('should scrub overwritten and selected provider credentials from memory prompts', () => {
+    const inherited = 'fixture-old-provider-credential';
+    const selected = 'fixture-new-provider-credential';
+    const profile = path.join(root, 'fixture-profile');
+    fs.writeFileSync(
+      profile,
+      `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic\nANTHROPIC_AUTH_TOKEN=${selected}\n`
+    );
+    const dscc = headlessCommand({
+      agent: 'dscc',
+      model: 'haiku',
+      rootDir: root,
+    });
+    const runAgent = agentReturning();
+
+    callAgent(
+      {
+        ...deps(runAgent),
+        env: { DSCC_PROFILE: profile, ANTHROPIC_AUTH_TOKEN: inherited },
+      },
+      dscc,
+      `Original ${inherited}, selected ${selected}`
+    );
+
+    expect(runAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: 'Original [REDACTED], selected [REDACTED]',
+        env: expect.objectContaining({ ANTHROPIC_AUTH_TOKEN: selected }),
+      })
+    );
+  });
+
   test('should check for Codex MCP servers before handing it any persona text', () => {
     const codex = headlessCommand({ agent: 'codex', rootDir: root });
     const runAgent = agentReturning();
